@@ -1,0 +1,23 @@
+# Build outputs
+/dist/
+/probe/build/
+/sandbox/build/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+
+# Sandbox working copy (holds copies of XXMI files, never the originals)
+/sandbox/run/
+
+# Runtime output
+*.log
+/captures/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "efmi": {
+      "command": "D:\\Python312\\python.exe",
+      "args": [
+        "F:\\EFMI MCP\\server\\run_server.py",
+        "--efmi-root",
+        "D:\\XXMI-Launcher-Portable-v2.1.6\\EFMI"
+      ]
+    }
+  }
+}
