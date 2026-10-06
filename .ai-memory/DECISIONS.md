@@ -74,5 +74,13 @@
 - 门槛：同一管道/PID、当前 EFMI 安装、所选 device/context/swap chain；本安装原始 `reload_config` 与 `reload_fixes` 均为单条 `no_modifiers VK_F10`。确认有效前台窗口和修饰键状态，无法确认即报错，不强制抢焦点或自动提升权限。
 - 数据边界：停止 live、release、清旧捕获和 mod 索引，单次 F10 后默认等 2000ms，再建立 barrier 并捕获严格更晚的非空帧；新帧前后复核目标。live 保持停止，输入后错误不自动重发。
 - 证明边界：`reload_requested=true` 仅证明输入发送；探针无重载回执，`reload_confirmed` 保持 false，目标 mod 仍需 draw/资源验证。异常时保留已发送/未发送/未知状态；正常 F10 可让 XXMI 保存持久变量，不能声明此工具完全只读。
-- 验证：离线输入 19 项、工作流/MCP 边界 30 项及本轮既有 MCP 39 项通过。私有沙盒实际 F10 集成在 `hunting=0` 下通过，新增 skip 规则只使目标 `64e97b80` draw 消失，其余 IB 次数、缓存失效、新 mod 索引及 IB 读回正确；证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`。真实游戏重载仍未验证，不能相互替代。
+- 当时验证：离线输入19项、工作流/MCP边界30项及既有MCP39项通过；私有沙盒实际F10在hunting=0下使目标skip规则生效，证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`。后续本轮真实游戏测试失败，更新见D-011；历史沙盒结果不能代替实机。
 - 输入边界：一次约 200ms F10 down/up 脉冲期间，XXMI 1.2.2 重建按键注册可能触发多次内部重载。只保证工具单次输入且不重发，不保证 XXMI 只执行一次内部 reload；保留无回执和正常持久变量保存的说明。
+
+## D-011：输入 API 接受与按下状态分开验证，保留实机失败结论
+
+- 日期：2026-10-06；用户移出Yvonne并明确确认自动F10没有卸载该模组。两次普通VK发送虽API接受/新帧读取正常，实际刷新失败；扫描码诊断进一步显示F10高位整个按住期间不可见，故不将扫描码作为修复。
+- 决策：服务升0.1.3，在既有约200ms按住期采样GetAsyncKeyState，至少一次高位才继续；API接受写 `key_down_sent`，状态可见另写 `key_down_observed`。未观察到按下返回input阶段 `keydown_not_observed`，finally尝试释放、不capture、不重发；不改变 `reload_confirmed=false` 的回执边界。
+- 这是错误检测修复，真实输入不可见原因未定位，T-007实机目标仍未完成。当前Python medium、目标token access denied不能认定具体权限或安全软件原因；不自动提权、不修改EFMI/启动器，不以内部函数地址或非公开入口替代受支持接口。
+- 源码依据：官方v1.2.2 [input.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/input.cpp)轮询GetAsyncKeyState；[IniHandler.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/IniHandler.cpp)在未dirty时不写user.ini。文件时间不变不作为失败判据；用户观察和旧模组绘制保留才是本次实际失败证据。
+- 验证：本轮输入21项、工作流32项、MCP stdio私有沙盒39项及compileall通过。用户游戏仍运行，未重跑会拒绝其他探针的真实F10沙盒；不自动重复实际输入。扫描码报告及独立assessment在 `captures/verify-reload-scancode-41976-ready/`，保留原始证据、不将诊断pass改称重载成功。

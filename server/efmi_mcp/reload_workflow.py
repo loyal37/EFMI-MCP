@@ -111,6 +111,9 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
         requested = bool(receipt.get("key_down_sent"))
         if not requested or not receipt.get("key_up_sent"):
             raise ValueError("Input helper did not confirm the complete F10 down/up pair")
+        if receipt.get("key_down_observed") is not True:
+            raise ValueError("Input helper did not observe F10's asynchronous pressed state; "
+                             "an accepted SendInput event alone cannot establish effective input")
 
         phase = "settle"
         time.sleep(settle_ms / 1000)
@@ -136,7 +139,8 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
         return {
             "status": "captured_after_reload_request", "pid": identity[0],
             "reload_requested": True, "reload_confirmed": False,
-            "confirmation_note": "F10 input was delivered and a later nonempty frame captured. "
+            "confirmation_note": "F10 events were accepted, the sender observed the pressed key state, "
+                                 "and a later nonempty frame was captured. "
                                  "Probe 0.1.1 has no reload acknowledgement; inspect expected draws/resources "
                                  "to verify the edited mod. Do not treat this as proof that every INI parsed successfully.",
             "input": receipt, "bindings": bindings,
@@ -160,6 +164,7 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
         # The server exposes tool errors explicitly. Never label input success
         # followed by a capture failure as 'nothing happened' or silently retry.
         failure = {"status": "failed", "phase": phase, "reason": str(exc),
+                   "input_error_code": exc.code if isinstance(exc, ReloadInputError) else None,
                    "reload_requested": requested, "reload_confirmed": False,
                    "old_captures_invalidated": invalidated, "live_stopped": live_stopped,
                    "input": receipt, "fresh_capture": None,

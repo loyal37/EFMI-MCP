@@ -4,13 +4,15 @@
 
 ## 当前状态
 
-T-001 至 T-007 已完成。自动重载专项、MCP 回归及私有沙盒实际 F10 集成均通过，真实游戏自动重载仍未验证。每次改完并完成验证后提交并推送指定仓库（2026-10-06 用户要求，见 `AGENTS.md` / D-007）。
+T-001 至 T-006已完成；T-007工具实现已交付，但真实游戏自动刷新测试失败，输入阻塞原因仍未解决。0.1.3完成按键不可见的错误检测，普通采集/IB/VB读取正常。每次改完并完成相关验证后提交并推送指定仓库（见 `AGENTS.md` / D-007）。
 
-### T-007：agent 自动 F10 重载后获取新帧（已完成，2026-10-06）
+### T-007：agent 自动 F10 重载后获取新帧（实机输入问题未解决，2026-10-06）
 
-MCP 服务升至 0.1.2，新增 `efmi_reload_and_capture`，探针仍为 0.1.1。先验证当前进程/安装/默认双 F10 绑定，停止 live、release 并清旧缓存，单次 F10 后默认等待 2 秒，捕获严格晚于 barrier 的非空帧；同一管道/PID/device，不重连到其他进程、不自动重发。输入状态与重载确认分开，`reload_confirmed=false`，需继续检查目标资源。只重启 MCP 服务，无需狩猎模式或重注入。
+PID41976两次普通VK请求均获API接受并采集到新帧，但用户移出Yvonne后仍显示模组，明确确认未刷新；中间一次focus_refused未发键，不计有效输入。扫描码诊断也未生效：down/up返回1、错误码0，却始终未观察到F10异步按下状态；帧160361→160664的XXMI IB及次数相同。证据见 `captures/verify-reload-scancode-41976-ready/assessment.json` 及CURRENT_STATE。具体原因未知，扫描码不是修复。
 
-已通过输入 19 项 + 工作流 30 项专项、既有 MCP 39 项及私有沙盒实际输入集成。`hunting=0` 下新增规则经 F10 后只抑制目标 IB draw，其余 IB 次数不变，新帧及 IB 读回正常，沙盒退出 0；证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`。真实游戏自动重载尚未验证。一次输入脉冲不能保证 XXMI 1.2.2 内部只重载一次，正常 F10 可保存持久变量。同步记忆后提交并推送 `https://github.com/loyal37/EFMI-MCP`，提交/推送结果以实际执行为准。
+MCP服务0.1.3增加 `key_down_observed`：按住期间未观察到高位就返回 `keydown_not_observed`，finally释放，不开始capture或重发。`key_down_sent`仍表示API接受，`reload_confirmed=false`仍无回执。默认双F10绑定、前台/PID/device验证、旧缓存失效、成功输入后的等待/新帧规则保留。探针仍0.1.1，只需重启服务，无需狩猎模式或重注入。
+
+本轮输入21项+工作流32项、MCP stdio私有沙盒39项及compileall通过；完成的是失败检测。历史0.1.2真实F10私有沙盒通过（`sandbox/build/reload-xuxnsq73/reload-evidence.json`），本轮游戏运行时未重跑，不能代替当前实机失败。下一步定位正常输入为何不可见；不自动提权、改EFMI或再次发送输入。普通capture继续可用，当前目标不能标为全部完成。
 
 ### T-006：优化实际数据读取速度（已完成，2026-10-06）
 

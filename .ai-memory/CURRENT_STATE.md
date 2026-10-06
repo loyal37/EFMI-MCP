@@ -1,17 +1,23 @@
 # EFMI MCP — 当前开发状态
 
-> 最后更新：2026-10-06。MCP 服务 0.1.2 已实现自动 F10 后采集；探针仍为 0.1.1，只需重启 MCP 服务，无需重新注入。
+> 最后更新：2026-10-06。真实游戏自动刷新测试失败，原因未定位。MCP 服务 0.1.3 增加按键不可见的错误检测；探针仍为 0.1.1，普通采集正常。只需重启 MCP 服务，无需重新注入。
 
 ## 自动重载后采集（T-007，2026-10-06）
+
+- 实机结论：用户移出 Yvonne 模组后，普通 VK F10 请求未使其卸载；用户明确确认“没有刷新成功”，截图仍为 Yvonne Ensnared Heart。当前自动输入路径不可用，尚未定位原因。读取新帧成功不等于刷新成功；T-007 实现已交付，但真实游戏自动刷新目标仍未完成。
+- 两次普通 VK 输入：第一次生产 stdio 0.1.2 连接 Endfield PID41976/probe0.1.1，F10 down/up API 均接受，2328ms 后取得帧57972（原帧57703、barrier57971），323调用/120 xxmi、188资源、176shader、9,523,456字节CB；IB `5ede2273`、VB0 `61616f88`读回正常。证据 `captures/verify-reload-41976/result.json`。用户移出模组后再次授权测试，目录扫描7→6个mod；一次 `focus_refused` 未发送按键，随后手动前台下的完整请求取得帧84113，但模组仍显示，证据 `captures/verify-reload-41976-mod-removed-foreground/result.json`。XXMI调用139→120仅为同一网格额外pass差异，不能视为卸载。
+- 扫描码诊断也未刷新：`captures/verify-reload-scancode-41976-ready/result.json` 记录 down/up 返回1、错误码0，目标前台PID41976且无修饰键，但按住期间所有 `GetAsyncKeyState(VK_F10)` 高位均为false；帧160361→160664，XXMI DrawIndexed 的IB及次数相同。`assessment.json` 明确 `actual_reload_succeeded=false`；raw报告的pass只表示诊断调用/采集读回完成。扫描码不作为修复，未再重复发送输入。
+- `d3dx_user.ini` mtime/SHA不变不是失败判据：官方XXMI v1.2.2的 `SavePersistentSettings(false)` 在未dirty时不写入。失败依据是用户确认及模组绘制保留。当前Python为medium，读取游戏token被拒绝，不能据此推断游戏确切权限级别或归因安全软件。未修改EFMI/Core/启动器/模组，游戏仍运行。
+- 服务0.1.3在F10约200ms按住期间要求至少一次观察到异步按键高位；`key_down_sent`保留API接受语义，`key_down_observed`独立记录状态。接受事件但未观察到按下则返回input阶段 `ToolError` / `keydown_not_observed`，finally尝试keyup，不开始后续capture、不重发。此改动修复错误检测，未修复实机输入阻塞；观察到按键也不是XXMI重载回执，`reload_confirmed=false`。
 
 - 用户要求 agent 自动完成修改 mod 后的 F10/等待/重新采集。新增 `efmi_reload_and_capture`，默认 `detail=full`、`cb_data=true`、`settle_ms=2000`、`timeout_ms=15000`、`focus_game=true`；捕获超时不包含等待时间，无需狩猎模式。
 - 预检连接管道 PID、XXMI 路径及所选 device/context/swap chain，读取当前安装 `[Hunting]` 的 `reload_config`、`reload_fixes`，必须各为单条 `no_modifiers VK_F10`。只对该进程的有效前台窗口发送一次 F10，拒绝修饰键已按住或焦点失败；无任意按键、自动提升权限、重连换进程或重发 F10。
 - 开始执行后停止 live、release 并清空会话旧捕获和 mod 索引；等待后记录帧号 barrier，再接受同一进程和渲染目标下比原帧/barrier 都新的非空捕获，保存为 latest。live 保持停止。预检失败保留旧缓存，执行开始后的失败不再发布旧捕获。
 - `reload_requested=true` 仅指键盘输入已发送，`reload_confirmed=false` 明确无 XXMI 重载回执；仍须验证目标 draw/资源。输入异常分别报告未发送、已发送或未知，后续捕获失败不能自动再次 F10。工具不直接写 mod/Core/启动器，正常 F10 仍可让 XXMI 保存持久变量配置。
-- 当前已验证：Win32 输入专项 19 项、工作流/MCP 调用边界 30 项，合计 49 项全部通过；本轮既有 MCP 端到端 39 项通过。两组专项无系统输入，已纳入 `run_all.py`；实际输入集成必须单独运行 `sandbox/reload_integration_test.py`，发现其他探针时拒绝，未向用户游戏发送按键。
-- 私有 XXMI 沙盒集成已通过，证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`，进程 40584 正常退出 0。`hunting=0`，未按 Numpad0；新增私有 `ShaderOverride checktextureoverride=ib` 及 `TextureOverride hash=64e97b80 / match_index_count=864 / handling=skip`，实际 F10 后该 IB 从 1 次变为 0，其余 `3c980a7d` 仍 2 次、`3970063e` 仍 1 次。工具原帧 5、barrier 209、新帧 210（10 draws，6 game/4 xxmi）；旧缓存、live、新 mod 索引及保留 IB 读回均符合预期。真实游戏自动重载仍未验证。
+- 本轮0.1.3验证：输入21项、工作流/MCP边界32项（合计53项）、既有MCP stdio私有沙盒39项及compileall均通过；专项使用fake输入/探针。真实F10沙盒未重跑，用户游戏仍运行且脚本会拒绝其他探针。不得把本次错误检测通过记为游戏刷新修复。
+- 历史0.1.2私有XXMI沙盒集成通过，证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`，进程40584退出0。`hunting=0`，未按Numpad0；私有skip规则使目标IB `64e97b80` 从1次变0，其余IB次数保留，帧5→barrier209→210，缓存、live、mod索引及IB读回符合预期。此为历史沙盒证据，不能覆盖本轮实机失败。
 - 集成过程修正沙盒自身默认 `SC_KEYMENU` 的 modal loop，并给测试规则补齐 `match_index_count` 才命中 IB；不构成产品依赖狩猎模式的证据。一次 F10 down/up、约 200ms 按住期间，XXMI 1.2.2 重建按键注册可能发生多次内部重载；工具只承诺一次输入脉冲且不重发，不能承诺 XXMI 只重载一次。
-- 服务版本 0.1.2，探针源码/DLL 保持 0.1.1；重启已运行 MCP 服务后可发现新工具，无需重注入。用户另明确要求完成后及后续轮次提交并推送 `https://github.com/loyal37/EFMI-MCP`，已更新 AGENTS / D-007；历史“不 push”记录保留为当时事实。
+- 服务版本0.1.3，探针源码/DLL保持0.1.1；重启MCP服务加载检测更新，无需重注入。后续继续定位正常输入路径，不自动提权或改EFMI。官方输入采用 `GetAsyncKeyState`，未找到受支持的外部reload接口；源码证据与边界见KNOWN_ISSUES / D-011。按既有用户要求提交并推送指定仓库，结果以实际git执行为准。
 
 ## 读取性能优化（2026-10-06）
 

@@ -150,7 +150,8 @@ class ReloadWorkflowTests(unittest.TestCase):
     def send_key(self, *args, **kwargs):
         self.probe.events.append(("key", self.clock.now))
         return {"pid": self.probe.endpoint.pid, "key": "F10", "input_sent": True,
-                "key_down_sent": True, "key_up_sent": True, "key_released": True}
+                "key_down_sent": True, "key_up_sent": True, "key_released": True,
+                "key_down_observed": True}
 
     def call(self, **arguments):
         return mcp_call(self.server, "efmi_reload_and_capture", **arguments)
@@ -298,6 +299,34 @@ class ReloadWorkflowTests(unittest.TestCase):
         self.assertIsNone(json.loads(text)["reload_requested"])
         self.sender.assert_called_once()
         self.assert_stale_unavailable()
+
+    def test_accepted_but_unobserved_input_error_never_starts_capture(self):
+        self.sender.side_effect = ReloadInputError(
+            "keydown_not_observed", "Accepted event did not establish a visible pressed state",
+            {"key_down_sent": True, "key_up_sent": True, "key_down_observed": False})
+        text, error = self.call()
+        self.assertTrue(error, text)
+        result = json.loads(text)
+        self.assertEqual(result["phase"], "input")
+        self.assertEqual(result["input_error_code"], "keydown_not_observed")
+        self.assertTrue(result["reload_requested"])
+        self.assertFalse(result["input"]["key_down_observed"])
+        self.assertFalse(result["reload_confirmed"])
+        self.sender.assert_called_once()
+        self.assertNotIn("capture", [e[0] for e in self.probe.events])
+        self.assert_stale_unavailable()
+
+    def test_receipt_without_observed_press_is_rejected(self):
+        self.sender.side_effect = None
+        for observation in (False, None):
+            with self.subTest(observation=observation):
+                self.sender.return_value = {"key_down_sent": True, "key_up_sent": True,
+                                            "key_down_observed": observation}
+                text, error = self.call()
+                self.assertTrue(error, text)
+                self.assertEqual(json.loads(text)["phase"], "input")
+                self.assertNotIn("capture", [e[0] for e in self.probe.events])
+                self.assert_stale_unavailable()
 
     def test_partial_input_receipt_does_not_start_capture(self):
         self.sender.side_effect = None

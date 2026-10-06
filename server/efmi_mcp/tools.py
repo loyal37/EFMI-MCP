@@ -35,6 +35,8 @@ the configured unmodified F10 reload and retain a fresh frame. This stops contin
 old captures. It changes game state and must not be used just to get newer data: ordinary capture is already live. \
 Input delivery plus a new frame is not a reload acknowledgement; verify expected draws/resources afterward. \
 On a post-input error, use efmi_capture_frame rather than blindly repeating F10.
+The sender must observe F10's pressed state, not just SendInput acceptance. If keydown_not_observed is returned, \
+the automatic reload was not validated; do not assume the game's mod configuration was refreshed or resend the key blindly.
 
 Things to know:
 - Capture and live mode work with hunting disabled; do not ask the user to press numpad 0 to collect data.
@@ -288,7 +290,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
               "After editing mod files, send one unmodified F10 to the connected XXMI game's verified foreground "
               "window, wait, and capture a strictly later nonempty frame as 'latest'. May focus the game; "
               "stops live mode and invalidates old captures. Requires this EFMI installation's default F10 "
-              "reload_config and reload_fixes bindings. Refuses held modifiers/F10 or failed focus/input. "
+              "reload_config and reload_fixes bindings. Refuses held modifiers/F10, failed focus/input, "
+              "or F10 pressed state never observed even when SendInput accepted the events. "
               "Does not edit mod/Core/launcher files or inject a new DLL. Normal F10 side effects apply, "
               "including XXMI saving persistent settings; this tool never sends wipe-settings modifiers or F11. "
               "Reports requested reload separately from confirmation: the probe has no reload acknowledgement. "

@@ -29,6 +29,8 @@ class FakeBackend:
         self.on_sleep = None
         self.on_keys = None
         self.key_checks = 0
+        self.f10_down = False
+        self.discard_input = False
 
     def windows(self):
         return list(self.window_pids)
@@ -56,7 +58,12 @@ class FakeBackend:
         result = self.up_results.pop(0) if key_up else self.down_result
         if isinstance(result, BaseException):
             raise result
+        if result[0] == 1 and not self.discard_input:
+            self.f10_down = not key_up
         return result
+
+    def f10_is_down(self):
+        return self.f10_down
 
     def sleep(self, duration):
         self.sleeps.append(duration)
@@ -104,16 +111,44 @@ class ReloadInputTests(unittest.TestCase):
         backend = object.__new__(ri.Win32ReloadBackend)
         backend.user32 = User32()
         self.assertEqual(backend.held_keys(), ["Ctrl"])
+        self.assertFalse(backend.f10_is_down())
+        backend.user32.GetAsyncKeyState = lambda vk: 0x8000
+        self.assertTrue(backend.f10_is_down())
 
     def test_success_foreground_no_focus_steal(self):
         backend = FakeBackend()
         result = ri.send_reload_f10(123, backend=backend)
         self.assertTrue(result["key_down_sent"] and result["key_up_sent"])
+        self.assertTrue(result["key_down_observed"])
         self.assertEqual(result["hwnd"], 10)
         self.assertEqual(result["key"], "F10")
         self.assertEqual(backend.events, ["down", "up"])
         self.assertAlmostEqual(sum(backend.sleeps), 0.2)
         self.assertEqual(backend.focus_calls, [])
+
+    def test_accepted_but_discarded_input_is_not_success(self):
+        backend = FakeBackend()
+        backend.discard_input = True
+        with self.assertRaises(ri.ReloadInputError) as ctx:
+            ri.send_reload_f10(123, backend=backend)
+        self.assertEqual(ctx.exception.code, "keydown_not_observed")
+        self.assertTrue(ctx.exception.details["key_down_sent"])
+        self.assertTrue(ctx.exception.details["key_up_sent"])
+        self.assertFalse(ctx.exception.details["key_down_observed"])
+        self.assertEqual(ctx.exception.details["key_down_count"], 1)
+        self.assertEqual(backend.events, ["down", "up"])
+        self.assertEqual(backend.sleeps, [0.02] * 10)
+
+    def test_delayed_pressed_state_is_accepted(self):
+        backend = FakeBackend()
+        backend.on_sleep = lambda b: setattr(b, "f10_down", len(b.sleeps) >= 8)
+        result = ri.send_reload_f10(123, backend=backend)
+        self.assertTrue(result["key_down_sent"])
+        self.assertTrue(result["key_down_observed"])
+        self.assertTrue(result["key_up_sent"])
+        self.assertEqual(backend.events, ["down", "up"])
+        self.assertEqual(backend.sleeps, [0.02] * 10)
+        self.assertFalse(backend.f10_down)
 
     def test_focus_once_and_do_not_restore(self):
         backend = FakeBackend()

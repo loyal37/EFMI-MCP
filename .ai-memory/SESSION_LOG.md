@@ -2,6 +2,18 @@
 
 > 每轮结束追加简短摘要，记录实际完成、验证范围、遗留问题和下次入口；不粘贴聊天或完整日志。
 
+## 2026-10-06：用户启动游戏后的自动 F10 试用
+
+功能提交 `ab6f4a5` 已推送至loyal37/EFMI-MCP/main。用户本轮启动游戏并要求试刷新；动态工具搜索接口返回internal error，直接启动生产MCP服务0.1.2并通过真实stdio调用工具，连接唯一探针Endfield PID41976（0.1.1）。首次一次F10按下/释放获API接受，聚焦准确窗口，无Numpad0；2328ms完成等待及抓帧，原帧57703→barrier57971→57972，共323次调用（203 game/120 xxmi）、188资源、176shader和9,523,456字节CB快照。IB/VB0读回正常，旧缓存失效，MCP子进程退出0。证据 `captures/verify-reload-41976/result.json`；这只证明API接受和后续采集。
+
+用户随后移出Yvonne模组并授权再试。目录扫描7→6个mod；一次focus_refused在发键前拒绝，用户手动前台后第二次普通VK请求API接受并得到帧84113，证据 `captures/verify-reload-41976-mod-removed-foreground/result.json`。用户明确确认模组仍显示、没有刷新成功，截图与旧网格绘制吻合；XXMI调用139→120是同一网格额外pass变化，不是卸载证据。当前实机自动刷新失败，不能再写“待用户确认”或“实机尚未验证”。
+
+扫描码诊断保存在 `captures/verify-reload-scancode-41976-ready/result.json`：down/up的SendInput返回1、错误0，前台始终PID41976且无修饰键，但整个按住期F10异步高位均false；帧160361→160664的XXMI DrawIndexed IB及次数相同。`assessment.json` 明确实际刷新失败，raw报告pass仅表示诊断调用/采集完成。扫描码不是修复，原因尚未知；Python为medium、读取游戏token access denied不能推出目标权限或安全软件拦截结论。
+
+据此服务升0.1.3，增加按住期间至少一次GetAsyncKeyState高位的门槛，区分 `key_down_sent` 与 `key_down_observed`。未观察到按下返回input阶段 `keydown_not_observed`，finally释放、不capture、不重发；`reload_confirmed=false`不变。官方v1.2.2输入确实使用该高位，user.ini仅dirty时保存，因此本轮mtime不变不作为失败证据。未发现受支持外部reload接口；Core/auto_update.xcmd属于启动器更新/启动脚本，不能作运行时替代。
+
+本轮输入21项+工作流32项、MCP stdio私有沙盒39项及compileall通过；实际F10私有沙盒因用户游戏运行未重跑，旧沙盒结果仅作历史证据。此轮完成的是失败检测，真实输入问题仍未解决，T-007目标保持未完成。未改EFMI/启动器/Core/模组或探针，未自动提权、未再发送输入，游戏仍运行。同步记录后按既有授权提交推送0.1.3；提交及推送以实际git结果为准。
+
 ## 2026-10-06：自动 F10 后采集与推送约定
 
 用户要求 MCP 自动完成修改 mod 后的刷新与重新采集。服务升至 0.1.2，新增 `reload_input.py` 固定 F10/前台/PID/修饰键输入模块、`reload_workflow.py` 同一管道与渲染目标的重载后捕获流程；探针仍为 0.1.1，只需重启 MCP 服务，无需重注入或狩猎模式。读取原始双 F10 绑定，不直接编辑 EFMI 文件；正常 F10 可能保存持久变量，文档明确保留此副作用。

@@ -1,7 +1,8 @@
 """A deliberately narrow F10 pulse to the connected probe's foreground window.
 
-Importing this module does not load user32 or send input. SendInput acceptance is
-not an acknowledgement that XXMI reloaded; the caller must wait/capture separately.
+Importing this module does not load user32 or send input. SendInput acceptance or
+observed pressed state is not an acknowledgement that XXMI reloaded; the caller
+must wait/capture separately.
 See https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput
 and https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setforegroundwindow.
 """
@@ -125,6 +126,10 @@ class Win32ReloadBackend:
         keys = _MODIFIERS + ((VK_F10, "F10"),) if include_f10 else _MODIFIERS
         return [name for vk, name in keys if self.user32.GetAsyncKeyState(vk) & 0x8000]
 
+    def f10_is_down(self) -> bool:
+        """Observe the current high bit, not the unreliable 'pressed since' bit."""
+        return bool(self.user32.GetAsyncKeyState(VK_F10) & 0x8000)
+
     def send_f10(self, *, key_up: bool) -> tuple[int, int]:
         event = _INPUT(type=1)  # INPUT_KEYBOARD; no arbitrary VK/scan-code interface.
         event.ki.wVk = VK_F10
@@ -188,6 +193,7 @@ def _send_reload_f10(pid: int, focus_game: bool, backend) -> dict:
                                {"pid": pid, "candidate_hwnds": candidates})
 
     result = {"pid": pid, "hwnd": hwnd, "key": "F10", "key_down_sent": False,
+              "key_down_observed": False,
               "key_up_sent": False, "focus_attempted": False, "focus_changed": False,
               "requested_hold_ms": 200, "key_up_attempts": 0}
     if foreground != hwnd:
@@ -224,6 +230,17 @@ def _send_reload_f10(pid: int, focus_game: bool, backend) -> dict:
             backend.sleep(0.02)
             _require_foreground(backend, hwnd, pid)
             _require_clear_keys(backend, include_f10=False)
+            # SendInput's accepted count alone did not ensure observable input
+            # in the real game. Processing is asynchronous, so observe across
+            # the existing hold instead of demanding an immediate high bit.
+            if backend.f10_is_down():
+                result["key_down_observed"] = True
+        if not result["key_down_observed"]:
+            raise ReloadInputError(
+                "keydown_not_observed",
+                "Windows accepted F10 input, but its pressed state was never observed during the hold. "
+                "A privilege-level mismatch or input filtering may be responsible. "
+                "No automatic retry was made. Observing the key would still not acknowledge an XXMI reload.")
     except BaseException as exc:
         pending = exc
     finally:

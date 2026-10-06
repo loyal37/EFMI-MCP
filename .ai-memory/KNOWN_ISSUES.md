@@ -2,12 +2,22 @@
 
 > 最后更新：2026-10-06。
 
+## BUG-004：真实游戏接受发送 API，但 F10 按下状态不可见（未解决）
+
+- Endfield PID41976的两次普通VK请求没有实际刷新。用户移出Yvonne后，画面仍是该模组；用户明确确认失败。普通新帧及IB/VB读回均正常，不能用它们证明重载。一次中间的focus_refused在输入前拒绝，不算发送请求。
+- 扫描码诊断同样失败：前台PID正确、无修饰键，SendInput down/up返回1、错误码0，但约200ms按住期间所有F10异步高位为false；帧160361→160664，XXMI DrawIndexed的IB/次数相同。证据 `captures/verify-reload-scancode-41976-ready/result.json`，独立结论 `assessment.json` 标明 `actual_reload_succeeded=false`；raw报告pass仅表示诊断流程完成。
+- 0.1.3增加 `key_down_observed` 门槛：若API接受但未观察到按下状态，返回input阶段 `keydown_not_observed`，finally释放，不开始capture、不重发。`key_down_sent`继续保留API接受语义。此改动完成错误检测，未解决真实输入不可见问题。
+- 当前Python为medium，游戏token读取access denied；不能据此推定游戏完整性级别或安全软件行为。扫描码不作为修复。继续定位正常输入路径，不自动提权、不修改EFMI、不绕过输入保护。
+- 官方v1.2.2 [input.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/input.cpp) 的 `VKInputButton::CheckState` 使用GetAsyncKeyState高位，未发现扫描码或注入标志过滤逻辑。采样到高位也只是必要诊断证据，不是游戏线程已处理/XXMI重载的回执。
+- `d3dx_user.ini` 时间不变不能判断失败：[IniHandler.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/IniHandler.cpp) 的 `SavePersistentSettings(false)` 未dirty时直接返回；普通重载不是强制写入。探针registry.resources是登记地址数，地址复用会覆盖，亦不是重载计数。
+- 在所查v1.2.2源码及[导出表](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/d3d11Wrapper.def)中未找到受支持的外部reload接口；Core/auto_update.xcmd是启动器更新/启动操作文件，不是运行时通信。现有只改本工具约束下不能把写该文件或调用内部函数当作受支持替代。
+
 ## 限制-002：自动 F10 没有重载完成回执
 
-- MCP 服务 0.1.2 的 `efmi_reload_and_capture` 仅能证明输入已接受和随后捕获到同一目标的更新非空帧；探针 0.1.1 没有 XXMI 解析/重载完成回执，`reload_confirmed` 始终为 false。INI 错误、资源仍未按预期替换等问题要继续核对 draw/BUF。
+- MCP服务0.1.3区分API接受、异步按下状态可见及后续新帧；探针0.1.1没有XXMI解析/重载完成回执，`reload_confirmed`始终为false。即使输入状态门槛通过，仍需核对预期draw/BUF，不能据此认定全部INI解析成功。
 - 默认等待 2 秒不是完成信号；机器慢或模组复杂时可调整 `settle_ms`（250–10000），已发送 F10 后仅需更多画面可调用普通 capture，不自动再重载。捕获 timeout 单独为 1000–30000ms。
 - 会停止 live、release 并清旧捕获；live 不自动恢复。正常 F10 也可能触发 XXMI 保存持久变量配置，因此有运行时及文件副作用。
-- 本轮输入/工作流 49 项、既有 MCP 39 项及私有沙盒真实 F10 集成已通过；沙盒在 `hunting=0` 下验证新增规则仅抑制目标 IB，证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`。用户游戏中的自动重载效果尚未验证。
+- 本轮0.1.3输入21项/工作流32项、MCP39项及compileall通过。历史0.1.2私有沙盒在hunting=0下验证新增规则仅抑制目标IB（`sandbox/build/reload-xuxnsq73/reload-evidence.json`）；本轮游戏运行时未重跑实际F10沙盒。当前实机刷新测试失败，见BUG-004。
 - 单次 F10 按下/释放、约 200ms 按住期间，XXMI 1.2.2 重建按键注册可发生多次内部重载。工具没有重发按下事件，但不能承诺 XXMI 内部 reload 次数恰好为一。
 
 ## 限制-003：Windows 前台输入与权限
