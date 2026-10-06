@@ -13,6 +13,7 @@
 | 探针功能自测 / MCP 端到端 | 0.1.1：83 项 / 39 项全部通过（沙盒，含连续采集停止/重启/重连隔离） |
 | 多 D3D11 设备 | 0.1.1 按交换链所属设备选择采集上下文；辅助设备先建/后建、带/不带 XXMI，共 192 项通过 |
 | **在真实游戏中运行** | **0.1.1 已在伊冯画面验证**：非空帧、连续摘要、角色 IB/VB/CB、纹理与着色器读回成功；细节见项目记忆 |
+| 模型提取 → Blender → 导出 → 游戏内核对 | MCP 服务 0.1.5 接入 LoyalTools 的提取、LOD 匹配、导入和原生导出。离线部分已用真实 LoyalTools 1.6.8 和 Blender 4.5.7 验证；**实时提取和部署核对尚未实机验证** |
 | 自动 F10 后重新采集 | 探针 0.1.2 在游戏进程内按 F10 并给出重载证据，MCP 服务 0.1.4。0.1.3 实机失败的原因是游戏以管理员运行，Windows（UIPI）丢弃普通权限进程发来的按键。**2026-10-06 实机验证通过**，游戏在前台和在后台各一次：移出伊冯 mod 后由工具重载，XXMI 的 93 次替换绘制消失，游戏原始的 30 次绘制出现；游戏在后台时探针把它切到前台，按键后把焦点还给原窗口 |
 
 沙盒是一个按 Unity/终末地方式使用 D3D11 的测试程序，配上一份 XXMI 运行时的私有拷贝。它能验证探针与真正的 XXMI DLL 共存、哈希一致、不卡顿，但验证不了游戏本身的行为，尤其是反作弊。
@@ -76,6 +77,8 @@
 
 **探针 0.1.2 / MCP 服务 0.1.4**：自动重载改由探针在游戏进程内按键，需要重启游戏加载新探针，并重启 MCP 服务。游戏里还是 0.1.1 时，`efmi_reload_and_capture` 仍会失败并提示重启游戏；普通采集不受影响。
 
+**MCP 服务 0.1.5**：增加模型流程的工具，只需重启 MCP 服务；探针仍是 0.1.2。需要本机有 Blender 并已安装 LoyalTools 插件，默认使用 `D:\blender4,5\blender.exe`，可用 `--blender`／`EFMI_BLENDER` 或工具参数 `blender_path` 指定。
+
 卸载：在启动器里取消"注入库"即可；探针不会在别处留下东西。
 
 ## 工具
@@ -97,6 +100,9 @@
 | `efmi_list_mods` | EFMI 目录里会被加载的 mod 及其引用的哈希（不需要游戏） |
 | `efmi_frame_dump_summary` | 读已有的抓帧目录（不需要游戏） |
 | `efmi_verify_against_dump` | 自检：把一次抓取和 XXMI 的抓帧对比，看哈希是否仍一致 |
+| `efmi_list_models` / `efmi_extract_model` / `efmi_map_lod` | 模型流程：识别角色、提取为 LoyalTools 工程、LOD 映射（见下文“模型流程”） |
+| `efmi_export_mod` / `efmi_verify_exported_mod` | 模型流程：用插件原生导出模组；部署、刷新并核对实际绘制 |
+| `efmi_model_project` / `efmi_model_job` | 模型流程：项目现状；跟进或取消任务 |
 
 `ib` 哈希就是 mod 里 `[TextureOverride] hash =` 用的区域哈希。
 
@@ -131,11 +137,41 @@
 
 0.1.3 及之前的实机失败证据保留在 `captures/verify-reload-*`。
 
+## 模型流程：提取 → Blender → 导出 → 游戏内核对
+
+把游戏里的角色变成可编辑的 LoyalTools 骨骼合并工程，改完再导出成模组并在游戏里核对。分组、骨骼合并、LOD 匹配和 INI／BUF 生成全部由 LoyalTools 完成；本工具采集数据、调用它的入口、检查结果。默认使用所选 Blender 里已安装的那份插件，所以更新插件后这里自动用新版，不需要改 MCP。
+
+| 步骤 | 工具 | 说明 |
+|---|---|---|
+| 看画面里有哪些角色 | `efmi_list_models` | 采一帧，列出 LoyalTools 识别出的对象、组件和截图 |
+| 提取 | `efmi_extract_model` | 三次独立采样（几何必须一致、骨组来源必须一致），生成 `workplace`，后台 Blender 导入为 `<项目>.blend`，材质只连漫射贴图 |
+| LOD 映射 | `efmi_map_lod` | `json`：复用 JSON 里已有的映射；`frame`：用帧分析目录或探针归档做帧匹配；`capture`：现采一帧 LOD 状态再匹配 |
+| 编辑 | （你在 Blender 里改并保存） | 导出读取的是磁盘上保存的 `.blend` |
+| 导出 | `efmi_export_mod` | 后台 Blender 运行插件自己的“生成 Mod”，产物在 `exports/<export_id>/mod`，并检查文件引用、尺寸、绘制范围和入口 |
+| 部署并核对 | `efmi_verify_exported_mod` | 把这次导出复制到 `Mods\EFMI-MCP\<项目>`，游戏内 F10 一次，再把 XXMI 实际绘制的缓冲与导出文件按内容比较 |
+| 查看项目／任务 | `efmi_model_project`、`efmi_model_job` | 项目现状；跟进或取消耗时任务 |
+
+要点：
+
+- **项目目录就是 LoyalTools 的自定义工作空间根目录**，目录名即模组名（插件用它给蓝图和 INI 命名）。布局见 `docs/model-extraction-export-plan.md` 第 9 节。
+- **被模组替换的角色提取不了**：游戏对它的原始绘制没有发出。先停用该模组并刷新。
+- **主控与 LOD 共用一份编辑网格**。LOD 入口、LOD 布局的缓冲变体和骨索引重映射由插件在导出时按 `workplace/EFMI_MergedSkeleton.json` 里的映射生成；没有采集过、JSON 里也没有的 LOD 不会被推算出来。该角色以前做过 LOD 映射时，提取时用 `lod_json` 指向旧项目即可，不用再采远景帧。
+- **Blender 里只连漫射贴图**（Base Color，以及插件原生连接的同图 Alpha）。法线等其他贴图仍留在工作空间里供导出使用。
+- **部署只写一个目录**：`<EFMI>\Mods` 下由本工具创建并带 `efmi-mcp-deployment.json` 标记的那个。别的模组不会被移动或停用；引用相同哈希的会列为可能的冲突。`action="remove"` 删除已部署的文件并刷新。
+- **结果分开报告**：`export_valid`、`deployment_verified`、刷新（已请求／已确认）、`fresh_capture`、`target_mod_status`（`passed`／`failed`／`inconclusive`／`not_run`）以及覆盖与未覆盖的组件。刷新成功不等于这个模组生效；缓冲一致也不等于外观正确，报告里附前后截图。
+- 耗时步骤以任务运行：在 `wait_s` 内完成就直接返回结果，否则返回任务 ID。
+
+**验证范围（2026-10-07）。** 不需要游戏的部分已用真实的 LoyalTools 1.6.8（Blender 4.5.7 中已安装的插件）验证：仅漫射的 Blender 导入、LOD 的 JSON 匹配与帧匹配（两侧为帧分析目录）、插件原生导出及产物检查；部署规则、绘制对照、任务管理以及“用哪个 Blender、哪份插件”的选择有 37 项单元测试。需要游戏的部分尚未实机验证：MCP 工具形式的三采样提取、以探针归档作为一侧的 LOD 帧匹配、部署→F10→逐组件核对，以及“修改后导出并在游戏里看到变化”的往返。在这些完成之前，不能把整条流程当作已在游戏里跑通。
+
+设计、LOD 匹配的原理和实施记录见 `docs/model-extraction-export-plan.md`。
+
 ## 已知限制
 
-### 合并骨骼工作空间提取
+### 合并骨骼工作空间提取（命令行）
 
-可把实时采集的数据交给本机 LoyalTools 原算法，生成其 `workplace` 工作空间，再用后台 Blender 导入并保存 `.blend`。默认只读引用 `E:\loyal tools\tools\LoyalTools`，不修改 EFMI 或参考工具。此流程当前针对游戏原始 `DrawIndexedInstanced` 角色绘制；先在画面中显示目标角色。
+上面的 `efmi_extract_model` 把下面三步合在一起；脚本仍可单独使用。导入脚本默认只连漫射贴图，`--materials native` 恢复插件带法线的材质。
+
+可把实时采集的数据交给本机 LoyalTools 原算法，生成其 `workplace` 工作空间，再用后台 Blender 导入并保存 `.blend`。默认只读引用 Blender 中已安装的 LoyalTools 插件（`--blender` 指定用哪个 Blender 的，`--loyaltools-root` 改用别处的源码），不修改 EFMI 或参考工具。此流程当前针对游戏原始 `DrawIndexedInstanced` 角色绘制；先在画面中显示目标角色。
 
 ```powershell
 & 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <游戏PID> --archive captures/sample-a --deferred-skeleton

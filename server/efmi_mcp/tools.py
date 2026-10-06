@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import json
 import struct
+import threading
 import time
 from collections import Counter, OrderedDict
 from pathlib import Path
 
-from . import __version__, decode
+from . import __version__, decode, model_tools
 from .capture_model import Capture
 from .fa_dump import DRAW_NAMES, find_frame_dumps, parse_frame_dump
 from .hashes import crc32c, hex32, index_region
+from . import blender_runner, loyal_bridge
 from .mcp_stdio import Image, Server, ToolError
+from .model_jobs import JobManager
 from .mods import ModCache
 from .parity import compare_sets
 from .probe_client import ProbeClient, ProbeError, ProbeNotFound, find_probes
@@ -49,6 +52,17 @@ the call stack). With a mod active the game's original draw of that mesh is repl
 - Buffer and texture reads return the contents at the time of the read. Constant buffers as they were at each \
 draw are available when the frame was captured with cb_data=true.
 - Offline tools (efmi_list_mods, efmi_frame_dump_summary) work without the game.
+
+Model workflow (LoyalTools merged-skeleton projects): efmi_list_models -> efmi_extract_model (three samples, \
+LoyalTools workspace, a .blend with only the diffuse map connected) -> the user edits and saves the .blend -> \
+efmi_export_mod (the add-on's own Generate Mod; the .blend as saved on disk) -> efmi_verify_exported_mod (deploys \
+into its own folder under Mods, reloads once, compares what XXMI draws with the exported files). LoD levels come \
+from efmi_map_lod: 'json' reuses a mapping stored in a profile JSON, 'frame' and 'capture' match the full-detail \
+frame against a frame of the character at LoD distance. The full-detail and LoD draws share one edited mesh; the \
+add-on generates the LoD entry points at export. These steps run as jobs: a call returns the result if it finishes \
+within wait_s, otherwise a job_id for efmi_model_job; while a job uses the probe the other live tools are refused. \
+Report each result with its own scope: an extraction, an export that passed its file checks, a confirmed reload \
+and a verified mod are four different things.
 """
 
 NO_PROBE = """\
@@ -73,17 +87,56 @@ def _norm_hash(h: str | None) -> str | None:
 
 
 class Session:
-    def __init__(self, efmi_root: Path, out_dir: Path, probe_dll: Path):
+    def __init__(self, efmi_root: Path, out_dir: Path, probe_dll: Path,
+                 loyaltools_root: Path | None = None, blender_path: str = ""):
         self.efmi_root = efmi_root
         self.out_dir = out_dir
         self.probe_dll = probe_dll
+        self.loyaltools_configured = Path(loyaltools_root) if loyaltools_root else None
+        self.blender_path = blender_path
+        self.jobs = JobManager()
+        self._loyaltools: dict[str, dict] = {}
         self.client: ProbeClient | None = None
         self.captures: "OrderedDict[int, Capture]" = OrderedDict()
         self.latest: int | None = None
         self.mods = ModCache(efmi_root)
 
+    # -- LoyalTools -----------------------------------------------------
+    def loyaltools(self, blender_path: str = "") -> dict:
+        """The LoyalTools every step calls: {"path", "version", "origin"}.
+
+        By default the add-on installed for the Blender in use, so the steps
+        run outside Blender and the ones inside it are the same code.
+        """
+        key = blender_path or self.blender_path
+        if key not in self._loyaltools:
+            try:
+                addon = None
+                if not self.loyaltools_configured:
+                    try:
+                        addon = blender_runner.find_addon(blender_runner.find_blender(key))
+                    except blender_runner.BlenderError:
+                        if key:
+                            raise           # a Blender that was named has to exist
+                path, origin = loyal_bridge.resolve_loyaltools(self.loyaltools_configured, addon)
+            except (loyal_bridge.BridgeError, blender_runner.BlenderError) as exc:
+                raise ToolError(str(exc))
+            self._loyaltools[key] = {"path": str(path), "version": loyal_bridge.loyaltools_version(path),
+                                     "origin": origin}
+        return self._loyaltools[key]
+
+    @property
+    def loyaltools_root(self) -> Path:
+        return Path(self.loyaltools()["path"])
+
     # -- probe ----------------------------------------------------------
     def probe(self) -> ProbeClient:
+        # A model job samples several frames through this connection; another
+        # capture in between would release the resources it is still reading.
+        job = self.jobs.active()
+        if job is not None and job.uses_probe and threading.current_thread() is not job.thread:
+            raise ToolError(f"The probe is in use by job {job.id} ({job.stage}). "
+                            "Follow it with efmi_model_job, or cancel it there.")
         if self.client is not None and self.client.connected:
             return self.client
         try:
@@ -186,8 +239,9 @@ def _res_desc(r: dict | None) -> str:
     return str(kind)
 
 
-def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
-    s = Session(efmi_root, out_dir, probe_dll)
+def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
+                 loyaltools_root: Path | None = None, blender_path: str = "") -> Server:
+    s = Session(efmi_root, out_dir, probe_dll, loyaltools_root, blender_path)
     srv = Server("efmi-mcp", __version__, INSTRUCTIONS)
 
     CAPTURE_PROP = {"capture": {"type": ["string", "integer"], "description": "'latest' (default) or the frame number of a capture still in memory"}}
@@ -927,4 +981,5 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
         verdict = "AGREES" if res.ok else ("DISAGREES" if res.mismatches else "NOTHING IN COMMON TO COMPARE")
         return "\n".join([f"capture {cap.frame} vs {p.name}: {verdict} ({res.checks} comparisons, {res.mismatches} mismatches)"] + res.messages)
 
+    model_tools.register(srv, s)
     return srv

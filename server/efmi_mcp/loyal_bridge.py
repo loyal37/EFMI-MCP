@@ -16,6 +16,7 @@ import hashlib
 import importlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import types
@@ -23,6 +24,8 @@ import types
 from .capture_model import Capture
 
 
+# Only a fallback: by default the add-on installed in the user's Blender is used
+# (see resolve_loyaltools), so updating the add-on updates every step.
 DEFAULT_LOYALTOOLS = Path(r"E:\loyal tools\tools\LoyalTools")
 
 
@@ -99,6 +102,7 @@ def inspect_archive(archive_dir: str | Path) -> dict:
 def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict], object_name: str,
                      readback: dict | None = None):
     e, r, b, fd = native.extract, native.resources, native.buffers, native.descriptors
+    forced_object_name = object_name
     readback_doc = readback if readback is not None else json.loads((archive / "readback.json").read_text(encoding="utf-8"))
     checked_buffers = {}
     buffer_bytes = {}
@@ -213,8 +217,9 @@ def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict],
                 self._bridge_candidates = super().get_merged_skeleton_candidates(ignore_incomplete_draw_calls)
             return self._bridge_candidates
 
-        def select_merged_skeleton_object(self, candidates, requested_name=""):
-            name = object_name or requested_name
+        def select_merged_skeleton_object(self, candidates, object_name=""):
+            # Same keyword as the native static method: the LoD mapper passes it by name.
+            name = forced_object_name or object_name
             if name and not any(str(candidate.id) == name for candidate in candidates):
                 raise BridgeError(f"Requested object {name!r} is absent")
             return e.DumpWorkspaceExtractor.select_merged_skeleton_object(candidates, name)
@@ -616,20 +621,264 @@ def export_merged_workspace(archive_dir: str | Path, workspace_dir: str | Path,
     return report
 
 
+def resolve_loyaltools(configured: str | Path | None = None, addon: Path | None = None) -> tuple[Path, str]:
+    """Which LoyalTools to call, and why: (folder, origin).
+
+    A configured folder wins. Otherwise the add-on installed for the Blender in
+    use, which is also the copy that imports and exports inside Blender. The
+    built-in source-tree path is only tried when neither exists.
+    """
+    def usable(path):
+        return path is not None and (Path(path) / "extract" / "dump_workspace_extractor.py").is_file()
+
+    if configured:
+        if not usable(configured):
+            raise BridgeError(f"Configured LoyalTools folder is not a LoyalTools tree: {configured}")
+        return Path(configured).resolve(), "configured"
+    if usable(addon):
+        return Path(addon).resolve(), "add-on installed in Blender"
+    if usable(DEFAULT_LOYALTOOLS):
+        return DEFAULT_LOYALTOOLS.resolve(), "source tree (no installed add-on was found)"
+    raise BridgeError("LoyalTools was not found: install the add-on in Blender, or set EFMI_LOYALTOOLS / "
+                      "--loyaltools-root to its folder")
+
+
+def loyaltools_version(loyaltools_root: str | Path = DEFAULT_LOYALTOOLS) -> str:
+    """The add-on version declared by a LoyalTools source tree, read without importing bpy."""
+    import re
+    try:
+        text = (Path(loyaltools_root) / "__init__.py").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = re.search(r'"version"\s*:\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)', text)
+    return ".".join(match.groups()) if match else ""
+
+
+def list_candidates(archive_dir: str | Path, loyaltools_root: str | Path = DEFAULT_LOYALTOOLS) -> dict:
+    """The character objects LoyalTools recognises in one archived frame.
+
+    The names are the ones its extractor selects by; the largest is its default.
+    """
+    archive = Path(archive_dir).resolve()
+    capture, readback, draws = _read_archive(archive)
+    log = io.StringIO()
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    extractor = None
+    try:
+        with redirect_stdout(log):
+            native = _load_loyaltools(Path(loyaltools_root).resolve())
+            extractor, missing_textures = _build_extractor(archive, native, capture, draws, "", readback)
+            candidates = extractor.get_merged_skeleton_candidates()
+            default = str(extractor.select_merged_skeleton_object(candidates).id) if candidates else ""
+            objects = []
+            for obj in candidates:
+                components = []
+                for component in obj.components:
+                    key, _, _ = extractor.get_component_primary_draw(component)
+                    components.append({
+                        "unique_str": f"{key[0]}-{key[1]}-{key[2]}", "ib_hash": str(key[0]).lower(),
+                        "index_count": int(key[1]), "first_index": int(key[2]),
+                        "vertex_count": int(component.mesh.format.vertex_count),
+                        "cpu_posed": bool(component.mesh.cpu_posed),
+                        "draws": sorted(record.shader_call.id for record in extractor.get_component_draw_records(component)),
+                    })
+                objects.append({"name": str(obj.id), "components": components,
+                                "component_count": len(components),
+                                "vertices": sum(item["vertex_count"] for item in components),
+                                "indices": sum(item["index_count"] for item in components)})
+    finally:
+        if extractor is not None:
+            extractor._bridge_buffer_bytes.clear()
+        sys.dont_write_bytecode = previous
+    return {"archive": str(archive), "frame": capture.frame, "default_object": default, "objects": objects,
+            "eligible_draws": len(draws), "missing_texture_resources": missing_textures,
+            "screenshot": str(archive / "current-screen.png") if (archive / "current-screen.png").is_file() else ""}
+
+
+# ---------------------------------------------------------------- LoD mapping
+def _lod_mapper_module(native):
+    return importlib.import_module(native.extract.__name__.rsplit(".", 1)[0] + ".merged_skeleton_lod_mapper")
+
+
+class _LodSources:
+    """Stands in for DumpWorkspaceExtractor inside LoyalTools' own LoD mapper.
+
+    The mapper opens the full-detail frame and the LoD frame by folder. A probe
+    archive is opened with the archive-backed extractor, a FrameAnalysis dump
+    with the native one; everything else the mapper asks of the class is the
+    native class's. The mapping algorithm itself is not touched.
+    """
+
+    def __init__(self, native):
+        self.native = native
+        self.opened = []
+        self.kinds = {}
+
+    def __call__(self, folder, *args, **kwargs):
+        path = Path(folder).resolve()
+        if (path / "capture.json").is_file():
+            capture, readback, draws = _read_archive(path)
+            if readback.get("complete") is not True or readback.get("errors"):
+                raise BridgeError(f"Archive {path} is not a completed collection")
+            extractor, _ = _build_extractor(path, self.native, capture, draws, "", readback)
+            self.opened.append(extractor)
+            self.kinds[str(path)] = "probe_archive"
+            return extractor
+        self.kinds[str(path)] = "frame_analysis"
+        return self.native.extract.DumpWorkspaceExtractor(str(folder), *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.native.extract.DumpWorkspaceExtractor, name)
+
+    def close(self):
+        for extractor in self.opened:
+            extractor._bridge_buffer_bytes.clear()
+
+
+def _lod_report(native, workspace: Path) -> dict:
+    profile = native.profile.load_profile(str(workspace), required=True)
+    levels = {}
+    for component in profile["components"]:
+        for lod in component["lods"]:
+            entry = levels.setdefault(lod["lod_object_name"], {"matched": [], "fallback": [], "separate_ib": 0})
+            entry["fallback" if lod["is_fallback"] else "matched"].append(component["unique_str"])
+            if lod["ib_hash"] != component["ib_hash"]:
+                entry["separate_ib"] += 1
+    return {
+        "workspace": str(workspace), "object_name": profile.get("object_name", ""),
+        "component_count": profile["component_count"], "max_lod_count": profile["max_lod_count"],
+        "lod_objects": {name: {"matched_components": len(item["matched"]), "fallback_components": item["fallback"],
+                               "components_with_own_lod_ib": item["separate_ib"],
+                               "source": profile.get("lod_sources", {}).get(name, ""),
+                               "preview_workspace": profile.get("lod_preview_workspaces", {}).get(name, "")}
+                        for name, item in sorted(levels.items())},
+        "source_frame_dump": profile.get("source_frame_dump", ""),
+        "profile_sha256": hashlib.sha256((workspace / native.profile.PROFILE_FILENAME).read_bytes()).hexdigest(),
+    }
+
+
+def lod_status(workspace_dir: str | Path, loyaltools_root: str | Path = DEFAULT_LOYALTOOLS) -> dict:
+    """The LoD levels a workspace profile currently maps, per LoD object."""
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        native = _load_loyaltools(Path(loyaltools_root).resolve())
+        return _lod_report(native, Path(workspace_dir).resolve())
+    finally:
+        sys.dont_write_bytecode = previous
+
+
+def restore_lod(workspace_dir: str | Path, source_path: str | Path = "",
+                loyaltools_root: str | Path = DEFAULT_LOYALTOOLS) -> dict:
+    """LoyalTools' "JSON match": apply a LoD mapping that is already stored as JSON.
+
+    ``source_path`` names the profile JSON, or the workspace, of the same
+    character that holds a mapping; empty uses this workspace's own profile or
+    the copy kept from before it was extracted again. No capture is read.
+    """
+    workspace = Path(workspace_dir).resolve()
+    log = io.StringIO()
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        with redirect_stdout(log):
+            native = _load_loyaltools(Path(loyaltools_root).resolve())
+            mapper = _lod_mapper_module(native)
+            result = mapper.restore_merged_skeleton_lod(str(workspace), str(source_path) if source_path else "")
+            report = _lod_report(native, workspace)
+    except ValueError as exc:
+        if isinstance(exc, BridgeError):
+            raise
+        raise BridgeError(str(exc)) from exc
+    finally:
+        sys.dont_write_bytecode = previous
+    report.update(method="json", mapping_source=result.source_path, profile_changed=result.changed,
+                  applied_lod_objects=result.lod_object_names,
+                  matched_component_counts=result.matched_component_counts,
+                  lower_poly_component_counts=result.lower_poly_component_counts,
+                  warnings=result.warnings, notes=result.notes)
+    return report
+
+
+def map_lod(workspace_dir: str | Path, lod_source: str | Path, full_source: str | Path = "",
+            loyaltools_root: str | Path = DEFAULT_LOYALTOOLS) -> dict:
+    """LoyalTools' "Frame Analysis match", with either kind of frame as input.
+
+    ``lod_source`` is the frame that shows the character at a distance and
+    ``full_source`` the full-detail frame the workspace was extracted from
+    (default: the one recorded in the profile). Each may be a probe archive or
+    a FrameAnalysis dump folder.
+    """
+    workspace = Path(workspace_dir).resolve()
+    log = io.StringIO()
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    sources = None
+    try:
+        with redirect_stdout(log):
+            native = _load_loyaltools(Path(loyaltools_root).resolve())
+            profile = native.profile.load_profile(str(workspace), required=True)
+            full = Path(full_source or profile.get("source_frame_dump", "")).resolve() if (
+                full_source or profile.get("source_frame_dump")) else None
+            if full is None or not full.is_dir():
+                raise BridgeError("The full-detail frame of this workspace is not available: " + str(full or ""))
+            lod = Path(lod_source).resolve()
+            if not lod.is_dir():
+                raise BridgeError("LoD frame folder not found: " + str(lod))
+            mapper = _lod_mapper_module(native)
+            sources = _LodSources(native)
+            function = mapper.map_merged_skeleton_lod
+            bound = types.FunctionType(function.__code__, function.__globals__ | {"DumpWorkspaceExtractor": sources},
+                                       function.__name__, function.__defaults__, function.__closure__)
+            bound.__kwdefaults__ = function.__kwdefaults__
+            result = bound(str(workspace), str(full), str(lod), allow_overwrite=True)
+            report = _lod_report(native, workspace)
+    except ValueError as exc:
+        if isinstance(exc, BridgeError):
+            raise
+        raise BridgeError(str(exc)) from exc
+    finally:
+        if sources is not None:
+            sources.close()
+        sys.dont_write_bytecode = previous
+    report.update(method="frame_match", full_source=str(full), lod_source=str(lod),
+                  source_kinds=sources.kinds, lod_object_name=result.lod_object_name,
+                  matched_component_count=result.matched_component_count,
+                  lower_poly_component_count=result.lower_poly_component_count,
+                  preview_workspace_folder=result.preview_workspace_folder,
+                  preview_component_count=result.preview_component_count, warnings=result.warnings,
+                  upstream_log=[line for line in log.getvalue().splitlines() if line.strip()][-40:])
+    return report
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive")
     parser.add_argument("workspace", nargs="?")
-    parser.add_argument("--loyaltools-root", default=str(DEFAULT_LOYALTOOLS))
+    parser.add_argument("--loyaltools-root", default=os.environ.get("EFMI_LOYALTOOLS", ""),
+                        help="LoyalTools folder to call (default: the add-on installed in Blender)")
+    parser.add_argument("--blender", default="",
+                        help="blender.exe whose installed add-on is used (default: EFMI_BLENDER, else the known install)")
     parser.add_argument("--object-name", default="")
     parser.add_argument("--no-textures", action="store_true")
     parser.add_argument("--allow-unverified", action="store_true", help="Debug only: allow an incomplete/failed readback archive")
     parser.add_argument("--validation-archive", action="append", default=[], help="Additional independent static-validation archive; supply at least two")
     args = parser.parse_args(argv)
     if args.workspace:
-        report = export_merged_workspace(args.archive, args.workspace, args.loyaltools_root,
+        addon = None
+        if not args.loyaltools_root:
+            from . import blender_runner
+            try:
+                addon = blender_runner.find_addon(blender_runner.find_blender(args.blender))
+            except blender_runner.BlenderError:
+                if args.blender:
+                    raise
+        root, origin = resolve_loyaltools(args.loyaltools_root or None, addon)
+        report = export_merged_workspace(args.archive, args.workspace, root,
                                           args.object_name, not args.no_textures, args.allow_unverified,
                                           args.validation_archive)
+        report["loyaltools"] = {"path": str(root), "version": loyaltools_version(root), "origin": origin}
     else:
         report = inspect_archive(args.archive)
     print(json.dumps(report, ensure_ascii=False, indent=2))

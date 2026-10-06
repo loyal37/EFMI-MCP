@@ -19,6 +19,8 @@
 
 `efmi_reload_and_capture`（探针 0.1.2 / 服务 0.1.4）：核对游戏/安装/默认双 F10 绑定，停止 live 并失效旧捕获，由探针在游戏进程内按一次 F10（必要时取前台并还回），等待后采集新帧，并以“XXMI 在按键后重建了新帧所用的资源/着色器”作为重载证据给出 `reload_confirmed`。无需狩猎模式。旧探针下退回外部按键并提示重启游戏。
 
+服务 0.1.5 接入模型流程：`efmi_list_models`／`efmi_extract_model`／`efmi_map_lod`／`efmi_export_mod`／`efmi_verify_exported_mod`／`efmi_model_project`／`efmi_model_job`。分组、骨骼合并、LOD 匹配与 INI／BUF 生成由 Blender 中已安装的 LoyalTools 插件完成，本项目只调用其入口并检查结果。离线部分已验证，实时提取与部署核对待实机验证（T-008、D-014）。
+
 0.1.3 的实机失败原因是 UIPI（游戏以管理员运行，丢弃普通权限进程的按键）。探针按键的新路径沙盒与实机均已验证（2026-10-06，PID43816，游戏在前台和在后台各一次），详见 BUG-004 / T-007 / D-012。普通采集及 IB/VB 读回正常。
 
 `0.1.1` 已修复辅助设备覆盖采集目标与 live 会话在途帧回填，本地整套回归通过，新 DLL 已就位；新版真实游戏伊冯画面的捕获与资源读回也已验证，详见 `CURRENT_STATE.md` / T-003。

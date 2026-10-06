@@ -6,6 +6,7 @@
   4. multiple-device regression (with and without the private XXMI runtime)
   5. end-to-end test of the MCP server
   6. reload workflow/input unit tests (fake input; real F10 test is opt-in)
+  7. model workflow unit tests (no game, Blender or LoyalTools; model_offline_integration.py is opt-in)
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ def main() -> int:
         ("MCP server end to end", ["sandbox/mcp_test.py"]),
         ("reload input guards (no OS input)", ["sandbox/reload_input_test.py"]),
         ("reload workflow MCP contract (fake probe/input)", ["sandbox/reload_workflow_test.py"]),
+        ("model workflow logic (export checks, deployment, draw comparison, jobs)", ["sandbox/model_workflow_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")

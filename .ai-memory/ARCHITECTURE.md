@@ -33,6 +33,13 @@
 | `efmi_mcp/mcp_stdio.py`、`tools.py` | MCP 协议、工具定义、会话与捕获缓存 |
 | `efmi_mcp/reload_workflow.py` | 同一管道/PID/渲染目标下预检、停止 live、失效旧缓存、单次 F10 后等待和新帧门槛 |
 | `efmi_mcp/reload_input.py` | `send_reload_via_probe`：让探针在游戏内按 F10 并判读回执；`send_reload_f10`：旧的外部 Win32 按键（仅非管理员游戏可达）。均不提供任意按键接口 |
+| `efmi_mcp/model_capture.py` | 模型流程的采样：单帧归档（几何／骨骼缓冲、贴图、CB 快照、截图）与多次独立采样 |
+| `efmi_mcp/loyal_bridge.py` | 调用 LoyalTools：候选角色、工作空间提取与三采样校验、LOD 帧匹配与 JSON 匹配；解析要使用的 LoyalTools 目录 |
+| `efmi_mcp/blender_runner.py` | 找 Blender 及其已安装的插件目录；后台运行脚本，输出进日志文件 |
+| `efmi_mcp/model_jobs.py` | 任务线程、阶段、取消；同一时间一个任务 |
+| `efmi_mcp/model_workflow.py` | 项目目录、提取／LOD／导出的编排、导出产物检查与清单 |
+| `efmi_mcp/mod_runtime.py` | 部署到专用目录（标记、备份、SHA256 核对）、冲突列表、绘制与贴图对照 |
+| `efmi_mcp/model_tools.py` | 模型流程的七个 MCP 工具 |
 | `efmi_mcp/probe_client.py` | 发现 `\\.\pipe\efmi-probe-<PID>` 并发送请求；每个探针同时服务一个客户端 |
 | `efmi_mcp/capture_model.py`、`decode.py`、`shader.py` | 捕获模型、缓冲/贴图解码、反汇编 |
 | `efmi_mcp/mods.py`、`fa_dump.py`、`hashes.py`、`parity.py` | 只读 mod/抓帧解析、哈希与对照验证 |

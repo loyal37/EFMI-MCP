@@ -6,6 +6,11 @@ Example (the output .blend and its .verification.json must not exist):
 
 Uses the installed LoyalTools add-on. Does not extract data, export a mod, save
 preferences, or change workspace inputs. Saves a .blend only after validation.
+
+Materials: by default only the component's diffuse map reaches the material
+output (Base Color, and its alpha as the add-on connects it). The other game
+textures stay in the workspace for the mod export; --materials native restores
+the add-on's own setup with the normal map.
 """
 from __future__ import annotations
 
@@ -26,6 +31,8 @@ def arguments():
     parser.add_argument("--workspace", required=True, type=Path,
                         help="Custom workspace root containing workplace/")
     parser.add_argument("--output", required=True, type=Path, help="New .blend path")
+    parser.add_argument("--materials", choices=("diffuse", "native"), default="diffuse",
+                        help="diffuse: only the diffuse map is connected; native: the add-on's setup with normal map")
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
     return parser.parse_args(argv)
 
@@ -35,7 +42,27 @@ def check(report, condition, message):
         report["errors"].append(message)
 
 
-def material_report(bpy, obj, expected_paths, report):
+def texture_source(alias: Path) -> dict:
+    """Which captured texture a workspace alias such as -DiffuseMap.dds is a copy of."""
+    info = {"alias": str(alias), "sha256": hashlib.sha256(alias.read_bytes()).hexdigest(), "source": None, "slots": []}
+    for candidate in sorted(alias.parent.glob("t-*.dds")):
+        if candidate.stat().st_size == alias.stat().st_size and \
+                hashlib.sha256(candidate.read_bytes()).hexdigest() == info["sha256"]:
+            info["source"] = candidate.name
+            break
+    slots_path = alias.parent / "TextureSlots.json"
+    if info["source"] and slots_path.is_file():
+        slots = json.loads(slots_path.read_text(encoding="utf-8-sig")).get("slots", {})
+        for slot, entries in sorted(slots.items()):
+            for entry in entries:
+                if entry.get("filename") == info["source"]:
+                    info["slots"].append({"slot": slot, "hash": entry.get("hash"), "format": entry.get("format"),
+                                          "draw": entry.get("call_id"), "width": entry.get("width"),
+                                          "height": entry.get("height")})
+    return info
+
+
+def material_report(bpy, obj, expected_paths, report, diffuse_only=False):
     materials = []
     linked_paths = set()
     for slot in obj.material_slots:
@@ -67,9 +94,23 @@ def material_report(bpy, obj, expected_paths, report):
             packed = bool(image.packed_file or image.packed_files)
             exists = resolved.is_file() or packed or image.source == "GENERATED"
             linked = node in reachable
+            sockets = sorted({f"{link.from_socket.name}->{link.to_node.type}.{link.to_socket.name}"
+                              for link in tree.links
+                              if link.is_valid and link.from_node == node and link.to_node in reachable})
             entry["images"].append({"name": image.name, "path": str(resolved),
                                     "exists_or_packed": exists, "packed": packed,
-                                    "size": list(image.size), "connected_to_output": linked})
+                                    "size": list(image.size), "connected_to_output": linked,
+                                    "links": sockets})
+            if linked and diffuse_only:
+                # The option that skips the normal map is not trusted on its own:
+                # what counts is which image actually feeds the surface.
+                allowed = {Path(path).resolve() for path in expected_paths}
+                check(report, resolved in allowed,
+                      f"{obj.name}: a texture other than the diffuse map is connected: {resolved}")
+                check(report, "Color->BSDF_PRINCIPLED.Base Color" in sockets,
+                      f"{obj.name}: the diffuse map does not drive Base Color")
+                check(report, set(sockets) <= {"Color->BSDF_PRINCIPLED.Base Color", "Alpha->BSDF_PRINCIPLED.Alpha"},
+                      f"{obj.name}: unexpected diffuse connections {sockets}")
             check(report, exists, f"{obj.name}: missing image {resolved}")
             check(report, all(value > 0 for value in image.size),
                   f"{obj.name}: image could not be decoded: {resolved}")
@@ -198,10 +239,11 @@ def verify_object(bpy, obj, component, profile, json_path, report):
     if not cpu:
         check(report, unweighted_used == 0,
               f"{obj.name}: {unweighted_used} referenced GPU vertices have no positive weight")
-    expected_textures = [path for path in MeshCreateHelper.get_import_texture_paths(
-        obj.name, str(json_path.parent)) if path]
-    if not expected_textures:
-        report["warnings"].append(f"{obj.name}: workspace has no auto-material texture aliases")
+    diffuse_path, normal_path = MeshCreateHelper.get_import_texture_paths(obj.name, str(json_path.parent))
+    diffuse_only = report["materials_mode"] == "diffuse"
+    expected_textures = [path for path in ((diffuse_path,) if diffuse_only else (diffuse_path, normal_path)) if path]
+    if not diffuse_path:
+        report["warnings"].append(f"{obj.name}: workspace has no diffuse map alias; no texture is connected")
     return {
         "name": obj.name, "component_id": component["component_id"], "cpu_posed": cpu,
         "vertices": len(mesh.vertices), "triangles": len(mesh.polygons),
@@ -213,7 +255,10 @@ def verify_object(bpy, obj, component, profile, json_path, report):
                     "active_group_ids": sorted(active_groups),
                     "unweighted_used_vertices": unweighted_used,
                     "unweighted_unused_vertices": unweighted_unused},
-        "materials": material_report(bpy, obj, expected_textures, report),
+        "materials": material_report(bpy, obj, expected_textures, report, diffuse_only),
+        # Where the connected diffuse map comes from, so a wrong guess by the
+        # add-on's alias heuristic can be spotted and overridden.
+        "diffuse_source": texture_source(Path(diffuse_path)) if diffuse_path else None,
     }
 
 
@@ -252,7 +297,7 @@ def run(args, report):
     props.custom_workspace_folder_path = str(root)
     props.force_standalone_preset = True
     props.standalone_game_preset = LogicName.EFMI
-    props.use_normal_map = True
+    props.use_normal_map = args.materials == "native"
     bpy.context.scene.loyal_extract_props.workflow_mode = "MERGED_SKELETON"
     GlobalConfig.read_from_main_json_ssmt4()
     if Path(GlobalConfig.path_workspace_folder()).resolve() != data_root:
@@ -301,6 +346,20 @@ def run(args, report):
     result = bpy.ops.wm.save_as_mainfile(filepath=str(args.output), check_existing=True)
     if result != {"FINISHED"} or not args.output.is_file():
         raise RuntimeError(f"Saving .blend failed: {result}")
+    # Image paths relative to the .blend survive moving the project folder.
+    bpy.ops.file.make_paths_relative()
+    absolute = [image.filepath for image in bpy.data.images
+                if image.filepath and not image.filepath.startswith("//")]
+    if absolute:
+        report["warnings"].append(f"{len(absolute)} image path(s) could not be made relative, e.g. {absolute[0]}")
+    missing = [image.filepath for image in bpy.data.images if image.filepath
+               and not Path(bpy.path.abspath(image.filepath)).is_file()]
+    if missing:
+        raise RuntimeError(f"Image paths no longer resolve after saving: {missing[:3]}")
+    result = bpy.ops.wm.save_mainfile()
+    if result != {"FINISHED"}:
+        raise RuntimeError(f"Saving .blend failed: {result}")
+    report["image_paths_relative"] = not absolute
     report["saved_blend"] = str(args.output)
     report["blend_bytes"] = args.output.stat().st_size
     report["status"] = "passed"
@@ -316,7 +375,8 @@ def main():
         raise FileExistsError("Choose a new output name: .blend or verification report already exists")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report = {"status": "failed", "workspace": str(args.workspace.resolve()),
-              "output": str(args.output), "objects": [], "errors": [], "warnings": []}
+              "output": str(args.output), "materials_mode": args.materials,
+              "objects": [], "errors": [], "warnings": []}
     try:
         run(args, report)
     except Exception:

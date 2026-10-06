@@ -20,10 +20,15 @@ def main() -> int:
                     help="where exported meshes, textures and shader listings are written")
     ap.add_argument("--probe-dll", default=str(PROJECT / "dist" / "efmi_probe.dll"),
                     help="path shown in the instructions for loading the probe")
+    ap.add_argument("--loyaltools-root", default=os.environ.get("EFMI_LOYALTOOLS", ""),
+                    help="LoyalTools source tree used (read only) for model extraction and LoD mapping")
+    ap.add_argument("--blender", default=os.environ.get("EFMI_BLENDER", ""),
+                    help="blender.exe that has the LoyalTools add-on installed")
     args = ap.parse_args()
 
     # stdout carries the protocol: anything else must go to stderr.
-    server = build_server(Path(args.efmi_root), Path(args.out), Path(args.probe_dll))
+    server = build_server(Path(args.efmi_root), Path(args.out), Path(args.probe_dll),
+                          Path(args.loyaltools_root) if args.loyaltools_root else None, args.blender)
     print(f"efmi-mcp: {len(server.tools)} tools, EFMI root {args.efmi_root}", file=sys.stderr)
     server.serve()
     return 0
