@@ -4,7 +4,7 @@
 
 ## BUG-004：真实游戏接受发送 API，但 F10 按下状态不可见（已修复，实机验证通过）
 
-- 2026-10-06 晚：原因是 UIPI。`Endfield.exe` 清单要求管理员权限，MCP 服务为普通权限；Windows 丢弃低完整性进程发往高完整性窗口的输入，`SendInput` 仍返回成功。探针 0.1.2 改为在游戏进程内按键，沙盒与实机均通过：PID 43816 上移出的伊冯 mod 在工具重载后消失（XXMI 93 次绘制→0，游戏原始 30 次绘制出现）。当时游戏本来就在前台，探针从后台取前台（`attach_input`）并还回焦点这一段在实机上尚未执行过，只在沙盒验证。以下为定位前的记录。
+- 2026-10-06 晚：原因是 UIPI。`Endfield.exe` 清单要求管理员权限，MCP 服务为普通权限；Windows 丢弃低完整性进程发往高完整性窗口的输入，`SendInput` 仍返回成功。探针 0.1.2 改为在游戏进程内按键，沙盒与实机均通过：PID 43816 上移出的伊冯 mod 在工具重载后消失（XXMI 93 次绘制→0，游戏原始 30 次绘制出现）。同日 20:51 第二次实机，游戏在后台（前台是 Claude 窗口）：探针以 `direct` 方式取得前台，按键持续 1 帧（91844→91845，重载帧 79.8ms），随后把前台还给原窗口（前后为同一 hwnd）；移出的伊冯 mod 同样消失（XXMI 120→0 次绘制，游戏原始 30 次绘制出现），`reload_confirmed=true`。`attach_input` 这条备用取前台路径在实机上没有用到，只在沙盒验证。以下为定位前的记录。
 - Endfield PID41976的两次普通VK请求没有实际刷新。用户移出Yvonne后，画面仍是该模组；用户明确确认失败。普通新帧及IB/VB读回均正常，不能用它们证明重载。一次中间的focus_refused在输入前拒绝，不算发送请求。
 - 扫描码诊断同样失败：前台PID正确、无修饰键，SendInput down/up返回1、错误码0，但约200ms按住期间所有F10异步高位为false；帧160361→160664，XXMI DrawIndexed的IB/次数相同。证据 `captures/verify-reload-scancode-41976-ready/result.json`，独立结论 `assessment.json` 标明 `actual_reload_succeeded=false`；raw报告pass仅表示诊断流程完成。
 - 0.1.3增加 `key_down_observed` 门槛：若API接受但未观察到按下状态，返回input阶段 `keydown_not_observed`，finally释放，不开始capture、不重发。`key_down_sent`继续保留API接受语义。此改动完成错误检测，未解决真实输入不可见问题。
