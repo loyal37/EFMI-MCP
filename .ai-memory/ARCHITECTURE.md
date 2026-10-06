@@ -46,3 +46,11 @@
 - `sandbox/multidevice_test.py`：辅助设备先/后创建，以及有/无 XXMI 的多设备专项；旧版探针保存在 `dist/backup-before-multidevice/`，用于复现对照。
 
 `dist/`、构建目录、`sandbox/run/`、`captures/`、日志被 `.gitignore` 排除；不要因未出现在 Git diff 中就假设构建产物已经部署或加载。
+
+## LoyalTools 合并骨骼桥接（2026-10-06）
+
+`scripts/capture_merged_source.py` 保存完整共享几何/骨池、draw时刻CB、角色材质DDS及读回证据。IB/VB完整资源必须由探针确认自捕获后未变化；XXMI region哈希仅是附加检查，实际几何范围必须从完整IB的min/max索引计算。
+
+`server/efmi_mcp/loyal_bridge.py` 只读动态导入本机LoyalTools，不执行依赖bpy的包入口、不写参考项目字节码。将Capture转换为其原生帧模型，直接调用原角色分组、矩阵去重、来源选择（含梨诺火箭靴黑名单）和工作空间写出。CB快照已按原first_constant裁剪，桥接时first_constant归零。每draw保留独立布局、原索引范围和signed BaseVertex。
+
+0.1.1的骨骼SRV只能晚读。静态编辑模式必须用三份独立采样，核对实际几何字节、canonical骨组来源、实际带权跨组件合并和变化中的有效骨矩阵；这不是指定帧姿态快照。CLI入口 `scripts/export_merged_workspace.py` 输出目标根目录下的 `workplace`；`scripts/verify_merged_workspace_blender.py` 用已安装LoyalTools实际导入、检查权重/贴图/蓝图并保存新 `.blend`。不生成未采集的LOD映射。

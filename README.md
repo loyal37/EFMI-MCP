@@ -96,6 +96,22 @@
 
 ## 已知限制
 
+### 合并骨骼工作空间提取
+
+可把实时采集的数据交给本机 LoyalTools 原算法，生成其 `workplace` 工作空间，再用后台 Blender 导入并保存 `.blend`。默认只读引用 `E:\loyal tools\tools\LoyalTools`，不修改 EFMI 或参考工具。此流程当前针对游戏原始 `DrawIndexedInstanced` 角色绘制；先在画面中显示目标角色。
+
+```powershell
+& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <游戏PID> --archive captures/sample-a --deferred-skeleton
+& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <游戏PID> --archive captures/sample-b --deferred-skeleton
+& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <游戏PID> --archive captures/sample-c --deferred-skeleton
+& 'D:\Python312\python.exe' scripts/export_merged_workspace.py captures/sample-a 'E:\输出目录\workplace' --validation-archive captures/sample-b --validation-archive captures/sample-c
+& 'D:\blender4,5\blender.exe' --background --factory-startup --python-exit-code 1 --python scripts/verify_merged_workspace_blender.py -- --workspace 'E:\输出目录' --output 'E:\输出目录\角色.blend'
+```
+
+静态几何要求完整资源自捕获后未变化，按真实索引范围提取，不将 XXMI 的 VB 哈希窗口当成完整网格。CB 使用 draw 时刻快照；骨骼 SRV 是后续读回，因此上述静态编辑模式用三份独立采样核对完整几何与合并骨组映射，并保留读取时刻证据。它不保证复现某一帧的动画姿态，也不自动生成未捕获的 LOD 映射。输出拒绝覆盖已有工作空间或 `.blend`。
+
+### 探针边界
+
 - 探针必须在游戏创建 D3D 设备之前加载，所以只能由启动器在开局注入，不能附加到已运行的游戏。
 - 0.1.1 固定使用首个发现的交换链所属设备，后建的无交换链辅助设备不会抢走采集目标。不做多个窗口/交换链间的自动主画面识别；完整设备重建后需重启游戏，同设备交换链销毁/重建期间的跨界抓帧也尚未验证。
 - 看到的是真正发给显卡的调用。某个 mod 生效时，游戏对该网格的原始绘制已被替换，不会出现；出现的是 mod 发出的绘制，来源标为 `xxmi`。来源是按调用栈深度判断的启发式结果。

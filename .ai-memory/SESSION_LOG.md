@@ -37,3 +37,11 @@
 伊冯Mod验证完成：93次替换绘制、18参数组合、72区域CRC一致；16完整缓冲29,824,876字节及2K纹理4,194,304字节与Mod源文件逐字节相同，截图和12帧live均已保存。证据在captures/verify-mod-38252，结束已停止live/release，EFMI只读。
 
 随后用户要求参考LoyalTools合并骨骼方式提取当前屏幕角色到E:\Endfield mods\liimo merge。2026-10-06新进程29988的56883帧确认当前为梨诺，输出目录为空。先提交此前已验证的修复和记忆，再实现当前提取任务；用户明确授权该输出路径，不修改LoyalTools/EFMI。
+
+## 2026-10-06：梨诺合并骨骼工作空间交付
+
+此前修复已提交6278b07。新增capture_merged_source、loyal_bridge、export CLI和Blender检查脚本，引用LoyalTools原代码不改其源码。捕获骨池offset动态，首次严格同帧尝试未通过；改按用户静态编辑目标用三份独立数据验证，未降低成“非零即通过”。147189/147435/147679三帧完整几何3,769,210字节一致，canonical来源一致；682使用骨矩阵在另两份均变化，170个跨组件带权骨/34,736通道稳定合并。
+
+交付E:\Endfield mods\liimo merge：workplace、liimo merge.blend、验证JSON、preview.png与提取说明。18组件/79044顶点/94051三角、696私有组槽到512canonical；72个输出IB/VB字节核对通过。Blender4.5.7+LoyalTools1.6.7实导入errors=[]；首轮normal材质选项默认关闭导致验证失败，脚本在该临时场景显式启用normal map后通过，并选择漫反射节点作为Solid纹理显示。源几何和用户原目录不受这些验证修复影响。
+
+预览核对完成，火箭靴等特效未重建游戏shader，2个小组件无自动贴图，均保留数据并写明边界。不含未捕获LOD、不声明某帧pose或命名层级rig。最终同步记忆并本地提交，不push。
