@@ -1,8 +1,8 @@
 """End-to-end test of the MCP server: real JSON-RPC over stdio, real probe, sandbox scene.
 
-Starts the sandbox, starts `python -m efmi_mcp` exactly as an agent host would,
-and calls every tool once, checking the answers for the facts known about the
-sandbox scene.
+Starts the real server entry point over stdio and calls every tool, checking
+the answers against the sandbox scene. Existing game probes are hidden only
+inside this test's server process so a running user game is never selected.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "server"))
 
 from parity_test import signal  # noqa: E402
+from efmi_mcp.probe_client import find_probes  # noqa: E402
 
 RUN = HERE / "run"
 PROBE = ROOT / "dist" / "efmi_probe.dll"
@@ -40,8 +41,20 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 class Mcp:
     def __init__(self, efmi_root: Path):
+        # This test starts its own sandbox after the MCP server. Keep existing
+        # game sessions invisible to the test, including its "no game" checks.
+        # The filter is scoped to this child process, never the production server.
+        existing = [endpoint.pid for endpoint in find_probes()]
+        bootstrap = (
+            "from efmi_mcp import probe_client\n"
+            "discover = probe_client.find_probes\n"
+            f"existing = {existing!r}\n"
+            "probe_client.find_probes = lambda: [p for p in discover() if p.pid not in existing]\n"
+            "from efmi_mcp.__main__ import main\n"
+            "main()\n"
+        )
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "efmi_mcp", "--efmi-root", str(efmi_root), "--out", str(OUT), "--probe-dll", str(PROBE)],
+            [sys.executable, "-c", bootstrap, "--efmi-root", str(efmi_root), "--out", str(OUT), "--probe-dll", str(PROBE)],
             cwd=str(ROOT / "server"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.next_id = 1
         self.stderr: list[str] = []

@@ -37,6 +37,8 @@
 
 管道消息为 `[u32 header_len][u32 payload_len][header JSON][payload]`。服务内保留最近六次捕获的元数据，但探针只保证最新一次捕获的资源仍可读。普通读取返回读取时刻的内容；需要 draw 当时的 CB 应用 `cb_data=true`。
 
+`hashes.py` 在导入时尝试绝对路径加载 `dist/efmi_crc32c.dll`，CPU SSE4.2检查及已知向量通过后加速CRC；缺库/不支持时保持Python回退。源文件与构建位于 `server/native/`，完全独立于注入探针。`decode.texture_to_pngs` 同次解码生成完整PNG/预览，压缩等级1保留像素。
+
 ## 构建与验证入口
 
 - `probe/build.bat`：构建探针；`sandbox/build.bat`：构建沙盒。
@@ -44,6 +46,7 @@
 - `sandbox/run_all.py`：准备副本、三种加载顺序的哈希对照、探针自测、MCP 端到端测试。
 - `sandbox/selftest.py`、`mcp_test.py`、`parity_test.py`、`perf_test.py`：对应专项验证。
 - `sandbox/multidevice_test.py`：辅助设备先/后创建，以及有/无 XXMI 的多设备专项；旧版探针保存在 `dist/backup-before-multidevice/`，用于复现对照。
+- `server/native/build.bat`、`scripts/test_crc32c.py`：独立CRC加速库构建/种子与回退语义回归；`sandbox/decode_test.py`：PNG像素及预览等价性。MCP测试仅在自己的子进程屏蔽测试开始时已存在的probe，不连接用户已有游戏。
 
 `dist/`、构建目录、`sandbox/run/`、`captures/`、日志被 `.gitignore` 排除；不要因未出现在 Git diff 中就假设构建产物已经部署或加载。
 
@@ -54,3 +57,7 @@
 `server/efmi_mcp/loyal_bridge.py` 只读动态导入本机LoyalTools，不执行依赖bpy的包入口、不写参考项目字节码。将Capture转换为其原生帧模型，直接调用原角色分组、矩阵去重、来源选择（含梨诺火箭靴黑名单）和工作空间写出。CB快照已按原first_constant裁剪，桥接时first_constant归零。每draw保留独立布局、原索引范围和signed BaseVertex。
 
 0.1.1的骨骼SRV只能晚读。静态编辑模式必须用三份独立采样，核对实际几何字节、canonical骨组来源、实际带权跨组件合并和变化中的有效骨矩阵；这不是指定帧姿态快照。CLI入口 `scripts/export_merged_workspace.py` 输出目标根目录下的 `workplace`；`scripts/verify_merged_workspace_blender.py` 用已安装LoyalTools实际导入、检查权重/贴图/蓝图并保存新 `.blend`。不生成未采集的LOD映射。
+
+实时归档保存紧凑JSON与阶段 `durations_ms`；第二次身份复核不算VB哈希，IB/CB及第一帧完整buffer校验保留。离线桥接每个样本独立缓存经过SHA验证的整buffer，以克隆reader函数的局部globals供原算法读内存，不修改LoyalTools源文件/模块globals；子网格结果使用deep-copy隔离后续输出命名等变更。
+
+辅助样本验证结束即清除其整buffer缓存，导出finally清空已登记缓存；样本保留实际几何切片/矩阵副本用于三采样比较。`scripts/test_loyal_bridge_performance.py` 从指定Git版本载入旧桥接，与当前实现交错导出、对比文件、统计源文件读取、验证拒绝门槛/NumPy读语义/缓存释放；默认使用项目内已有liimo-static-a/b/c，只在captures内写测试输出。

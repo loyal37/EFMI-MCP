@@ -644,15 +644,13 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
                 f"read mip {mip} ({w}x{h}) at frame {meta['read_frame']} (current contents, not necessarily those at the draw)",
                 f"saved: {dds_path}"]
         result: list = []
-        png = decode.texture_to_png(w, h, fmt, data)
+        png, small = decode.texture_to_pngs(w, h, fmt, data, preview_max_size=512 if preview else 0)
         if png:
             png_path = folder / f"{stem}.png"
             png_path.write_bytes(png)
             text.append(f"saved: {png_path}")
-            if preview:
-                small = decode.texture_to_png(w, h, fmt, data, max_size=512)
-                if small:
-                    result.append(Image(small))
+            if small:
+                result.append(Image(small))
         else:
             text.append("no PNG: this format is not converted here (the .dds holds the exact data)")
         return ["\n".join(text)] + result

@@ -1,6 +1,17 @@
 # EFMI MCP — 当前开发状态
 
-> 最后更新：2026-10-06。0.1.1 实机角色/Mod验证完成；梨诺合并骨骼工作空间和可编辑Blender工程已交付。
+> 最后更新：2026-10-06。游戏外读取流程性能优化已验证；探针仍为0.1.1，无需重新注入。
+
+## 读取性能优化（2026-10-06）
+
+- 用户反馈实际读取慢，本轮只修改本项目。先剖析真实 PID29988：带 profiler 的一次完整归档2.248秒，capture/readback管道等待约0.89秒、截图PNG约0.54秒、缩进JSON约0.31秒、Python CRC约0.27秒。此数含profiler，不与后续无profiler结果直接混算。
+- 无profiler、同游戏交错前/后各三轮：中位1.84294→1.22016秒，减少33.8%。每轮仍有41,967,616字节完整buffer、24张DDS/45,616,608字节、两次完整绑定/CB捕获和全分辨率截图；86项region CRC全匹配。新帧313285/313640/313988已通过三采样合并骨骼导出，保留完整几何/骨来源验证。
+- 新增游戏外 `dist/efmi_crc32c.dll`，由 `server/native/build.bat` 单独构建、Python用绝对路径加载；SSE4.2检测和自测失败/缺失时回原算法。16MiB真实buffer中位1.754秒→1.897毫秒，86真实区域与原算法/探针hash均一致。任意旧seed语义和各类memoryview保持；8组回归及新进程缺库回退通过。仅重启已运行的MCP服务才加载新backend，新的采集脚本直接生效。
+- PNG压缩级别1、MCP完整图/预览只解码一次；像素/尺寸不变，样本PNG约增大52%–75%，DDS不变。6组解码回归通过。大型归档JSON紧凑编码；第二次身份复核保留IB/CB、关闭不用的VB hash；主帧完整CRC/三采样gate保留。归档增加 `durations_ms`。
+- LoyalTools桥接复用单次导出内已验证SHA的buffer和构建结果；三采样源BUF读取1134→9次，三轮交错导出中位1.890→1.662秒（减少12.1%）。4对共928个输出文件一致（仅排除输出目录/日志计时）；6项拒绝门槛及6项NumPy读语义检查通过。完整buffer缓存峰值约80MiB、返回时清空，GC后3个extractor均释放。缓存仅用于离线归档，绝不拿旧帧数据充当新的实时读取。
+- 相关沙盒回归：selftest83、MCP39全部通过；MCP测试子进程现在屏蔽测试启动前已有probe，用户游戏运行时可测。未改探针源码/DLL，其SHA256仍为 `b0fee912263763c9db28adc21798505845c9c803606bbf3969227a2bc948fa8a`，未结束游戏。
+- 证据：`captures/performance/ab-timings.json`、`crc32c-results.json`、`fresh-validated-workplace/live-bridge-report.json` 和沙盒日志；桥接最终前后对比见 `captures/bridge-performance-1fac750a2f/results.json`。原采样、游戏/EFMI/LoyalTools及E盘已交付成品未修改。
+- 已有提取功能提交为 `8faa4c2`；本轮性能代码与记忆一起本地提交（以git log为准），不推远端。上述时间不含Blender导入，不保证其他场景固定耗时；下一项主要成本仍是逐个纹理的GPU等待/管道传输，本轮没有改GPU队列或协议。
 
 ## Mod 绘制验证（2026-10-05，已完成）
 

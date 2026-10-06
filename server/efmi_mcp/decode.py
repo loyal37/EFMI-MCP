@@ -128,6 +128,28 @@ def make_dds(width: int, height: int, fmt: int, data: bytes, mips: int = 1) -> b
 
 def texture_to_png(width: int, height: int, fmt: int, data: bytes, max_size: int = 0) -> bytes | None:
     """Best-effort PNG of one subresource. Returns None when the format is not handled."""
+    img = _texture_to_image(width, height, fmt, data)
+    return _image_to_png(img, max_size) if img is not None else None
+
+
+def texture_to_pngs(width: int, height: int, fmt: int, data: bytes,
+                    preview_max_size: int = 512) -> tuple[bytes | None, bytes | None]:
+    """Full PNG and optional preview from one decode of the same readback bytes.
+
+    A non-positive preview_max_size disables preview generation. No readback
+    data or decoded image is cached across calls: textures may change each frame.
+    """
+    img = _texture_to_image(width, height, fmt, data)
+    if img is None:
+        return None, None
+    full = _image_to_png(img)
+    preview = None
+    if preview_max_size > 0:
+        preview = full if max(img.size) <= preview_max_size else _image_to_png(img, preview_max_size)
+    return full, preview
+
+
+def _texture_to_image(width: int, height: int, fmt: int, data: bytes):
     try:
         from PIL import Image
     except Exception:
@@ -149,13 +171,16 @@ def texture_to_png(width: int, height: int, fmt: int, data: bytes, max_size: int
             img = _numeric_to_image(width, height, fmt, data)
     except Exception:
         img = None
-    if img is None:
-        return None
+    return img
+
+
+def _image_to_png(img, max_size: int = 0) -> bytes:
     if max_size and max(img.size) > max_size:
         scale = max_size / max(img.size)
         img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
     out = io.BytesIO()
-    img.save(out, "PNG")
+    # PNG compression changes size and CPU cost, never decoded pixel values.
+    img.save(out, "PNG", compress_level=1)
     return out.getvalue()
 
 

@@ -9,7 +9,9 @@ The external package is imported without bpy or writing its bytecode caches.
 from __future__ import annotations
 
 import argparse
+import builtins
 from contextlib import redirect_stdout
+import copy
 import hashlib
 import importlib
 import io
@@ -94,18 +96,57 @@ def inspect_archive(archive_dir: str | Path) -> dict:
     }
 
 
-def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict], object_name: str):
+def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict], object_name: str,
+                     readback: dict | None = None):
     e, r, b, fd = native.extract, native.resources, native.buffers, native.descriptors
-    readback_doc = json.loads((archive / "readback.json").read_text(encoding="utf-8"))
+    readback_doc = readback if readback is not None else json.loads((archive / "readback.json").read_text(encoding="utf-8"))
     checked_buffers = {}
+    buffer_bytes = {}
 
-    class ArchiveVertexBuffer(r.VertexBuffer):
+    def cached_open(path, mode="r", *args, **kwargs):
+        if mode == "rb" and isinstance(path, (str, Path)):
+            data = buffer_bytes.get(Path(path))
+            if data is not None:
+                return io.BytesIO(data)
+        return builtins.open(path, mode, *args, **kwargs)
+
+    class CachedNumpy:
+        def __getattr__(self, name):
+            return getattr(e.numpy, name)
+
+        def fromfile(self, file, dtype=float, count=-1, sep="", offset=0, *, like=None):
+            data = buffer_bytes.get(Path(file)) if isinstance(file, (str, Path)) else None
+            if data is not None and not sep and like is None and offset >= 0:
+                # fromfile returns independent writable storage, unlike frombuffer.
+                # It also ignores an incomplete trailing element and returns a
+                # short array when the requested count exceeds the file. Leave
+                # unusual zero-sized dtypes and out-of-file offsets to NumPy.
+                dtype = e.numpy.dtype(dtype)
+                if dtype.itemsize > 0 and offset <= len(data):
+                    available = (len(data) - offset) // dtype.itemsize
+                    length = available if count < 0 else min(count, available)
+                    view = memoryview(data)[offset:offset + length * dtype.itemsize]
+                    return e.numpy.frombuffer(view, dtype=dtype, count=length).copy()
+            return e.numpy.fromfile(file, dtype=dtype, count=count, sep=sep, offset=offset, like=like)
+
+    def native_reader(function, **overrides):
+        # Bind the original reader's code to this archive's verified byte cache.
+        # No module globals, native algorithms, or source files are patched.
+        reader = types.FunctionType(function.__code__, function.__globals__ | overrides,
+                                    function.__name__, function.__defaults__, function.__closure__)
+        reader.__kwdefaults__ = function.__kwdefaults__
+        return reader
+
+    class CachedResource(r.Resource):
+        build_numpy_buffer = native_reader(r.Resource.build_numpy_buffer, open=cached_open)
+
+    class ArchiveVertexBuffer(r.VertexBuffer, CachedResource):
         def load_format(self, *args, **kwargs):
             # The capture's real input layout replaces a FrameAnalysis .txt file.
             if self.migoto_format is None:
                 raise BridgeError("Missing capture vertex format")
 
-    class ArchiveIndexBuffer(r.IndexBuffer):
+    class ArchiveIndexBuffer(r.IndexBuffer, CachedResource):
         def load_format(self, *args, **kwargs):
             if self.migoto_format is None:
                 raise BridgeError("Missing capture index format")
@@ -130,9 +171,42 @@ def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict],
             self._texture_dimensions_cache = {}
             self._semantic_remap = e._build_semantic_remap()
             self._bridge_candidates = None
+            self._bridge_layout_scores = {}
+            self._bridge_submeshes = {}
+            # The export releases whole-file snapshots explicitly even if the
+            # native model/subclass closures await cyclic garbage collection.
+            self._bridge_buffer_bytes = buffer_bytes
+
+        _build_slot_data = native_reader(e.DumpWorkspaceExtractor._build_slot_data, open=cached_open)
+        _read_original_index_range = native_reader(
+            e.DumpWorkspaceExtractor._read_original_index_range, numpy=CachedNumpy())
 
         def _load_txt_format(self, resource):
             return getattr(resource, "migoto_format", None)
+
+        def _score_slot_layout(self, fmt, slot_id):
+            # Formats belong to this immutable archive model and remain alive
+            # for the extractor lifetime; native cleanup works on deep copies.
+            key = (id(fmt), slot_id)
+            if key not in self._bridge_layout_scores:
+                self._bridge_layout_scores[key] = super()._score_slot_layout(fmt, slot_id)
+            return self._bridge_layout_scores[key]
+
+        def _build_submesh(self, records, unique_str, warnings):
+            key = (unique_str, tuple(record.shader_call.id for record in records))
+            cached = self._bridge_submeshes.get(key)
+            if cached is None:
+                added_warnings, output = [], io.StringIO()
+                with redirect_stdout(output):
+                    build = super()._build_submesh(records, unique_str, added_warnings)
+                cached = (build, added_warnings, output.getvalue())
+                self._bridge_submeshes[key] = cached
+            build, added_warnings, output = cached
+            warnings.extend(added_warnings)
+            sys.stdout.write(output)
+            # Export assigns texture filenames; keep the cached validated build
+            # independent of those mutations and of subsequent consumers.
+            return copy.deepcopy(build)
 
         def get_merged_skeleton_candidates(self, ignore_incomplete_draw_calls=False):
             if self._bridge_candidates is None:
@@ -170,8 +244,10 @@ def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict],
         expected = readback_doc.get("buffers", {}).get(str(rid), {}).get("sha256")
         if not isinstance(expected, str) or len(expected) != 64:
             raise BridgeError(f"Readback {rid} is missing its recorded SHA256")
-        if hashlib.sha256(path.read_bytes()).hexdigest() != expected.lower():
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != expected.lower():
             raise BridgeError(f"Archived buffer {rid} differs from its recorded SHA256")
+        buffer_bytes[path] = data
         checked_buffers[rid] = (resource, path)
         return checked_buffers[rid]
 
@@ -288,7 +364,7 @@ def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict],
                 source, path = whole_buffer(bind["res"])
                 resource = skeleton_resources.get(bind["res"])
                 if resource is None:
-                    resource = r.Resource(hash=bind["hash"] or "00000000", pointer=source["ptr"],
+                    resource = CachedResource(hash=bind["hash"] or "00000000", pointer=source["ptr"],
                                           bin_path=path, bin_path_deduped=path,
                                           usage_descriptor=usage(draw, slot, bind["hash"] or "00000000"))
                     skeleton_resources[bind["res"]] = resource
@@ -479,12 +555,14 @@ def export_merged_workspace(archive_dir: str | Path, workspace_dir: str | Path,
         if workspace != debug_root and debug_root not in workspace.parents:
             raise BridgeError("Unverified debug exports must stay inside this project's captures directory")
     log = io.StringIO()
+    verified_buffer_caches = []
     previous = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
     try:
         with redirect_stdout(log):
             native = _load_loyaltools(loyaltools_root)
-            extractor, missing_textures = _build_extractor(archive, native, capture, draws, object_name)
+            extractor, missing_textures = _build_extractor(archive, native, capture, draws, object_name, readback)
+            verified_buffer_caches.append(extractor._bridge_buffer_bytes)
             candidates = extractor.get_merged_skeleton_candidates()
             selected = extractor.select_merged_skeleton_object(candidates)
             candidate_summary = [{"name": str(obj.id), "components": len(obj.components),
@@ -498,16 +576,23 @@ def export_merged_workspace(archive_dir: str | Path, workspace_dir: str | Path,
                         sc, sr, se, so = capture, readback, extractor, selected
                     else:
                         sc, sr, sd = _read_archive(sample_archive)
-                        se, _ = _build_extractor(sample_archive, native, sc, sd, object_name)
+                        se, _ = _build_extractor(sample_archive, native, sc, sd, object_name, sr)
+                        verified_buffer_caches.append(se._bridge_buffer_bytes)
                         so = se.select_merged_skeleton_object(se.get_merged_skeleton_candidates())
                     if sr.get("complete") is not True or sr.get("errors") or sr.get("validation_scope") != "deferred_skeleton_static":
                         raise BridgeError(f"Archive {sample_archive} is not a completed deferred_skeleton_static collection")
                     samples.append(_static_sample(se, so, native, sc, sr))
+                    if se is not extractor:
+                        # Validation retains actual exported slices, not another
+                        # full copy of each source pool until the export ends.
+                        se._bridge_buffer_bytes.clear()
                 validation = _validate_static_samples(samples, archives)
                 verified = True
             result = extractor.extract_merged_skeleton(str(workspace), copy_textures=copy_textures)
             profile = native.profile.load_profile(str(workspace))
     finally:
+        for cache in verified_buffer_caches:
+            cache.clear()
         sys.dont_write_bytecode = previous
     report = {
         "archive": str(archive), "frame": capture.frame, "workspace": str(workspace),

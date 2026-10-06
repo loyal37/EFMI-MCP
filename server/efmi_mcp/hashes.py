@@ -5,10 +5,9 @@ fnv64   - shaders (fnv_64_buf: FNV-1 with a zero start value)
 """
 from __future__ import annotations
 
-try:  # optional speed-up, results are identical
-    import numpy as _np
-except Exception:  # pragma: no cover
-    _np = None
+import ctypes
+import os
+from pathlib import Path
 
 
 def _make_table() -> list[int]:
@@ -24,13 +23,54 @@ def _make_table() -> list[int]:
 _TABLE = _make_table()
 
 
-def crc32c(data: bytes | bytearray | memoryview, seed: int = 0) -> int:
-    """Standard CRC-32C (Castagnoli) with an incremental seed, like crc32c_hw()."""
+def _crc32c_python(data: bytes | bytearray | memoryview, seed: int = 0) -> int:
     crc = seed ^ 0xFFFFFFFF
     table = _TABLE
     for b in bytes(data):
         crc = table[(crc ^ b) & 0xFF] ^ (crc >> 8)
     return crc ^ 0xFFFFFFFF
+
+
+def _load_native_crc32c():
+    """Optional game-external helper; missing/unsupported builds use Python."""
+    if os.name != "nt":
+        return None
+    path = Path(__file__).resolve().parents[2] / "dist" / "efmi_crc32c.dll"
+    try:
+        # Use our absolute path, never a DLL discovered through PATH/CWD.
+        library = ctypes.CDLL(str(path))
+        supported = library.efmi_crc32c_supported
+        supported.argtypes = []
+        supported.restype = ctypes.c_int
+        if not supported():
+            return None
+        function = library.efmi_crc32c
+        function.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint32]
+        function.restype = ctypes.c_uint32
+        # Reject an incompatible helper before using it on captured resources.
+        for data, seed in ((b"123456789", 0), (b"\x00\xff\x80abc", 0x12345678),
+                           (b"", 0xFFFFFFFF)):
+            if function(data, len(data), seed) != _crc32c_python(data, seed):
+                return None
+        return function
+    except (OSError, AttributeError):
+        return None
+
+
+_NATIVE_CRC32C = _load_native_crc32c()
+
+
+def crc32c(data: bytes | bytearray | memoryview, seed: int = 0) -> int:
+    """Standard CRC-32C with an incremental seed, accelerated when available.
+
+    Arbitrary Python seeds keep the original behavior instead of being silently
+    truncated to uint32. Only the normal uint32 seed domain uses the C helper.
+    bytes() also preserves the old behavior for strided/typed memoryviews.
+    """
+    if _NATIVE_CRC32C is not None and type(seed) is int and 0 <= seed <= 0xFFFFFFFF:
+        payload = bytes(data)
+        return _NATIVE_CRC32C(payload, len(payload), seed)
+    return _crc32c_python(data, seed)
 
 
 def fnv64(data: bytes | bytearray | memoryview) -> int:
