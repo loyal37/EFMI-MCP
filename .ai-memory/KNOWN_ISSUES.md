@@ -1,9 +1,10 @@
 # EFMI MCP — 已知问题
 
-> 最后更新：2026-10-06。
+> 最后更新：2026-10-06 晚。
 
-## BUG-004：真实游戏接受发送 API，但 F10 按下状态不可见（未解决）
+## BUG-004：真实游戏接受发送 API，但 F10 按下状态不可见（已修复，实机验证通过）
 
+- 2026-10-06 晚：原因是 UIPI。`Endfield.exe` 清单要求管理员权限，MCP 服务为普通权限；Windows 丢弃低完整性进程发往高完整性窗口的输入，`SendInput` 仍返回成功。探针 0.1.2 改为在游戏进程内按键，沙盒与实机均通过：PID 43816 上移出的伊冯 mod 在工具重载后消失（XXMI 93 次绘制→0，游戏原始 30 次绘制出现）。当时游戏本来就在前台，探针从后台取前台（`attach_input`）并还回焦点这一段在实机上尚未执行过，只在沙盒验证。以下为定位前的记录。
 - Endfield PID41976的两次普通VK请求没有实际刷新。用户移出Yvonne后，画面仍是该模组；用户明确确认失败。普通新帧及IB/VB读回均正常，不能用它们证明重载。一次中间的focus_refused在输入前拒绝，不算发送请求。
 - 扫描码诊断同样失败：前台PID正确、无修饰键，SendInput down/up返回1、错误码0，但约200ms按住期间所有F10异步高位为false；帧160361→160664，XXMI DrawIndexed的IB/次数相同。证据 `captures/verify-reload-scancode-41976-ready/result.json`，独立结论 `assessment.json` 标明 `actual_reload_succeeded=false`；raw报告pass仅表示诊断流程完成。
 - 0.1.3增加 `key_down_observed` 门槛：若API接受但未观察到按下状态，返回input阶段 `keydown_not_observed`，finally释放，不开始capture、不重发。`key_down_sent`继续保留API接受语义。此改动完成错误检测，未解决真实输入不可见问题。
@@ -12,8 +13,9 @@
 - `d3dx_user.ini` 时间不变不能判断失败：[IniHandler.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/IniHandler.cpp) 的 `SavePersistentSettings(false)` 未dirty时直接返回；普通重载不是强制写入。探针registry.resources是登记地址数，地址复用会覆盖，亦不是重载计数。
 - 在所查v1.2.2源码及[导出表](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/d3d11Wrapper.def)中未找到受支持的外部reload接口；Core/auto_update.xcmd是启动器更新/启动操作文件，不是运行时通信。现有只改本工具约束下不能把写该文件或调用内部函数当作受支持替代。
 
-## 限制-002：自动 F10 没有重载完成回执
+## 限制-002：重载证据不是 XXMI 的回执
 
+- 0.1.2/0.1.4 起 `reload_confirmed` 依据“新帧所用对象中有 XXMI 在按键之后创建的资源/着色器”。画面上没有任何 mod 或 Core 内容时无从判断，结果为 false；按键前 XXMI 正在自行创建资源时也不作确认。它不证明每个 INI 解析无误，XXMI 绘制所用缓冲早于按键的提示也可能来自 XXMI 自己的叠加层。以下为 0.1.3 的说明，旧探针仍适用。
 - MCP服务0.1.3区分API接受、异步按下状态可见及后续新帧；探针0.1.1没有XXMI解析/重载完成回执，`reload_confirmed`始终为false。即使输入状态门槛通过，仍需核对预期draw/BUF，不能据此认定全部INI解析成功。
 - 默认等待 2 秒不是完成信号；机器慢或模组复杂时可调整 `settle_ms`（250–10000），已发送 F10 后仅需更多画面可调用普通 capture，不自动再重载。捕获 timeout 单独为 1000–30000ms。
 - 会停止 live、release 并清旧捕获；live 不自动恢复。正常 F10 也可能触发 XXMI 保存持久变量配置，因此有运行时及文件副作用。
@@ -22,6 +24,8 @@
 
 ## 限制-003：Windows 前台输入与权限
 
+- 0.1.2 由探针取前台并按键：正常请求被拒时借用前台线程的输入状态（`attach_input`）。从切到前台到还回焦点期间，用户的键盘输入会落到游戏里。重载很快（短于 10ms）时仍可能触发两次。前台是管理员窗口时，普通权限的沙盒取不到前台，按键类沙盒测试无法运行。
+- `SendInput` 在系统键盘钩子处理完之前不返回；按住帧必须从读到按下状态起计。
 - Windows 可拒绝 `SetForegroundWindow`；`focus_game=false` 要求游戏已处于前台。无可确认窗口、多个候选而目标不在前台、按住修饰键/F10 或焦点丢失时拒绝发送或停止按住。
 - `SendInput` 可能被 UIPI/不同完整性级别拦截，不能仅凭 Win32 错误码判断具体原因；工具不自动提权。窗口检查与发送之间不是原子操作，输入成功也不是游戏实际处理的证明。
 - 异常会尝试释放 F10，绝不重复按下；结果保留 `reload_requested` 为 false/true/null 区分未发送/已发送/未知。若释放也失败，应先按错误提示处理键状态，不能盲目重试。

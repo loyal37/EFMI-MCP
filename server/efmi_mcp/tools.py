@@ -30,13 +30,16 @@ Typical flow: efmi_status -> efmi_capture_frame -> efmi_list_draws / efmi_find_h
 efmi_read_buffer / efmi_read_texture / efmi_get_shader. For "what is on screen right now, continuously" use \
 efmi_live_start, then efmi_live_now or efmi_watch_hash.
 
-After changing mod INI/BUF files, use efmi_reload_and_capture to focus the connected game's window, request \
-the configured unmodified F10 reload and retain a fresh frame. This stops continuous capture and invalidates \
-old captures. It changes game state and must not be used just to get newer data: ordinary capture is already live. \
-Input delivery plus a new frame is not a reload acknowledgement; verify expected draws/resources afterward. \
-On a post-input error, use efmi_capture_frame rather than blindly repeating F10.
-The sender must observe F10's pressed state, not just SendInput acceptance. If keydown_not_observed is returned, \
-the automatic reload was not validated; do not assume the game's mod configuration was refreshed or resend the key blindly.
+After changing mod INI/BUF files, use efmi_reload_and_capture. It brings the game to the front, has the probe \
+press the configured unmodified F10 inside the game, hands the focus back and retains a fresh frame. (The game \
+runs as administrator: a key sent from outside is dropped by Windows without an error, so only the probe can \
+press it.) This stops continuous capture and invalidates old captures. It changes game state and must not be \
+used just to get newer data: ordinary capture is already live.
+reload_confirmed is true only when the fresh frame uses resources or shaders that XXMI created after the key \
+press, which is what a reload causes for mods that are on screen. When it is false, or to check that an edit \
+parsed as intended, inspect the draws/resources you changed. On a post-input error use efmi_capture_frame \
+rather than repeating F10. A probe older than 0.1.2 cannot press the key: the error then says that the game \
+has to be restarted to load the updated efmi_probe.dll.
 
 Things to know:
 - Capture and live mode work with hunting disabled; do not ask the user to press numpad 0 to collect data.
@@ -216,6 +219,12 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
                          f"{r['shaders']} shaders ({r['bytecode_bytes'] // 1024} KB of bytecode kept), {r['layouts']} input layouts")
             cap = st["capture"]
             lines.append(f"continuous mode: {'on' if cap['live'] else 'off'}; cached region hashes: {cap['region_cache']}")
+            if "reload_key" in st.get("features", ()):
+                level = "elevated" if st.get("process", {}).get("elevated") else "not elevated"
+                lines.append(f"reload: the probe presses F10 inside the game (game process is {level})")
+            else:
+                lines.append(f"reload: probe {st['probe']} cannot press F10 itself; efmi_reload_and_capture needs 0.1.2+ "
+                             f"when the game runs as administrator. Restart the game to load {s.probe_dll}")
             if c["command_lists"]:
                 lines.append(f"note: {c['command_lists']} deferred command lists were executed; draws inside them are not visible")
             if not st["attached"]:
@@ -287,15 +296,17 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
 
     # ================================================================ reload
     @srv.tool("efmi_reload_and_capture",
-              "After editing mod files, send one unmodified F10 to the connected XXMI game's verified foreground "
-              "window, wait, and capture a strictly later nonempty frame as 'latest'. May focus the game; "
-              "stops live mode and invalidates old captures. Requires this EFMI installation's default F10 "
+              "After editing mod files, make XXMI reload them and capture a strictly later nonempty frame as 'latest'. "
+              "The probe presses one unmodified F10 inside the game while the game window has the foreground "
+              "(brought there if needed and handed back afterwards), so it works although the game runs elevated. "
+              "Stops live mode and invalidates old captures. Requires this EFMI installation's default F10 "
               "reload_config and reload_fixes bindings. Refuses held modifiers/F10, failed focus/input, "
-              "or F10 pressed state never observed even when SendInput accepted the events. "
+              "or an F10 pressed state that was never observed. "
               "Does not edit mod/Core/launcher files or inject a new DLL. Normal F10 side effects apply, "
               "including XXMI saving persistent settings; this tool never sends wipe-settings modifiers or F11. "
-              "Reports requested reload separately from confirmation: the probe has no reload acknowledgement. "
-              "Verify expected mod draws/resources afterward; ordinary frame capture already obtains current data.",
+              "reload_confirmed is true when the fresh frame uses resources/shaders XXMI created after the key press "
+              "(mods on screen are loaded again after a reload); otherwise verify the edited draws/resources. "
+              "Ordinary frame capture already obtains current data: do not use this just to refresh.",
               {"detail": {"type": "string", "enum": ["full", "light"], "default": "full"},
                "cb_data": {"type": "boolean", "default": True},
                "settle_ms": {"type": "integer", "minimum": 250, "maximum": 10000, "default": 2000,
@@ -304,11 +315,15 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
                               "description": "Probe capture timeout; F10 is not retried on timeout."},
                "focus_game": {"type": "boolean", "default": True,
                               "description": "Try to bring the exact connected process's window to the foreground. "
-                                             "False requires it to be already foreground."}},
+                                             "False requires it to be already foreground."},
+               "restore_focus": {"type": "boolean", "default": True,
+                                 "description": "Give the foreground back to the window that had it once F10 is "
+                                                "released. Ignored when the game was already in front."}},
               read_only=False, annotations={"destructiveHint": False, "idempotentHint": False})
-    def efmi_reload_and_capture(detail="full", cb_data=True, settle_ms=2000, timeout_ms=15000, focus_game=True):
+    def efmi_reload_and_capture(detail="full", cb_data=True, settle_ms=2000, timeout_ms=15000, focus_game=True,
+                                restore_focus=True):
         return reload_and_capture(s, detail=detail, cb_data=cb_data, settle_ms=settle_ms,
-                                  timeout_ms=timeout_ms, focus_game=focus_game)
+                                  timeout_ms=timeout_ms, focus_game=focus_game, restore_focus=restore_focus)
 
     # ================================================================ list
     @srv.tool("efmi_list_draws",

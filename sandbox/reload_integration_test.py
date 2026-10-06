@@ -1,9 +1,15 @@
 """Actual F10 -> XXMI reload -> fresh-capture test in a new private DX11 sandbox.
 
-This sends one real F10 pulse. Refuses to run while any other probe is present.
+This sends one real F10 pulse. A probe that can press the key itself only does
+so while its own (sandbox) window has the foreground, so a game running next to
+it does not react; with an older probe the server sends the key and the test
+refuses to run while any other probe is present.
 It never launches/stops the real game or edits its EFMI installation. The private
 copy and evidence are retained under ignored sandbox/build/reload-* directories.
-This validates the sandbox reload path, not a real game's mod or integrity level.
+This validates the sandbox reload path, not a real game's mod or integrity level:
+the sandbox is not elevated, so Windows' input isolation (UIPI) is not exercised.
+
+EFMI_PROBE_DLL selects the probe build to test (default dist/efmi_probe.dll).
 """
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ from collections import Counter
 import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -108,8 +115,7 @@ def main():
     parser.add_argument("--efmi-root", type=Path, default=DEFAULT_EFMI,
                         help="Read-only source for a new private XXMI copy")
     args = parser.parse_args()
-    assert_no_other_probes()
-    probe = ROOT / "dist" / "efmi_probe.dll"
+    probe = Path(os.environ.get("EFMI_PROBE_DLL") or ROOT / "dist" / "efmi_probe.dll").resolve()
     run, efmi = private_copy(args.efmi_root.resolve(), probe)
     print(f"Private real-DX11/XXMI F10 test: {run}", flush=True)
     evidence = {"scope": "private DX11/XXMI sandbox, not the real game", "pass": False,
@@ -122,7 +128,6 @@ def main():
     output = []
     rc = 1
     try:
-        assert_no_other_probes()
         # The existing sandbox uses SW_SHOWNOACTIVATE. The tool under test must
         # request and verify foreground itself before its sole real F10 pulse.
         proc = subprocess.Popen([str(run / "efmi_sandbox.exe"), "--xxmi", str(efmi / "d3d11.dll"),
@@ -150,6 +155,11 @@ def main():
             raise RuntimeError("Could not connect to the explicitly spawned sandbox PID")
         evidence["pid"] = proc.pid
         evidence["before_status"] = client.status()
+        in_process = "reload_key" in evidence["before_status"].get("features", ())
+        evidence["sender"] = "probe" if in_process else "server"
+        if not in_process:
+            # A key sent by the server goes to whatever has the foreground.
+            assert_no_other_probes(own_pid=proc.pid)
         session = tools.Session(efmi, run / "mcp-out", probe)
         session.client = client
         # Use the production tool registration and JSON-RPC tools/call boundary.
@@ -186,12 +196,25 @@ def main():
         removed = Counter({target: 1})
         expected_counts = before_counts - removed
         evidence["expected_after_ib_counts"] = dict(expected_counts)
-        (efmi / "Mods" / "ReloadIntegration.ini").write_text(
-            f"[ShaderOverrideReloadIntegration]\nhash = {target_vs}\nchecktextureoverride = ib\n\n"
-            f"[TextureOverrideReloadIntegration]\nhash = {target}\n"
-            f"match_index_count = {target_draw['args']['index_count']}\nhandling = skip\n", encoding="utf-8")
+        # A second rule gives another draw a resource that only exists once the
+        # new file has been loaded: the reload evidence the tool looks for.
+        other_draw = next(d for d in before.draws() if d["origin"] != "xxmi" and d.get("ib", {}).get("hash")
+                          and d["ib"]["hash"] != target and d["shaders"].get("vs") and d["shaders"].get("ps")
+                          and before_counts[d["ib"]["hash"]] == 1)
+        other, other_vs = other_draw["ib"]["hash"], other_draw["shaders"]["vs"]
+        evidence["evidence_ib"] = other
+        text = (f"[ShaderOverrideReloadIntegration]\nhash = {target_vs}\nchecktextureoverride = ib\n\n"
+                f"[TextureOverrideReloadIntegration]\nhash = {target}\n"
+                f"match_index_count = {target_draw['args']['index_count']}\nhandling = skip\n\n"
+                "[ResourceReloadEvidence]\ntype = Buffer\nformat = R32_FLOAT\ndata = 1 2 3 4\n\n"
+                f"[TextureOverrideReloadEvidence]\nhash = {other}\n"
+                f"match_index_count = {other_draw['args']['index_count']}\nps-t60 = ResourceReloadEvidence\n")
+        if other_vs != target_vs:
+            text += f"\n[ShaderOverrideReloadEvidence]\nhash = {other_vs}\nchecktextureoverride = ib\n"
+        (efmi / "Mods" / "ReloadIntegration.ini").write_text(text, encoding="utf-8")
         call("efmi_live_start")
-        assert_no_other_probes(own_pid=proc.pid)
+        if not in_process:
+            assert_no_other_probes(own_pid=proc.pid)
         result = call("efmi_reload_and_capture", settle_ms=1000, timeout_ms=10000)
         receipt = json.loads(result["content"][0]["text"])
         evidence["reload_tool_result"] = receipt
@@ -200,8 +223,25 @@ def main():
         evidence["after_ib_counts"] = dict(after_counts)
         evidence["after_frame"] = after.frame
         write_json(run / "after-capture.json", after.doc)
-        if not receipt["reload_requested"] or receipt["reload_confirmed"]:
-            raise RuntimeError("Tool must distinguish delivered input from a reload acknowledgement")
+        if not receipt["reload_requested"] or receipt["sender"] != evidence["sender"]:
+            raise RuntimeError("Tool did not report the key as sent by the expected sender")
+        if in_process:
+            pressed = receipt["input"]
+            if not (pressed["key_down_observed"] and pressed["key_up_sent"] and pressed["frames_while_held"] >= 1
+                    and pressed["released_on"] in ("two_frames", "stalled_frame")):
+                raise RuntimeError("The probe did not hold F10 across a frame and release it at a frame boundary")
+            if pressed["focus_changed"] and not pressed["focus_restored"]:
+                raise RuntimeError("The probe took the foreground but did not hand it back")
+            found = receipt["reload_evidence"]
+            if not receipt["reload_confirmed"] or found["resources_created_after_key"] < 1:
+                raise RuntimeError("The reload evidence did not see the resource XXMI created after the key press")
+            bound = next(d for d in after.draws() if d.get("ib", {}).get("hash") == other).get("tex", {}).get("ps-t60")
+            if not bound or after.resource(bound["res"]).get("origin") != "xxmi":
+                raise RuntimeError("The rule added by the edited file did not bind its resource")
+            if after.resource(bound["res"])["cf"] <= found["key_down_frame"]:
+                raise RuntimeError("The bound resource predates the key press")
+        elif receipt["reload_confirmed"]:
+            raise RuntimeError("Without evidence the tool must not claim that the reload was confirmed")
         if not receipt["live_stopped"] or client.status()["capture"]["live"]:
             raise RuntimeError("Continuous mode was not stopped")
         if not receipt["old_captures_invalidated"] or list(session.captures) != [after.frame]:

@@ -2,6 +2,7 @@
 #include "capture.h"
 #include "registry.h"
 #include "hash.h"
+#include "reload.h"
 #include <psapi.h>
 #include <string.h>
 
@@ -209,6 +210,7 @@ static HRESULT STDMETHODCALLTYPE H_Present(IDXGISwapChain* This, UINT SyncInterv
 	if (!(Flags & DXGI_PRESENT_TEST) && h == g_swap && InterlockedIncrement(&g_in_present) == 1) {
 		g_hstats.presents++;
 		cap_on_frame_boundary();
+		reload_on_present();
 	}
 	HRESULT hr = ((IDXGISwapChainVtbl*)h->orig)->Present(This, SyncInterval, Flags);
 	if (!(Flags & DXGI_PRESENT_TEST) && h == g_swap)
@@ -223,6 +225,7 @@ static HRESULT STDMETHODCALLTYPE H_Present1(IDXGISwapChain1* This, UINT SyncInte
 	if (!(Flags & DXGI_PRESENT_TEST) && h == g_swap && InterlockedIncrement(&g_in_present) == 1) {
 		g_hstats.presents++;
 		cap_on_frame_boundary();
+		reload_on_present();
 	}
 	HRESULT hr = ((IDXGISwapChain1Vtbl*)h->orig)->Present1(This, SyncInterval, Flags, pParams);
 	if (!(Flags & DXGI_PRESENT_TEST) && h == g_swap)
@@ -238,6 +241,7 @@ static void update_resolution(IDXGISwapChain* sc, const char* why)
 	IDXGISwapChainVtbl* vt = h ? (IDXGISwapChainVtbl*)h->orig : (IDXGISwapChainVtbl*)sc->lpVtbl;
 	if (SUCCEEDED(vt->GetDesc(sc, &d)) && d.BufferDesc.Width && d.BufferDesc.Height) {
 		hash_set_resolution((int)d.BufferDesc.Width, (int)d.BufferDesc.Height);
+		reload_set_output_window(d.OutputWindow);
 		plog("hooks: resolution %ux%u (%s), back buffer format %u, buffers %u, swap effect %u",
 		     d.BufferDesc.Width, d.BufferDesc.Height, why, (unsigned)d.BufferDesc.Format,
 		     d.BufferCount, (unsigned)d.SwapEffect);
@@ -405,6 +409,7 @@ static HRESULT STDMETHODCALLTYPE H_CreateBuffer(ID3D11Device* This, const D3D11_
 		ri.has_init = pInitialData && pInitialData->pSysMem;
 		reg_add_resource(*ppBuffer, ri);
 		g_hstats.creates++;
+		if (ci.origin == ORIGIN_XXMI) g_hstats.xxmi_creates++;
 	}
 	return hr;
 }
@@ -425,6 +430,7 @@ static HRESULT STDMETHODCALLTYPE H_CreateTexture1D(ID3D11Device* This, const D3D
 		ri.has_init = pInitialData && pInitialData->pSysMem;
 		reg_add_resource(*ppTexture, ri);
 		g_hstats.creates++;
+		if (ci.origin == ORIGIN_XXMI) g_hstats.xxmi_creates++;
 	}
 	return hr;
 }
@@ -447,6 +453,7 @@ static HRESULT STDMETHODCALLTYPE H_CreateTexture2D(ID3D11Device* This, const D3D
 		ri.has_init = pInitialData && pInitialData->pSysMem;
 		reg_add_resource(*ppTexture, ri);
 		g_hstats.creates++;
+		if (ci.origin == ORIGIN_XXMI) g_hstats.xxmi_creates++;
 	}
 	return hr;
 }
@@ -469,6 +476,7 @@ static HRESULT STDMETHODCALLTYPE H_CreateTexture3D(ID3D11Device* This, const D3D
 		ri.has_init = pInitialData && pInitialData->pSysMem;
 		reg_add_resource(*ppTexture, ri);
 		g_hstats.creates++;
+		if (ci.origin == ORIGIN_XXMI) g_hstats.xxmi_creates++;
 	}
 	return hr;
 }
@@ -483,6 +491,7 @@ static HRESULT STDMETHODCALLTYPE H_Create##Name(ID3D11Device* This, const void* 
 		CALLER(ci); \
 		reg_add_shader(*ppShader, tag, shader_hash(pBytecode, Length), pBytecode, Length, ci.origin); \
 		g_hstats.creates++; \
+		if (ci.origin == ORIGIN_XXMI) g_hstats.xxmi_shader_creates++; \
 	} \
 	return hr; \
 }
@@ -505,6 +514,7 @@ static HRESULT STDMETHODCALLTYPE H_CreateGeometryShaderWithStreamOutput(
 		CALLER(ci);
 		reg_add_shader(*ppShader, "gs", shader_hash(pBytecode, Length), pBytecode, Length, ci.origin);
 		g_hstats.creates++;
+		if (ci.origin == ORIGIN_XXMI) g_hstats.xxmi_shader_creates++;
 	}
 	return hr;
 }

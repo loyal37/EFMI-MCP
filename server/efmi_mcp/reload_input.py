@@ -1,5 +1,10 @@
 """A deliberately narrow F10 pulse to the connected probe's foreground window.
 
+Two senders. `send_reload_via_probe` asks the probe to press the key inside the
+game; it is the one that works, because the game runs elevated. `send_reload_f10`
+presses it from this process and only reaches a game that is not elevated; it
+remains for probes older than 0.1.2.
+
 Importing this module does not load user32 or send input. SendInput acceptance or
 observed pressed state is not an acknowledgement that XXMI reloaded; the caller
 must wait/capture separately.
@@ -272,3 +277,25 @@ def _send_reload_f10(pid: int, focus_game: bool, backend) -> dict:
             raise pending
         raise ReloadInputError("input_failed", f"F10 input failed: {pending}", result) from pending
     return result
+
+
+def send_reload_via_probe(client, focus_game: bool = True, restore_focus: bool = True) -> dict:
+    """Have the probe press F10 from inside the game process.
+
+    The game runs elevated. Windows drops keys that a lower integrity level
+    sends to it and still reports success (UIPI), so the external pulse above
+    cannot reach it. The probe applies the same guards itself (foreground, held
+    keys, default bindings) and lets go of the key at a frame boundary.
+    """
+    if not isinstance(focus_game, bool) or not isinstance(restore_focus, bool):
+        raise ReloadInputError("invalid_focus_game", "focus_game and restore_focus must be booleans.")
+    if not _SEND_LOCK.acquire(blocking=False):
+        raise ReloadInputError("reload_busy", "Another F10 pulse is already in progress.")
+    try:
+        receipt = client.reload_key(focus=focus_game, restore_focus=restore_focus)
+    finally:
+        _SEND_LOCK.release()
+    if receipt.get("code") != "ok":
+        raise ReloadInputError(str(receipt.get("code") or "probe_error"),
+                               receipt.get("message") or "The probe could not press F10.", receipt)
+    return receipt

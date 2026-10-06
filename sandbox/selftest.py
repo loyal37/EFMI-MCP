@@ -12,6 +12,7 @@ the sandbox is known to have created:
 """
 from __future__ import annotations
 
+import os
 import struct
 import subprocess
 import sys
@@ -29,7 +30,8 @@ from efmi_mcp.probe_client import ProbeClient, ProbeError, find_probes  # noqa: 
 from parity_test import signal  # noqa: E402
 
 RUN = HERE / "run"
-PROBE = ROOT / "dist" / "efmi_probe.dll"
+# EFMI_PROBE_DLL selects another build, e.g. one in dist/candidate while the game holds the installed DLL.
+PROBE = Path(os.environ.get("EFMI_PROBE_DLL") or ROOT / "dist" / "efmi_probe.dll")
 
 failures: list[str] = []
 passed = 0

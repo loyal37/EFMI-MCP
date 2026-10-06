@@ -54,5 +54,8 @@ void classify_caller(void* const* frames, unsigned count, CallerInfo* out);
 struct HookStats {
 	volatile LONG draws, creates, presents, maps, exec_cmdlists, revptr;
 	volatile LONG tracked_draws;
+	// Resources and shaders created by XXMI. A config reload destroys the mod
+	// resources, so they are created again when the mods next draw.
+	volatile LONG xxmi_creates, xxmi_shader_creates;
 };
 extern HookStats g_hstats;

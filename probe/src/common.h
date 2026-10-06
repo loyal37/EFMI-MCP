@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#define PROBE_VERSION "0.1.1"
+#define PROBE_VERSION "0.1.2"
 #define PROBE_PROTOCOL 1
 
 // ---------------------------------------------------------------- logging

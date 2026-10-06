@@ -15,6 +15,7 @@ seconds after start-up (the scene's own cost drifts over the first seconds):
 """
 from __future__ import annotations
 
+import os
 import argparse
 import statistics
 import subprocess
@@ -31,7 +32,8 @@ from efmi_mcp.probe_client import ProbeClient, ProbeError, find_probes  # noqa: 
 from parity_test import signal  # noqa: E402
 
 RUN = HERE / "run"
-PROBE = ROOT / "dist" / "efmi_probe.dll"
+# EFMI_PROBE_DLL selects another build, e.g. one in dist/candidate while the game holds the installed DLL.
+PROBE = Path(os.environ.get("EFMI_PROBE_DLL") or ROOT / "dist" / "efmi_probe.dll")
 
 WINDOWS = [(2.0, 5.0), (7.0, 10.0), (12.0, 15.0), (17.0, 20.0), (22.0, 25.0)]
 NAMES = ["loaded, no client", "client connected", "continuous mode", "full captures", "client gone"]

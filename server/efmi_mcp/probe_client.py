@@ -171,3 +171,8 @@ class ProbeClient:
         reply, payload = self.request("live_get", since=since, max_frames=max_frames)
         frames = json.loads(payload.decode("utf-8")) if payload else []
         return reply.get("frame", 0), frames
+
+    def reload_key(self, focus: bool = True, restore_focus: bool = True, max_hold_ms: int = 3000) -> dict:
+        """Has the probe press XXMI's reload key (F10) inside the game. Returns its receipt."""
+        reply, _ = self.request("reload_key", focus=focus, restore_focus=restore_focus, max_hold_ms=max_hold_ms)
+        return reply.get("result", {})

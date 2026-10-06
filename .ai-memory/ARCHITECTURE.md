@@ -32,7 +32,7 @@
 | `server/run_server.py`、`efmi_mcp/__main__.py` | 入口、EFMI 只读根目录与输出目录参数 |
 | `efmi_mcp/mcp_stdio.py`、`tools.py` | MCP 协议、工具定义、会话与捕获缓存 |
 | `efmi_mcp/reload_workflow.py` | 同一管道/PID/渲染目标下预检、停止 live、失效旧缓存、单次 F10 后等待和新帧门槛 |
-| `efmi_mcp/reload_input.py` | Win32窗口/前台/修饰键检查、固定F10及按住期间异步状态检测、异常释放；不提供任意按键接口 |
+| `efmi_mcp/reload_input.py` | `send_reload_via_probe`：让探针在游戏内按 F10 并判读回执；`send_reload_f10`：旧的外部 Win32 按键（仅非管理员游戏可达）。均不提供任意按键接口 |
 | `efmi_mcp/probe_client.py` | 发现 `\\.\pipe\efmi-probe-<PID>` 并发送请求；每个探针同时服务一个客户端 |
 | `efmi_mcp/capture_model.py`、`decode.py`、`shader.py` | 捕获模型、缓冲/贴图解码、反汇编 |
 | `efmi_mcp/mods.py`、`fa_dump.py`、`hashes.py`、`parity.py` | 只读 mod/抓帧解析、哈希与对照验证 |
@@ -41,7 +41,13 @@
 
 `hashes.py` 在导入时尝试绝对路径加载 `dist/efmi_crc32c.dll`，CPU SSE4.2检查及已知向量通过后加速CRC；缺库/不支持时保持Python回退。源文件与构建位于 `server/native/`，完全独立于注入探针。`decode.texture_to_pngs` 同次解码生成完整PNG/预览，压缩等级1保留像素。
 
-### 服务 0.1.3：重载请求、输入状态与采集工作流
+### 探针 0.1.2 / 服务 0.1.4：进程内重载按键与重载证据
+
+`probe/src/reload.cpp` 实现管道命令 `reload_key`，在 IPC 线程执行；渲染线程只在按键进行期间于 Present 钩子里记时间并置事件（`reload_on_present`）。流程：核对交换链、XXMI、d3dx.ini 两项默认绑定、窗口与按键状态 → 取前台（`direct`，被拒则 `attach_input`）→ 等 3 帧 → `SendInput` 按下并等到读到按下状态 → 在第二个 Present 或晚于 10ms 的第一个 Present 处松开 → 可选还原焦点。回执经 `{"ok":true,"result":{...,"code":...}}` 返回，`code!="ok"` 由服务端转成 `ReloadInputError`。
+
+状态的 `features` 列表决定服务端走哪条路径（`reload_workflow.py`）：含 `reload_key` 用 `send_reload_via_probe`，否则用旧的 `send_reload_f10`。`reload_evidence()` 读取捕获里资源/着色器的 `cf`，与回执的 `frame_at_key_down` 比较。0.1.3 一节描述的预检、失效旧缓存、等待和新帧门槛不变。
+
+### 服务 0.1.3：重载请求、输入状态与采集工作流（外部按键路径，旧探针仍用）
 
 `efmi_reload_and_capture` 为有副作用且不可假定幂等的 MCP 工具，探针协议/DLL 保持 0.1.1。工作流读取当前根目录 `d3dx.ini`，仅接受 `[Hunting]` 中各一条 `reload_config`、`reload_fixes = no_modifiers VK_F10`，不改原配置。使用已连接的同一客户端，核对管道 PID、XXMI 路径及 device/context/swap chain；检查不能进行中的普通单帧捕获，live 的 recording 则先停止。
 
@@ -57,6 +63,7 @@
 - `sandbox/prepare_run.py`：把只读 EFMI 运行时复制到本项目 `sandbox/run/`。
 - `sandbox/run_all.py`：准备副本、三种加载顺序的哈希对照、探针自测、MCP 端到端测试，以及两组无系统输入的自动重载单元测试。
 - `sandbox/selftest.py`、`mcp_test.py`、`parity_test.py`、`perf_test.py`：对应专项验证。
+- 2026-10-06 晚：两组单元测试增至 27 / 46 项（新增探针按键路径与重载证据）；`reload_integration_test.py` 改为验证探针按键、证据与焦点还原，探针自己按键时不再因存在其他探针而拒绝。沙盒脚本可用 `EFMI_PROBE_DLL` 指定待测 DLL。以下为 0.1.3 时的说明。
 - `sandbox/reload_input_test.py`：21项固定F10/Win32 ABI/焦点/修饰键/状态观察/释放回归；`sandbox/reload_workflow_test.py`：32项MCP边界、缓存、目标、新帧及输入失败检查。本轮两组、既有MCP stdio私有沙盒39项及compileall通过；专项用fake输入/探针，不对用户游戏发键。
 - `sandbox/reload_integration_test.py`：单独运行的真实F10集成，聚焦私有沙盒，发现其他探针则拒绝；不纳入自动全套。历史0.1.2在hunting=0下验证skip规则只移除目标IB，证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`；本轮用户游戏运行时未重跑。沙盒处理SC_KEYMENU避免菜单模式阻塞，规则指定VS的checktextureoverride=ib及IB match_index_count。该历史结果不能替代当前实机失败结论。
 - `sandbox/multidevice_test.py`：辅助设备先/后创建，以及有/无 XXMI 的多设备专项；旧版探针保存在 `dist/backup-before-multidevice/`，用于复现对照。

@@ -886,6 +886,19 @@ int wmain(int argc, wchar_t** argv)
 		float time = animate ? (float)(GetTickCount64() - t0) / 1000.0f : 0.0f;
 		render(s, time);
 		if (aux.dev && !aux.render(frame)) return 3;
+		// What XXMI is about to see when it polls its hotkeys inside Present:
+		// the reload key and whether this process has the foreground.
+		{
+			static int seen_key = -1, seen_fg = -1;
+			DWORD fg_pid = 0;
+			GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+			int key = (GetAsyncKeyState(VK_F10) & 0x8000) != 0, fg = fg_pid == GetCurrentProcessId();
+			if (key != seen_key || fg != seen_fg) {
+				say("frame %d: F10 %s, foreground %s", frame, key ? "down" : "up", fg ? "ours" : "elsewhere");
+				seen_key = key;
+				seen_fg = fg;
+			}
+		}
 		s.swap->Present(g_vsync, 0);
 		frame++;
 		if (GetTickCount64() - last_beat >= 1000) {

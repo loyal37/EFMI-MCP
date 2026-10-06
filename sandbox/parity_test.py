@@ -8,6 +8,7 @@ Nothing outside sandbox/run is written.
 """
 from __future__ import annotations
 
+import os
 import argparse
 import ctypes
 import shutil
@@ -26,7 +27,8 @@ from efmi_mcp.parity import compare_ordered, compare_sets  # noqa: E402
 from efmi_mcp.probe_client import ProbeClient, ProbeError, find_probes  # noqa: E402
 
 RUN = HERE / "run"
-PROBE = ROOT / "dist" / "efmi_probe.dll"
+# EFMI_PROBE_DLL selects another build, e.g. one in dist/candidate while the game holds the installed DLL.
+PROBE = Path(os.environ.get("EFMI_PROBE_DLL") or ROOT / "dist" / "efmi_probe.dll")
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 kernel32.OpenEventW.restype = ctypes.c_void_p

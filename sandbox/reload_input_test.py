@@ -274,5 +274,62 @@ class ReloadInputTests(unittest.TestCase):
             self.assert_refused(FakeBackend(), "reload_busy")
 
 
+class FakeProbeClient:
+    def __init__(self, receipt):
+        self.receipt = receipt
+        self.calls = []
+
+    def reload_key(self, **kwargs):
+        self.calls.append(kwargs)
+        if isinstance(self.receipt, BaseException):
+            raise self.receipt
+        return dict(self.receipt)
+
+
+class ProbeSenderTests(unittest.TestCase):
+    """The key is pressed by the probe; this side only forwards and judges its receipt."""
+    OK = {"code": "ok", "message": "", "sender": "probe", "key_down_sent": True,
+          "key_down_observed": True, "key_up_sent": True, "frames_while_held": 2}
+
+    def test_ok_receipt_is_returned_and_flags_are_forwarded(self):
+        client = FakeProbeClient(self.OK)
+        receipt = ri.send_reload_via_probe(client, focus_game=False, restore_focus=False)
+        self.assertEqual(receipt["sender"], "probe")
+        self.assertEqual(client.calls, [{"focus": False, "restore_focus": False}])
+
+    def test_refusal_becomes_an_input_error_carrying_the_receipt(self):
+        client = FakeProbeClient({"code": "focus_refused", "message": "no", "key_down_sent": False})
+        with self.assertRaises(ri.ReloadInputError) as ctx:
+            ri.send_reload_via_probe(client)
+        self.assertEqual(ctx.exception.code, "focus_refused")
+        self.assertIs(ctx.exception.details["key_down_sent"], False)
+        self.assertEqual(len(client.calls), 1)  # one request, never pressed again
+
+    def test_receipt_without_a_code_is_not_success(self):
+        with self.assertRaises(ri.ReloadInputError) as ctx:
+            ri.send_reload_via_probe(FakeProbeClient({}))
+        self.assertEqual(ctx.exception.code, "probe_error")
+
+    def test_invalid_flags_never_reach_the_probe(self):
+        client = FakeProbeClient(self.OK)
+        for kwargs in ({"focus_game": 1}, {"restore_focus": "yes"}):
+            with self.assertRaises(ri.ReloadInputError):
+                ri.send_reload_via_probe(client, **kwargs)
+        self.assertEqual(client.calls, [])
+
+    def test_concurrent_press_is_refused(self):
+        client = FakeProbeClient(self.OK)
+        with ri._SEND_LOCK:
+            with self.assertRaises(ri.ReloadInputError) as ctx:
+                ri.send_reload_via_probe(client)
+        self.assertEqual(ctx.exception.code, "reload_busy")
+        self.assertEqual(client.calls, [])
+
+    def test_lock_is_released_after_a_pipe_failure(self):
+        with self.assertRaises(OSError):
+            ri.send_reload_via_probe(FakeProbeClient(OSError("pipe broke")))
+        ri.send_reload_via_probe(FakeProbeClient(self.OK))
+
+
 if __name__ == "__main__":
     unittest.main()

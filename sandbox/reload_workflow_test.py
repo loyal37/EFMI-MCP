@@ -450,6 +450,214 @@ class ReloadWorkflowTests(unittest.TestCase):
         self.sender.assert_not_called()
         self.assert_stale_unavailable()
 
+    def test_server_sent_key_that_never_arrives_explains_the_restart(self):
+        self.sender.side_effect = ReloadInputError(
+            "keydown_not_observed", "Accepted event did not establish a visible pressed state",
+            {"key_down_sent": True, "key_up_sent": True, "key_down_observed": False})
+        text, error = self.call()
+        self.assertTrue(error, text)
+        result = json.loads(text)
+        self.assertEqual(result["sender"], "server")
+        self.assertIn("restart the game", result["hint"])
+
+
+class KeyPressingProbe(FakeProbe):
+    """A probe new enough to press F10 itself and to report creation frames."""
+    def __init__(self, root, clock):
+        super().__init__(root, clock)
+        self.status_overrides["features"] = ["reload_key", "create_frames"]
+        self.status_overrides["probe"] = "0.1.2"
+        self.receipt = {}
+        self.presses = []
+        self.edit_document = None
+
+    def reload_key(self, **kwargs):
+        self.events.append(("key", self.clock.now))
+        self.presses.append(kwargs)
+        if isinstance(self.receipt, BaseException):
+            raise self.receipt
+        receipt = {"code": "ok", "message": "", "sender": "probe", "key": "F10",
+                   "key_down_sent": True, "key_down_observed": True, "key_up_sent": True,
+                   "frames_while_held": 2, "released_on": "two_frames", "poll_window": "full_frame",
+                   "frame_at_key_down": 100 + int(self.clock.now * 60), "xxmi_creates_before_press": 0}
+        receipt.update(self.receipt)
+        return receipt
+
+    def document(self, frame):
+        doc = super().document(frame)
+        doc["resources"][0].update({"origin": "game", "cf": 5, "sn": 1})
+        doc["shaders"] = []
+        if self.edit_document:
+            self.edit_document(doc)
+        return doc
+
+
+def xxmi_buffer(created_frame, kind="buffer"):
+    return {"kind": kind, "size": 16, "bind": 8, "hash": "0badf00d", "known": True,
+            "origin": "xxmi", "cf": created_frame, "sn": 40}
+
+
+class ProbePressedReloadTests(unittest.TestCase):
+    """The key goes down at frame 100; the fresh capture is frame 221."""
+    def setUp(self):
+        build = ROOT / "sandbox" / "build"
+        build.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix="reload-test-", dir=build)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "d3dx.ini").write_text("[Hunting]\nreload_config = no_modifiers VK_F10\n"
+                                            "reload_fixes = no_modifiers VK_F10\n", encoding="utf-8")
+        (self.root / "d3d11.dll").touch()
+        self.clock = FakeClock()
+        self.probe = KeyPressingProbe(self.root, self.clock)
+        self.session = tools.Session(self.root, self.root / "out", self.root / "probe.dll")
+        self.session.client = self.probe
+        self.session.add_capture(Capture(self.probe.document(80)))
+        with patch.object(tools, "Session", return_value=self.session):
+            self.server = tools.build_server(self.root, self.root / "out", self.root / "probe.dll")
+        # The server must not send a key of its own when the probe can.
+        self.server_sender = self.enterContext(patch.object(
+            reload_workflow, "send_reload_f10", side_effect=AssertionError("server-side key must not be used")))
+        self.enterContext(patch.object(reload_workflow.time, "monotonic", self.clock.monotonic))
+        self.enterContext(patch.object(reload_workflow.time, "sleep", self.clock.sleep))
+        self.enterContext(patch.object(tools.ProbeClient, "connect", side_effect=ProbeNotFound("test: no probe")))
+
+    def call(self, **arguments):
+        text, error = mcp_call(self.server, "efmi_reload_and_capture", **arguments)
+        return json.loads(text), error
+
+    def bind_to_game_draw(self, resource):
+        def edit(doc):
+            doc["resources"].append(resource)
+            doc["draws"][0]["srv"] = [[4, 60, len(doc["resources"]) - 1]]
+        self.probe.edit_document = edit
+
+    def test_probe_presses_the_key_and_flags_are_forwarded(self):
+        result, error = self.call(focus_game=False, restore_focus=False)
+        self.assertFalse(error, result)
+        self.assertEqual(result["sender"], "probe")
+        self.assertEqual(self.probe.presses, [{"focus": False, "restore_focus": False}])
+        self.server_sender.assert_not_called()
+        events = [event[0] for event in self.probe.events]
+        self.assertLess(events.index("release"), events.index("key"))
+        self.assertLess(events.index("key"), events.index("capture"))
+
+    def test_resource_created_after_the_key_confirms_the_reload(self):
+        self.bind_to_game_draw(xxmi_buffer(150))
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertIs(result["reload_confirmed"], True)
+        self.assertEqual(result["reload_evidence"]["key_down_frame"], 100)
+        self.assertEqual(result["reload_evidence"]["resources_created_after_key"], 1)
+        self.assertEqual(result["reload_evidence"]["examples"][0]["created_frame"], 150)
+        self.assertIn("the reload took place", result["confirmation_note"])
+
+    def test_nothing_new_from_xxmi_is_not_a_confirmation(self):
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertIs(result["reload_requested"], True)
+        self.assertIs(result["reload_confirmed"], False)
+        self.assertEqual(result["reload_evidence"]["resources_created_after_key"], 0)
+        self.assertIn("no mod content is on screen", result["confirmation_note"])
+
+    def test_resource_from_the_frame_of_the_key_or_earlier_is_not_evidence(self):
+        for created in (50, 100):
+            with self.subTest(created=created):
+                self.bind_to_game_draw(xxmi_buffer(created))
+                result, error = self.call()
+                self.assertFalse(error, result)
+                self.assertIs(result["reload_confirmed"], False)
+                self.clock.now = 0.0
+
+    def test_iniparams_texture_and_game_resources_are_not_evidence(self):
+        for resource in (xxmi_buffer(150, kind="tex1d"), dict(xxmi_buffer(150), origin="game"),
+                         dict(xxmi_buffer(150), known=False)):
+            with self.subTest(resource=resource):
+                self.bind_to_game_draw(resource)
+                result, error = self.call()
+                self.assertFalse(error, result)
+                self.assertIs(result["reload_confirmed"], False)
+                self.clock.now = 0.0
+
+    def test_older_mod_buffers_drawn_by_xxmi_are_reported(self):
+        def edit(doc):
+            doc["resources"].append(xxmi_buffer(50))
+            doc["draws"].append({"i": 1, "t": 2, "o": "xxmi", "ic": 3, "fi": 0, "fv": 0, "inst": 1,
+                                 "topo": 4, "ib": [1, 57, 0, 0], "vb": [[0, 1, 12, 0, 0]]})
+        self.probe.edit_document = edit
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertIs(result["reload_confirmed"], False)
+        self.assertEqual(result["reload_evidence"]["xxmi_mesh_buffers_older_than_key"], 1)
+        self.assertIn("did not take effect", result["confirmation_note"])
+
+    def test_new_custom_shader_confirms_the_reload(self):
+        def edit(doc):
+            doc["shaders"] = [{"id": 0, "known": True, "type": "ps", "hash": "00000000000000aa",
+                               "origin": "xxmi", "cf": 160},
+                              {"id": 1, "known": True, "type": "vs", "hash": "00000000000000bb",
+                               "origin": "game", "cf": 170}]
+            doc["draws"][0]["sh"] = [1, -1, -1, -1, 0, -1]
+        self.probe.edit_document = edit
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertIs(result["reload_confirmed"], True)
+        self.assertEqual(result["reload_evidence"]["shaders_created_after_key"], 1)
+
+    def test_resources_xxmi_was_already_creating_are_not_a_confirmation(self):
+        self.bind_to_game_draw(xxmi_buffer(150))
+        self.probe.receipt = {"xxmi_creates_before_press": 3}
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertIs(result["reload_confirmed"], False)
+        self.assertEqual(result["reload_evidence"]["resources_created_after_key"], 1)
+        self.assertIn("already creating resources", result["confirmation_note"])
+
+    def test_probe_without_creation_frames_gives_no_evidence(self):
+        def edit(doc):
+            for resource in doc["resources"]:
+                resource.pop("cf", None)
+        self.probe.edit_document = edit
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertIsNone(result["reload_evidence"])
+        self.assertIs(result["reload_confirmed"], False)
+
+    def test_probe_refusal_sends_nothing_and_captures_nothing(self):
+        self.probe.receipt = {"code": "focus_refused", "message": "Windows did not let the game take the foreground",
+                              "key_down_sent": False, "key_up_sent": False, "key_down_observed": False}
+        result, error = self.call()
+        self.assertTrue(error, result)
+        self.assertEqual((result["phase"], result["input_error_code"]), ("input", "focus_refused"))
+        self.assertIs(result["reload_requested"], False)
+        self.assertEqual(result["sender"], "probe")
+        self.assertNotIn("hint", result)
+        self.assertEqual(len(self.probe.presses), 1)
+        self.assertNotIn("capture", [event[0] for event in self.probe.events])
+        self.assertIsNone(self.session.latest)
+
+    def test_press_aborted_after_key_down_is_reported_as_requested(self):
+        self.probe.receipt = {"code": "foreground_lost", "message": "Another window took the foreground",
+                              "key_down_sent": True, "key_up_sent": True, "key_down_observed": True}
+        result, error = self.call()
+        self.assertTrue(error, result)
+        self.assertIs(result["reload_requested"], True)
+        self.assertIs(result["reload_confirmed"], False)
+        self.assertNotIn("capture", [event[0] for event in self.probe.events])
+
+    def test_broken_pipe_during_the_press_has_unknown_delivery(self):
+        self.probe.receipt = ProbeError("the probe closed the pipe (did the game exit?)")
+        result, error = self.call()
+        self.assertTrue(error, result)
+        self.assertIsNone(result["reload_requested"])
+        self.assertEqual(len(self.probe.presses), 1)
+
+    def test_restore_focus_must_be_a_boolean(self):
+        result, error = self.call(restore_focus=1)
+        self.assertTrue(error, result)
+        self.assertEqual(self.probe.presses, [])
+        self.assertEqual(self.session.latest, 80)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

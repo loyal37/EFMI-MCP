@@ -79,3 +79,17 @@
 交付E:\Endfield mods\liimo merge：workplace、liimo merge.blend、验证JSON、preview.png与提取说明。18组件/79044顶点/94051三角、696私有组槽到512canonical；72个输出IB/VB字节核对通过。Blender4.5.7+LoyalTools1.6.7实导入errors=[]；首轮normal材质选项默认关闭导致验证失败，脚本在该临时场景显式启用normal map后通过，并选择漫反射节点作为Solid纹理显示。源几何和用户原目录不受这些验证修复影响。
 
 预览核对完成，火箭靴等特效未重建游戏shader，2个小组件无自动贴图，均保留数据并写明边界。不含未捕获LOD、不声明某帧pose或命名层级rig。最终同步记忆并本地提交，不push。
+
+## 2026-10-06 晚：定位 F10 失效原因，改由探针按键（Claude 会话）
+
+用户反馈 Codex 实现的自动 F10 实机无效。查得 `Endfield.exe` 清单要求管理员权限，MCP 服务为普通权限，UIPI 丢弃其按键而 `SendInput` 照常返回成功。实现探针 0.1.2 的 `reload_key`（进程内固定 F10）与服务 0.1.4 的重载证据，详见 CURRENT_STATE 首节、D-012。
+
+沙盒首轮按键送达但 XXMI 未重载：`SendInput` 被系统键盘钩子拖住数毫秒，期间的 Present 被计作按住帧。改为从读到按下状态起计帧后通过；再把松开条件定为“第二个 Present 或晚于 10ms 的第一个 Present”，最终一次按键恰好一次重载。游戏占前台时沙盒取不到前台，按键类测试等用户切出游戏后才跑完。
+
+最终 DLL（SHA `a1ba4a93…2668`）全套通过并装到 `dist/efmi_probe.dll`，旧 0.1.1 存 `dist/backup-0.1.1/`。游戏 PID41976 仍在运行且仍是 0.1.1；未改 EFMI/启动器，未对用户游戏发键。
+
+用户随后重启游戏、移出伊冯 mod 并要求刷新。实机一次通过：PID 43816 报告探针 0.1.2、进程 elevated（完整性 0x3000）。用户移出伊冯 mod 后由工具重载：按键在进程内发出并被读到，持续 1 帧（21696→21697），重载那一帧耗时 92.7ms（平时约 8ms）；重载前 367 次绘制中 XXMI 120 次（93 DrawIndexed + 27 Dispatch），重载后 277 次全部来自游戏，XXMI 的 93 次/18 个网格消失，游戏原始的 30 次/6 个网格出现；`reload_confirmed=true`（XXMI 在按键后创建了新帧所用的 27 个着色器）。游戏继续运行。证据 `captures/verify-reload-inprocess-43816/`。当时游戏本来就在前台，探针从后台取前台（`attach_input`）并还回焦点这一段在实机上尚未执行过，只在沙盒验证。
+
+用户确认本轮及以后的 Claude 会话同样按 D-007 提交并推送。
+
+**下次继续**：有机会时在游戏处于后台时再验证一次取前台/还焦点。

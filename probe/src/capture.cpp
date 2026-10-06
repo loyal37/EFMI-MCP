@@ -31,6 +31,8 @@ struct CapRes {
 	uint8_t  origin = 0;
 	uint32_t hash = 0, data_hash = 0;
 	uint64_t epoch = 0;          // buffer write epoch when first seen in this frame
+	uint32_t create_frame = 0;   // frame counter when the object was created
+	uint64_t serial = 0;         // creation order; a new object at a reused address gets a new one
 	AnyDesc  live = {};
 };
 
@@ -441,6 +443,8 @@ static int32_t res_id(Capture* c, ID3D11Resource* r)
 		cr.data_hash = ri.data_hash;
 		cr.origin = ri.origin;
 		cr.epoch = (uint64_t)ri.epoch;
+		cr.create_frame = ri.create_frame;
+		cr.serial = ri.serial;
 	}
 	if (c->rq.hold) {
 		ID3D11Resource_AddRef(r);
@@ -1568,6 +1572,8 @@ static void write_resource(JsonW& w, uint32_t id, const CapRes& r)
 		w.ks("origin", origin_name(r.origin));
 		w.kh32("hash", r.hash);
 		w.kh32("data_hash", r.data_hash);
+		w.ku("cf", r.create_frame);
+		w.ku("sn", r.serial);
 		if (r.assumed) w.kb("res_assumed", true);
 	}
 	switch (r.dim) {
@@ -1663,6 +1669,7 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 			w.kh64("hash", s.info.hash);
 			w.ku("size", s.info.size);
 			w.ks("origin", origin_name(s.info.origin));
+			w.ku("cf", s.info.create_frame);
 		}
 		w.end_obj();
 	}

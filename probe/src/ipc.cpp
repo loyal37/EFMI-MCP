@@ -9,6 +9,7 @@
 #include "hooks.h"
 #include "hash.h"
 #include "json.h"
+#include "reload.h"
 #include <sddl.h>
 #include <string.h>
 
@@ -74,6 +75,15 @@ static void status_json(JsonW& w)
 
 	w.ks("probe", PROBE_VERSION);
 	w.ku("protocol", PROBE_PROTOCOL);
+	// Optional abilities, so the server need not compare version strings.
+	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.end_arr();
+	bool elevated = false;
+	uint32_t integrity = 0;
+	reload_process_info(&elevated, &integrity);
+	w.key("process"); w.begin_obj();
+	w.kb("elevated", elevated);
+	w.ku("integrity_rid", integrity);
+	w.end_obj();
 	w.ku("pid", GetCurrentProcessId());
 	w.ks("exe", narrow(exe));
 	w.kb("attached", g_dev && g_ctx);
@@ -105,6 +115,8 @@ static void status_json(JsonW& w)
 	w.ku("maps", (uint32_t)g_hstats.maps);
 	w.ku("command_lists", (uint32_t)g_hstats.exec_cmdlists);
 	w.ku("vtable_reapplied", (uint32_t)g_hstats.revptr);
+	w.ku("xxmi_resource_creates", (uint32_t)g_hstats.xxmi_creates);
+	w.ku("xxmi_shader_creates", (uint32_t)g_hstats.xxmi_shader_creates);
 	w.end_obj();
 
 	w.key("registry"); w.begin_obj();
@@ -250,6 +262,27 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		w.begin_obj();
 		w.kd("id", id);
 		w.kb("ok", true);
+		w.end_obj();
+		return send_msg(pipe, w.s, nullptr, 0);
+	}
+
+	if (cmd == "reload_key") {
+		// Fixed function: F10, to this process's own window, nothing else.
+		ReloadKeyRequest q;
+		q.focus = rq.bool_or("focus", true);
+		q.restore_focus = rq.bool_or("restore_focus", true);
+		double hold = rq.num_or("max_hold_ms", 3000);
+		q.max_hold_ms = hold < 200 ? 200 : hold > 10000 ? 10000 : (uint32_t)hold;
+		JsonW w;
+		w.begin_obj();
+		w.kd("id", id);
+		w.kb("ok", true);
+		w.key("result"); w.begin_obj();
+		std::string message;
+		const char* code = reload_key_run(q, w, &message);
+		w.ks("code", code);
+		w.ks("message", message);
+		w.end_obj();
 		w.end_obj();
 		return send_msg(pipe, w.s, nullptr, 0);
 	}
