@@ -127,9 +127,13 @@ void cs_pose(uint3 id : SV_DispatchThreadID)
 	uint i = id.x;
 	if (i >= (uint)pose.y) return;
 	uint n = (uint)pose.z;
-	float fx = (float)(i % (n + 1)) / n;
-	float fy = (float)(i / (n + 1)) / n;
-	float3 p = float3(fx * 0.5 + 0.35, fy * 0.5 - 0.85, 0.5 + 0.03 * sin(pose.x + fx * 6.28));
+	// This scene is a byte-for-byte hash fixture. Without precise, positions
+	// were observed to change by 1 ULP between startup and later frames with
+	// identical constants (also without XXMI and with the old probe). Preserve
+	// the arithmetic instead of hiding the real byte changes with a warmup.
+	precise float fx = (float)(i % (n + 1)) / n;
+	precise float fy = (float)(i / (n + 1)) / n;
+	precise float3 p = float3(fx * 0.5 + 0.35, fy * 0.5 - 0.85, 0.5 + 0.03 * sin(pose.x + fx * 6.28));
 	uint o = i * 32;
 	u_out.Store3(o, asuint(p));
 	u_out.Store3(o + 12, asuint(float3(0, 0, 1)));
@@ -137,10 +141,10 @@ void cs_pose(uint3 id : SV_DispatchThreadID)
 }
 )";
 
-static bool compile(const char* entry, const char* target, ID3DBlob** out)
+static bool compile(const char* entry, const char* target, ID3DBlob** out, const char* source = k_hlsl)
 {
 	ID3DBlob* err = nullptr;
-	HRESULT hr = D3DCompile(k_hlsl, strlen(k_hlsl), "sandbox.hlsl", nullptr, nullptr, entry, target,
+	HRESULT hr = D3DCompile(source, strlen(source), "sandbox.hlsl", nullptr, nullptr, entry, target,
 	                        D3DCOMPILE_OPTIMIZATION_LEVEL1, 0, out, &err);
 	if (FAILED(hr)) {
 		say("shader %s failed: %s", entry, err ? (const char*)err->GetBufferPointer() : "?");
@@ -606,6 +610,105 @@ static void render(Scene& s, float time)
 	s.ctx->PSSetShaderResources(0, 1, &null_srv);
 }
 
+// A device with no swap chain models a helper/overlay that is created after the
+// game has started. It also does real work between the main draw and Present:
+// accepting either its draws or writes into the main frame is a regression.
+struct AuxiliaryDevice {
+	ID3D11Device* dev = nullptr;
+	ID3D11DeviceContext* ctx = nullptr;
+	ID3D11Buffer* vb = nullptr, *ib = nullptr, *cb = nullptr;
+	ID3D11VertexShader* vs = nullptr;
+	ID3D11PixelShader* ps = nullptr;
+	ID3D11InputLayout* layout = nullptr;
+	ID3D11RenderTargetView* rtv = nullptr;
+
+	~AuxiliaryDevice()
+	{
+		if (ctx) ctx->ClearState();
+		if (rtv) rtv->Release();
+		if (layout) layout->Release();
+		if (ps) ps->Release();
+		if (vs) vs->Release();
+		if (cb) cb->Release();
+		if (ib) ib->Release();
+		if (vb) vb->Release();
+		if (ctx) ctx->Release();
+		if (dev) dev->Release();
+	}
+
+	bool create(tD3D11CreateDevice create_device, IDXGIAdapter* adapter)
+	{
+		const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+		HRESULT hr = create_device(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, levels, 2,
+		                          D3D11_SDK_VERSION, &dev, nullptr, &ctx);
+		CHECK(hr, "auxiliary device");
+		say("auxiliary device %p context %p (no swap chain)", dev, ctx);
+
+		static const char* source = R"(
+cbuffer AuxiliaryConstants : register(b0) { float4 marker; };
+float4 aux_vs(float3 pos : POSITION) : SV_Position { return float4(pos, 1); }
+float4 aux_ps(float4 pos : SV_Position) : SV_Target { return marker; }
+)";
+		ID3DBlob* bvs = nullptr, *bps = nullptr;
+		if (!compile("aux_vs", "vs_5_0", &bvs, source)) return false;
+		if (!compile("aux_ps", "ps_5_0", &bps, source)) { bvs->Release(); return false; }
+		hr = dev->CreateVertexShader(bvs->GetBufferPointer(), bvs->GetBufferSize(), nullptr, &vs);
+		if (SUCCEEDED(hr)) hr = dev->CreatePixelShader(bps->GetBufferPointer(), bps->GetBufferSize(), nullptr, &ps);
+		const D3D11_INPUT_ELEMENT_DESC il = { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+		                                      D3D11_INPUT_PER_VERTEX_DATA, 0 };
+		if (SUCCEEDED(hr)) hr = dev->CreateInputLayout(&il, 1, bvs->GetBufferPointer(), bvs->GetBufferSize(), &layout);
+		bvs->Release(); bps->Release();
+		CHECK(hr, "auxiliary shaders/layout");
+
+		D3D11_BUFFER_DESC bd = {};
+		bd.ByteWidth = 9 * sizeof(float); bd.Usage = D3D11_USAGE_DYNAMIC;
+		bd.BindFlags = D3D11_BIND_VERTEX_BUFFER; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		hr = dev->CreateBuffer(&bd, nullptr, &vb); CHECK(hr, "auxiliary vb");
+		const uint16_t indices[] = { 0, 2, 1 };
+		D3D11_SUBRESOURCE_DATA init = { indices, 0, 0 };
+		bd = {}; bd.ByteWidth = sizeof(indices); bd.Usage = D3D11_USAGE_IMMUTABLE;
+		bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+		hr = dev->CreateBuffer(&bd, &init, &ib); CHECK(hr, "auxiliary ib");
+		bd = {}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		hr = dev->CreateBuffer(&bd, nullptr, &cb); CHECK(hr, "auxiliary cb");
+		D3D11_TEXTURE2D_DESC td = {};
+		td.Width = td.Height = 16; td.MipLevels = td.ArraySize = 1;
+		td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+		td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET;
+		ID3D11Texture2D* tex = nullptr;
+		hr = dev->CreateTexture2D(&td, nullptr, &tex); CHECK(hr, "auxiliary target");
+		hr = dev->CreateRenderTargetView(tex, nullptr, &rtv); tex->Release(); CHECK(hr, "auxiliary rtv");
+		return true;
+	}
+
+	bool render(int frame)
+	{
+		float vertices[9] = { -0.5f, -0.5f, 0.5f, 0.0f, 0.5f, 0.5f, 0.5f, -0.5f, 0.5f };
+		vertices[0] += (frame % 8) * 0.001f;
+		D3D11_MAPPED_SUBRESOURCE mapped = {};
+		HRESULT hr = ctx->Map(vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped); CHECK(hr, "auxiliary Map");
+		memcpy(mapped.pData, vertices, sizeof(vertices));
+		ctx->Unmap(vb, 0);
+		const float marker[4] = { 0.75f, (frame % 16) / 16.0f, 0.25f, 1.0f };
+		ctx->UpdateSubresource(cb, 0, nullptr, marker, 0, 0);
+		UINT stride = 3 * sizeof(float), offset = 0;
+		ctx->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+		ctx->IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
+		ctx->IASetInputLayout(layout);
+		ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		ctx->VSSetShader(vs, nullptr, 0);
+		ctx->PSSetShader(ps, nullptr, 0);
+		ctx->PSSetConstantBuffers(0, 1, &cb);
+		ctx->OMSetRenderTargets(1, &rtv, nullptr);
+		D3D11_VIEWPORT vp = { 0, 0, 16, 16, 0, 1 };
+		ctx->RSSetViewports(1, &vp);
+		ctx->ClearRenderTargetView(rtv, marker);
+		ctx->DrawIndexed(3, 0, 0);
+		ctx->Flush();
+		return true;
+	}
+};
+
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
 	if (m == WM_DESTROY) { PostQuitMessage(0); return 0; }
@@ -625,6 +728,8 @@ int wmain(int argc, wchar_t** argv)
 {
 	std::wstring xxmi, probe;
 	bool probe_first = false, preload_runtime = false, animate = false, manual_attach = false;
+	bool aux_device_first = false;
+	int aux_device_after = -1;
 	int max_frames = 0, max_seconds = 30;
 	WORD dump_vk = 0x87;                              // F24
 	UINT width = 1280, height = 720;
@@ -638,6 +743,8 @@ int wmain(int argc, wchar_t** argv)
 		else if (a == L"--preload-runtime") preload_runtime = true;
 		else if (a == L"--animate") animate = true;
 		else if (a == L"--manual-attach") manual_attach = true;
+		else if (a == L"--aux-device-first") aux_device_first = true;
+		else if (a == L"--aux-device-after") aux_device_after = _wtoi(next().c_str());
 		else if (a == L"--frames") max_frames = _wtoi(next().c_str());
 		else if (a == L"--plain-draw") g_plain_draw = true;
 		else if (a == L"--repeat") g_repeat = _wtoi(next().c_str());
@@ -695,12 +802,17 @@ int wmain(int argc, wchar_t** argv)
 	say("D3D11CreateDevice at %p in %s", create, module_of(create).c_str());
 
 	Scene s;
+	AuxiliaryDevice aux;
 	s.width = width; s.height = height;
 	IDXGIFactory1* factory = nullptr;
 	HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory);
 	if (FAILED(hr)) { say("CreateDXGIFactory1 failed 0x%08x", (unsigned)hr); return 2; }
 	IDXGIAdapter* adapter = nullptr;
 	factory->EnumAdapters(0, &adapter);
+	if (aux_device_first) {
+		if (!aux.create(create, adapter) || !aux.render(0)) return 3;
+		say("AUXILIARY READY frame=0 order=first");
+	}
 	const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
 	D3D_FEATURE_LEVEL got = (D3D_FEATURE_LEVEL)0;
 	hr = create(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, levels, 2, D3D11_SDK_VERSION, &s.dev, &got, &s.ctx);
@@ -763,8 +875,13 @@ int wmain(int argc, wchar_t** argv)
 			key_frames = 1;
 		}
 
+		if (!aux.dev && aux_device_after >= 0 && frame >= aux_device_after) {
+			if (!aux.create(create, adapter)) return 3;
+			say("AUXILIARY READY frame=%d order=after", frame);
+		}
 		float time = animate ? (float)(GetTickCount64() - t0) / 1000.0f : 0.0f;
 		render(s, time);
+		if (aux.dev && !aux.render(frame)) return 3;
 		s.swap->Present(g_vsync, 0);
 		frame++;
 		if (GetTickCount64() - last_beat >= 1000) {

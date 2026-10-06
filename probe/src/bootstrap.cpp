@@ -66,13 +66,13 @@ void probe_attach(IUnknown* device, IUnknown* context, const char* how)
 		plog("attach: device %p already hooked (%s)", real, how);
 	} else {
 		if (g_dev)
-			plog("attach: a new device replaces %p as the tracked device", g_dev->obj);
+			plog("attach: additional device %p; capture target remains paired with its swap chain", real);
 		ID3D11DeviceContext* rc = nullptr;
 		((ID3D11DeviceVtbl*)real->lpVtbl)->GetImmediateContext(real, &rc);
 		plog("attach: via %s, given device %p (context %p), real device %p, real context %p, wrapped=%d",
 		     how, device, context, real, rc, (int)wrapped);
 		if (rc) {
-			if (hooks_install_context(rc) && hooks_install_device(real)) {
+			if (hooks_attach_device(real, rc)) {
 				g_attach_how = how;
 				g_attach_wrapped = wrapped;
 			}

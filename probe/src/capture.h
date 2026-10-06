@@ -46,6 +46,8 @@ void cap_invalidate_all();                          // unknown writes happened (
 // ---- IPC thread
 void cap_client_connected();
 void cap_client_disconnected();
+// Re-sync GPU writer bindings at the first Present of a selected swap chain.
+void cap_target_selected();
 
 std::shared_ptr<Capture> cap_request(const CaptureRequest& rq, std::string* err);
 void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* blob);

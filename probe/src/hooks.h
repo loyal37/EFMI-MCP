@@ -12,6 +12,7 @@ struct HookedObj {
 	void** clone = nullptr;   // our copy
 	size_t n     = 0;         // entries copied
 	int    role  = 0;
+	bool   context1 = false; // capability of this context, not the last one created
 };
 
 enum { ROLE_DEVICE = 1, ROLE_CONTEXT = 2, ROLE_SWAPCHAIN = 3 };
@@ -33,6 +34,8 @@ static inline ID3D11Device*         rdev()  { return (ID3D11Device*)g_dev->obj; 
 
 bool hooks_install_device(ID3D11Device* real_device);
 bool hooks_install_context(ID3D11DeviceContext* real_context);
+// Hook every device, but only a swap chain may replace the provisional target.
+bool hooks_attach_device(ID3D11Device* real_device, ID3D11DeviceContext* real_context);
 void hooks_find_xxmi();
 
 // Verifies that the swapped vtable pointers are still in place (the runtime may
@@ -50,5 +53,6 @@ void classify_caller(void* const* frames, unsigned count, CallerInfo* out);
 
 struct HookStats {
 	volatile LONG draws, creates, presents, maps, exec_cmdlists, revptr;
+	volatile LONG tracked_draws;
 };
 extern HookStats g_hstats;

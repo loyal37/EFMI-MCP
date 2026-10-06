@@ -3,7 +3,8 @@
   1. refresh sandbox/run from the EFMI folder (a private copy; the original is only read)
   2. parity with XXMI's own frame analysis, in three load orders
   3. functional self-test of the probe
-  4. end-to-end test of the MCP server
+  4. multiple-device regression (with and without the private XXMI runtime)
+  5. end-to-end test of the MCP server
 """
 from __future__ import annotations
 
@@ -28,6 +29,8 @@ def main() -> int:
         ("parity with XXMI (probe loaded first)", ["sandbox/parity_test.py", "--probe-first"]),
         ("parity with XXMI (system d3d11.dll already loaded)", ["sandbox/parity_test.py", "--preload-runtime"]),
         ("probe self-test", ["sandbox/selftest.py"]),
+        ("multiple-device regression", ["sandbox/multidevice_test.py"]),
+        ("multiple-device regression with XXMI", ["sandbox/multidevice_test.py", "--xxmi"]),
         ("MCP server end to end", ["sandbox/mcp_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]

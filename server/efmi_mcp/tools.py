@@ -198,6 +198,10 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
             lines.append(f"hash settings mirrored from d3dx.ini: track_region_hashes={int(xs['track_region_hashes'])} "
                          f"texture_hash={xs['texture_hash']} shader_hash={['3dmigoto', 'embedded', 'bytecode'][xs['shader_hash']]}")
             c, r = st["counters"], st["registry"]
+            if "capture_target" in st:
+                target = st["capture_target"]
+                lines.append(f"capture target: device {target['device']}, context {target['context']}, "
+                             f"swap chain {target['swap_chain']}; {c.get('tracked_draw_calls', 0)} draws on the selected context")
             lines.append(f"seen so far: {c['draw_calls']} draw calls, {c['presents']} frames; known: {r['resources']} resources, "
                          f"{r['shaders']} shaders ({r['bytecode_bytes'] // 1024} KB of bytecode kept), {r['layouts']} input layouts")
             cap = st["capture"]
@@ -205,8 +209,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
             if c["command_lists"]:
                 lines.append(f"note: {c['command_lists']} deferred command lists were executed; draws inside them are not visible")
             if not st["attached"]:
-                lines.append("NOT ATTACHED: the probe was loaded after the game created its D3D11 device. "
-                             "It has to be loaded by the launcher at game start.")
+                lines.append("NOT ATTACHED: no D3D11 device is selected yet. Load the probe at game start, "
+                             "wait for rendering, and check efmi_probe.log if this persists.")
         idx = s.mods.get()
         lines.append(f"EFMI folder: {s.efmi_root} ({len(idx.mods)} active mods, {len(idx.by_hash)} distinct hashes referenced)")
         if s.latest is not None:
@@ -237,6 +241,9 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
             lines.append(f"WARNING: {st['skipped_draws']} draws beyond the per-frame limit were not recorded")
         if st.get("arena_full"):
             lines.append("WARNING: readback budget exhausted, some hashes are missing (state 'skipped')")
+        if not draws:
+            lines.append("WARNING: this frame contains no recorded draws; character/resource capture is not verified. "
+                         "Check the selected device/context in efmi_status and efmi_probe.log.")
 
         if cap.detail == "full":
             passes: "OrderedDict[tuple, list[int]]" = OrderedDict()

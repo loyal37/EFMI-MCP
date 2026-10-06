@@ -118,6 +118,7 @@ struct Capture {
 	size_t   chunk_cursor = 0;       // next chunk to read back
 	uint32_t wait_frames = 0;        // frames spent waiting for the GPU
 	bool     live = false;           // part of the continuous stream, summarised and dropped
+	uint64_t live_generation = 0;    // stream session that requested this frame
 	bool     hash_volatile = false;
 	uint32_t volatile_skips = 0;
 	uint32_t skipped_draws = 0;
@@ -163,6 +164,7 @@ struct LiveFrame {
 };
 static LiveConfig g_live;                         // guarded by g_lock
 static volatile LONG g_live_on = 0;
+static uint64_t g_live_generation = 1;           // guarded by g_lock
 static std::deque<LiveFrame> g_live_ring;         // guarded by g_lock
 
 static volatile LONG g_client_gen = 0;           // bumped whenever a client (re)connects
@@ -356,9 +358,13 @@ void cap_client_connected()
 
 void cap_client_disconnected()
 {
+	EnterCriticalSection(&g_lock);
 	InterlockedExchange(&g_live_on, 0);
+	g_live_generation++;
+	g_live_ring.clear();
 	InterlockedExchange(&g_tracking, 0);
 	InterlockedIncrement(&g_client_gen);
+	LeaveCriticalSection(&g_lock);
 }
 
 // Bindings made before tracking was switched on are unknown; ask the runtime.
@@ -898,6 +904,13 @@ static void live_push(const Capture& c)
 	}
 
 	EnterCriticalSection(&g_lock);
+	// Stop/disconnect can race both GPU readback and the summary construction.
+	// Check while committing, so an old frame cannot repopulate a cleared ring
+	// even if a new live session has already started.
+	if (!g_live_on || c.live_generation != g_live_generation) {
+		LeaveCriticalSection(&g_lock);
+		return;
+	}
 	g_live_ring.push_back(std::move(f));
 	uint32_t keep = g_live.keep_frames ? g_live.keep_frames : 1;
 	while (g_live_ring.size() > keep)
@@ -911,10 +924,12 @@ void cap_live_configure(const LiveConfig& cfg)
 	g_live = cfg;
 	if (g_live.keep_frames > 3600) g_live.keep_frames = 3600;
 	if (!g_live.every) g_live.every = 1;
-	if (!cfg.enable)
+	if (!cfg.enable) {
+		g_live_generation++;
 		g_live_ring.clear();
-	LeaveCriticalSection(&g_lock);
+	}
 	InterlockedExchange(&g_live_on, cfg.enable ? 1 : 0);
+	LeaveCriticalSection(&g_lock);
 }
 
 static const char* k_region_state[] = { "pending", "ok", "oob", "skipped", "ok", "volatile" };
@@ -1083,11 +1098,12 @@ static void process_finalizing()
 	}
 }
 
-static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volatile)
+static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volatile, uint64_t live_generation)
 {
 	auto c = std::make_shared<Capture>();
 	c->rq = rq;
 	c->live = live;
+	c->live_generation = live_generation;
 	c->hash_volatile = hash_volatile;
 	c->frame = (uint32_t)g_frame_no;
 	c->t_start = now_ms();
@@ -1399,6 +1415,7 @@ void cap_on_frame_boundary()
 	}
 
 	bool start = false, live = false, hash_volatile = false;
+	uint64_t live_generation = 0;
 	CaptureRequest rq;
 	EnterCriticalSection(&g_lock);
 	if (g_req_state == REQ_PENDING && !g_rec) {
@@ -1415,14 +1432,23 @@ void cap_on_frame_boundary()
 		rq.cb_data = false;
 		rq.hold = false;
 		hash_volatile = g_live.hash_volatile;
+		live_generation = g_live_generation;
 		start = live = true;
 	}
 	LeaveCriticalSection(&g_lock);
 	if (start)
-		begin_recording(rq, live, hash_volatile);
+		begin_recording(rq, live, hash_volatile, live_generation);
 }
 
 // ================================================================ IPC side
+void cap_target_selected()
+{
+	// No cross-device migration is allowed after the first swap chain binds.
+	// Advancing this generation clears provisional caches and re-reads UAV/SO
+	// bindings on the render thread, using the selected immediate context.
+	InterlockedIncrement(&g_client_gen);
+}
+
 std::shared_ptr<Capture> cap_request(const CaptureRequest& rq, std::string* err)
 {
 	if (!g_ctx || !g_dev) {

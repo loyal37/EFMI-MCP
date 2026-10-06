@@ -16,6 +16,11 @@ HookStats g_hstats;
 static HookedObj g_objs[32];
 static volatile LONG g_nobjs = 0;
 static volatile LONG g_in_present = 0;
+static SRWLOCK g_target_lock = SRWLOCK_INIT;
+static bool g_target_bound = false; // device is pinned once a swap chain owns it
+static SRWLOCK g_discovery_lock = SRWLOCK_INIT;
+static void* g_checked[16];
+static unsigned g_checked_pos = 0;
 
 // Forwarded game calls pass through at most this many XXMI frames.
 static const unsigned k_origin_max_depth = 2;
@@ -88,6 +93,10 @@ static HookedObj* new_obj(void* obj, size_t min_entries, int role)
 		if (!still_hooked)
 			existing->obj = nullptr;
 	}
+	if (still_hooked) {
+		ReleaseSRWLockExclusive(&g_objs_lock);
+		return existing->role == role ? existing : nullptr;
+	}
 	if (!still_hooked) {
 		LONG n = g_nobjs;
 		// Reuse the slot of an object that has since been destroyed.
@@ -112,6 +121,7 @@ static HookedObj* new_obj(void* obj, size_t min_entries, int role)
 				h->clone = tmp.clone;
 				h->n = tmp.n;
 				h->role = tmp.role;
+				h->context1 = false;
 				h->obj = tmp.obj;
 				if (fresh_slot)
 					InterlockedIncrement(&g_nobjs);
@@ -251,7 +261,14 @@ static ULONG STDMETHODCALLTYPE H_SwapRelease(IDXGISwapChain* This)
 	if (r == 0) {
 		// The object is gone; forget it so a new swap chain can be picked up.
 		if (g_swap == h) {
+			AcquireSRWLockExclusive(&g_target_lock);
 			g_swap = nullptr;
+			// The replacement may reuse the same back-buffer address.
+			AcquireSRWLockExclusive(&g_discovery_lock);
+			memset(g_checked, 0, sizeof(g_checked));
+			g_checked_pos = 0;
+			ReleaseSRWLockExclusive(&g_discovery_lock);
+			ReleaseSRWLockExclusive(&g_target_lock);
 			plog("hooks: swap chain %p released", This);
 		}
 		h->obj = nullptr;
@@ -261,9 +278,38 @@ static ULONG STDMETHODCALLTYPE H_SwapRelease(IDXGISwapChain* This)
 
 static void hook_swapchain(IDXGISwapChain* sc)
 {
-	HookedObj* h = new_obj(sc, sizeof(IDXGISwapChainVtbl) / sizeof(void*), ROLE_SWAPCHAIN);
-	if (!h)
+	// The back buffer's owner decides which immediate context is recorded.
+	// Device creation order is unrelated to which device draws the game.
+	ID3D11Device* dev = nullptr;
+	ID3D11DeviceContext* ctx = nullptr;
+	if (FAILED(IDXGISwapChain_GetDevice(sc, IID_ID3D11Device, (void**)&dev)) || !dev)
 		return;
+	ID3D11Device_GetImmediateContext(dev, &ctx);
+	if (!ctx || !hooks_attach_device(dev, ctx)) {
+		if (ctx) ID3D11DeviceContext_Release(ctx);
+		ID3D11Device_Release(dev);
+		return;
+	}
+	HookedObj* dh = find_obj(dev);
+	HookedObj* ch = find_obj(ctx);
+	AcquireSRWLockExclusive(&g_target_lock);
+	if (g_swap || (g_target_bound && (g_dev != dh || g_ctx != ch))) {
+		// Readback pools and pending captures belong to the pinned device.
+		// Do not silently issue their commands on a replacement device.
+		if (!g_swap)
+			plog("hooks: swap chain belongs to a replacement device; restart the game to reset the probe safely");
+		ReleaseSRWLockExclusive(&g_target_lock);
+		ID3D11DeviceContext_Release(ctx);
+		ID3D11Device_Release(dev);
+		return;
+	}
+	HookedObj* h = new_obj(sc, sizeof(IDXGISwapChainVtbl) / sizeof(void*), ROLE_SWAPCHAIN);
+	if (!h) {
+		ReleaseSRWLockExclusive(&g_target_lock);
+		ID3D11DeviceContext_Release(ctx);
+		ID3D11Device_Release(dev);
+		return;
+	}
 	IDXGISwapChainVtbl* v = (IDXGISwapChainVtbl*)h->clone;
 	v->Present = H_Present;
 	v->ResizeBuffers = H_ResizeBuffers;
@@ -275,25 +321,43 @@ static void hook_swapchain(IDXGISwapChain* sc)
 			((IDXGISwapChain1Vtbl*)h->clone)->Present1 = H_Present1;
 		((IDXGISwapChain1Vtbl*)sc1->lpVtbl)->Release(sc1);
 	}
+	if (g_dev != dh || g_ctx != ch) {
+		// Keep the selected objects alive even if their swap chain is released.
+		ID3D11Device_AddRef(dev);
+		ID3D11DeviceContext_AddRef(ctx);
+		if (g_ctx) ID3D11DeviceContext_Release((ID3D11DeviceContext*)g_ctx->obj);
+		if (g_dev) ID3D11Device_Release((ID3D11Device*)g_dev->obj);
+	}
+	g_dev = dh;
+	g_ctx = ch;
+	g_ctx_has_ctx1 = ch->context1;
+	g_feature_level = ((ID3D11DeviceVtbl*)dh->orig)->GetFeatureLevel(dev);
+	cap_target_selected();
+	g_target_bound = true;
 	g_swap = h;
 	activate(h);
+	ReleaseSRWLockExclusive(&g_target_lock);
 	update_resolution(sc, "swap chain found");
-	plog("hooks: swap chain %p hooked (%zu vtable entries)", sc, h->n);
+	plog("hooks: swap chain %p hooked (%zu vtable entries), capture device %p context %p",
+	     sc, h->n, dh->obj, ch->obj);
+	ID3D11DeviceContext_Release(ctx);
+	ID3D11Device_Release(dev);
 }
 
 // Finds the swap chain through one of its back buffers: DXGI can tell which
 // swap chain, if any, owns a texture that is being used as a render target.
-static void* g_checked[16];
-static unsigned g_checked_pos = 0;
-
 static void try_discover_swapchain(ID3D11Resource* res)
 {
 	if (g_swap || !res)
 		return;
+	AcquireSRWLockExclusive(&g_discovery_lock);
 	for (unsigned i = 0; i < _countof(g_checked); i++)
-		if (g_checked[i] == res)
+		if (g_checked[i] == res) {
+			ReleaseSRWLockExclusive(&g_discovery_lock);
 			return;
+		}
 	g_checked[g_checked_pos++ % _countof(g_checked)] = res;
+	ReleaseSRWLockExclusive(&g_discovery_lock);
 
 	// Ask DXGI directly whether a swap chain owns this texture. (The registry
 	// is not consulted: an entry left behind at a recycled address would make a
@@ -462,13 +526,16 @@ static HRESULT STDMETHODCALLTYPE H_CreateRenderTargetView(ID3D11Device* This, ID
 {
 	HookedObj* h = dev_of(This);
 	HRESULT hr = DEV_ORIG(h)->CreateRenderTargetView(This, pResource, pDesc, ppView);
-	if (SUCCEEDED(hr) && !g_swap && h == g_dev)
+	if (SUCCEEDED(hr) && !g_swap)
 		try_discover_swapchain(pResource);
 	return hr;
 }
 
 bool hooks_install_device(ID3D11Device* dev)
 {
+	HookedObj* installed = find_obj(dev);
+	if (installed && installed->role == ROLE_DEVICE && *(void***)dev == installed->clone)
+		return true;
 	HookedObj* h = new_obj(dev, sizeof(ID3D11DeviceVtbl) / sizeof(void*), ROLE_DEVICE);
 	if (!h)
 		return false;
@@ -486,11 +553,28 @@ bool hooks_install_device(ID3D11Device* dev)
 	v->CreateComputeShader = H_CreateComputeShader;
 	v->CreateInputLayout = H_CreateInputLayout;
 	v->CreateRenderTargetView = H_CreateRenderTargetView;
-	g_dev = h;
-	g_feature_level = ((ID3D11DeviceVtbl*)h->orig)->GetFeatureLevel(dev);
+	D3D_FEATURE_LEVEL level = ((ID3D11DeviceVtbl*)h->orig)->GetFeatureLevel(dev);
 	activate(h);
-	plog("hooks: device %p hooked (%zu vtable entries, feature level 0x%x)", dev, h->n, (unsigned)g_feature_level);
+	plog("hooks: device %p hooked (%zu vtable entries, feature level 0x%x)", dev, h->n, (unsigned)level);
 	return true;
+}
+
+bool hooks_attach_device(ID3D11Device* dev, ID3D11DeviceContext* ctx)
+{
+	AcquireSRWLockExclusive(&g_target_lock);
+	bool ok = hooks_install_context(ctx) && hooks_install_device(dev);
+	if (ok && !g_dev) {
+		// Preserve the attached status before a back buffer is seen. No capture
+		// can start until hook_swapchain binds the actual rendering device.
+		g_dev = find_obj(dev);
+		g_ctx = find_obj(ctx);
+		ID3D11Device_AddRef(dev);
+		ID3D11DeviceContext_AddRef(ctx);
+		g_ctx_has_ctx1 = g_ctx->context1;
+		g_feature_level = ((ID3D11DeviceVtbl*)g_dev->orig)->GetFeatureLevel(dev);
+	}
+	ReleaseSRWLockExclusive(&g_target_lock);
+	return ok;
 }
 
 // ================================================================ context
@@ -509,11 +593,27 @@ static inline HookedObj* ctx_of(void* This)
 		cap_on_draw(type_, args_, tg_, ibuf_, ioff_, ci); \
 	}
 
+static void discover_render_targets(UINT count, ID3D11RenderTargetView* const* views)
+{
+	if (g_swap || !views || count == D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
+		return;
+	for (UINT i = 0; i < count && i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT && !g_swap; i++) {
+		if (!views[i]) continue;
+		ID3D11Resource* res = nullptr;
+		ID3D11RenderTargetView_GetResource(views[i], &res);
+		if (res) {
+			try_discover_swapchain(res);
+			ID3D11Resource_Release(res);
+		}
+	}
+}
+
 static void STDMETHODCALLTYPE H_Draw(ID3D11DeviceContext* This, UINT VertexCount, UINT StartVertexLocation)
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DRAW; a.vertex_count = VertexCount; a.first_vertex = StartVertexLocation;
 		RECORD_DRAW(DT_DRAW, a, nullptr, nullptr, 0);
 		if (g_tracking) cap_gpu_writes_om();
@@ -526,7 +626,8 @@ static void STDMETHODCALLTYPE H_DrawIndexed(ID3D11DeviceContext* This, UINT Inde
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DRAW_INDEXED; a.index_count = IndexCount; a.first_index = StartIndexLocation;
 		a.first_vertex = (uint32_t)BaseVertexLocation;
 		RECORD_DRAW(DT_DRAW_INDEXED, a, nullptr, nullptr, 0);
@@ -540,7 +641,8 @@ static void STDMETHODCALLTYPE H_DrawInstanced(ID3D11DeviceContext* This, UINT Ve
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DRAW_INSTANCED; a.vertex_count = VertexCountPerInstance; a.instance_count = InstanceCount;
 		a.first_vertex = StartVertexLocation; a.first_instance = StartInstanceLocation;
 		RECORD_DRAW(DT_DRAW_INSTANCED, a, nullptr, nullptr, 0);
@@ -555,7 +657,8 @@ static void STDMETHODCALLTYPE H_DrawIndexedInstanced(ID3D11DeviceContext* This, 
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DRAW_INDEXED_INSTANCED; a.index_count = IndexCountPerInstance;
 		a.instance_count = InstanceCount; a.first_index = StartIndexLocation;
 		a.first_vertex = (uint32_t)BaseVertexLocation; a.first_instance = StartInstanceLocation;
@@ -570,7 +673,8 @@ static void STDMETHODCALLTYPE H_DrawAuto(ID3D11DeviceContext* This)
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DRAW_AUTO;
 		RECORD_DRAW(DT_DRAW_AUTO, a, nullptr, nullptr, 0);
 		if (g_tracking) cap_gpu_writes_om();
@@ -582,7 +686,8 @@ static void STDMETHODCALLTYPE H_DrawIndexedInstancedIndirect(ID3D11DeviceContext
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DRAW_INDEXED_INSTANCED_INDIRECT;
 		RECORD_DRAW(DT_DRAW_INDEXED_INSTANCED_INDIRECT, a, nullptr, pArgs, Offset);
 		if (g_tracking) cap_gpu_writes_om();
@@ -594,7 +699,8 @@ static void STDMETHODCALLTYPE H_DrawInstancedIndirect(ID3D11DeviceContext* This,
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DRAW_INSTANCED_INDIRECT;
 		RECORD_DRAW(DT_DRAW_INSTANCED_INDIRECT, a, nullptr, pArgs, Offset);
 		if (g_tracking) cap_gpu_writes_om();
@@ -606,7 +712,8 @@ static void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* This, UINT X, UINT
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DISPATCH;
 		uint32_t tg[3] = { X, Y, Z };
 		RECORD_DRAW(DT_DISPATCH, a, tg, nullptr, 0);
@@ -619,7 +726,8 @@ static void STDMETHODCALLTYPE H_DispatchIndirect(ID3D11DeviceContext* This, ID3D
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
-	if (g_recording || g_tracking) {
+	if (h == g_ctx) g_hstats.tracked_draws++;
+	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
 		DrawArgs a; a.type = DT_DISPATCH_INDIRECT;
 		RECORD_DRAW(DT_DISPATCH_INDIRECT, a, nullptr, pArgs, Offset);
 		if (g_tracking) cap_gpu_writes_cs();
@@ -640,7 +748,7 @@ static void STDMETHODCALLTYPE H_Unmap(ID3D11DeviceContext* This, ID3D11Resource*
 {
 	HookedObj* h = ctx_of(This);
 	// The new contents become visible to the GPU here.
-	if (g_tracking && h == g_ctx)
+	if (g_swap && g_tracking && h == g_ctx)
 		cap_buffer_written(pResource);
 	CTX_ORIG(h)->Unmap(This, pResource, Subresource);
 }
@@ -649,7 +757,7 @@ static void STDMETHODCALLTYPE H_UpdateSubresource(ID3D11DeviceContext* This, ID3
                                                   const D3D11_BOX* pBox, const void* pData, UINT RowPitch, UINT DepthPitch)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx) {
+	if (g_swap && g_tracking && h == g_ctx) {
 		if (pBox) cap_buffer_written(pDst, pBox->left, pBox->right - pBox->left);
 		else cap_buffer_written(pDst);
 	}
@@ -659,7 +767,7 @@ static void STDMETHODCALLTYPE H_UpdateSubresource(ID3D11DeviceContext* This, ID3
 static void STDMETHODCALLTYPE H_CopyResource(ID3D11DeviceContext* This, ID3D11Resource* pDst, ID3D11Resource* pSrc)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx)
+	if (g_swap && g_tracking && h == g_ctx)
 		cap_buffer_written(pDst);
 	CTX_ORIG(h)->CopyResource(This, pDst, pSrc);
 }
@@ -669,7 +777,7 @@ static void STDMETHODCALLTYPE H_CopySubresourceRegion(ID3D11DeviceContext* This,
                                                       UINT SrcSub, const D3D11_BOX* pSrcBox)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx) {
+	if (g_swap && g_tracking && h == g_ctx) {
 		// The game fills its shared mesh buffers this way: only the bytes that
 		// are actually replaced lose their cached hashes.
 		if (pSrcBox) cap_buffer_written(pDst, DstX, pSrcBox->right - pSrcBox->left);
@@ -682,7 +790,7 @@ static void STDMETHODCALLTYPE H_CopyStructureCount(ID3D11DeviceContext* This, ID
                                                    ID3D11UnorderedAccessView* pSrcView)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx)
+	if (g_swap && g_tracking && h == g_ctx)
 		cap_buffer_written(pDst, DstOffset, 4);
 	CTX_ORIG(h)->CopyStructureCount(This, pDst, DstOffset, pSrcView);
 }
@@ -692,7 +800,7 @@ static void STDMETHODCALLTYPE H_UpdateSubresource1(ID3D11DeviceContext1* This, I
                                                    UINT DepthPitch, UINT CopyFlags)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx) {
+	if (g_swap && g_tracking && h == g_ctx) {
 		if (pBox) cap_buffer_written(pDst, pBox->left, pBox->right - pBox->left);
 		else cap_buffer_written(pDst);
 	}
@@ -704,7 +812,7 @@ static void STDMETHODCALLTYPE H_CopySubresourceRegion1(ID3D11DeviceContext1* Thi
                                                        UINT SrcSub, const D3D11_BOX* pSrcBox, UINT CopyFlags)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx) {
+	if (g_swap && g_tracking && h == g_ctx) {
 		if (pSrcBox) cap_buffer_written(pDst, DstX, pSrcBox->right - pSrcBox->left);
 		else cap_buffer_written(pDst, DstX, 0xffffffffu - DstX);
 	}
@@ -714,7 +822,7 @@ static void STDMETHODCALLTYPE H_CopySubresourceRegion1(ID3D11DeviceContext1* Thi
 static void STDMETHODCALLTYPE H_DiscardResource(ID3D11DeviceContext1* This, ID3D11Resource* pResource)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx)
+	if (g_swap && g_tracking && h == g_ctx)
 		cap_buffer_written(pResource);
 	CTX1_ORIG(h)->DiscardResource(This, pResource);
 }
@@ -725,7 +833,7 @@ static void STDMETHODCALLTYPE H_CSSetUnorderedAccessViews(ID3D11DeviceContext* T
                                                           const UINT* pInitialCounts)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx)
+	if (g_swap && g_tracking && h == g_ctx)
 		cap_set_cs_uavs(StartSlot, NumUAVs, ppUAVs);
 	CTX_ORIG(h)->CSSetUnorderedAccessViews(This, StartSlot, NumUAVs, ppUAVs, pInitialCounts);
 }
@@ -734,21 +842,9 @@ static void STDMETHODCALLTYPE H_OMSetRenderTargets(ID3D11DeviceContext* This, UI
                                                    ID3D11RenderTargetView* const* ppRTVs, ID3D11DepthStencilView* pDSV)
 {
 	HookedObj* h = ctx_of(This);
-	if (h == g_ctx) {
-		if (!g_swap && ppRTVs) {
-			for (UINT i = 0; i < NumViews && i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
-				if (!ppRTVs[i]) continue;
-				ID3D11Resource* res = nullptr;
-				ID3D11RenderTargetView_GetResource(ppRTVs[i], &res);
-				if (res) {
-					try_discover_swapchain(res);
-					ID3D11Resource_Release(res);
-				}
-			}
-		}
-		if (g_tracking)
-			cap_set_om_uavs(0, 0, nullptr);          // this call unbinds all OM UAVs
-	}
+	discover_render_targets(NumViews, ppRTVs);
+	if (g_swap && g_tracking && h == g_ctx)
+		cap_set_om_uavs(0, 0, nullptr);          // this call unbinds all OM UAVs
 	CTX_ORIG(h)->OMSetRenderTargets(This, NumViews, ppRTVs, pDSV);
 }
 
@@ -757,7 +853,8 @@ static void STDMETHODCALLTYPE H_OMSetRenderTargetsAndUnorderedAccessViews(
 	UINT UAVStartSlot, UINT NumUAVs, ID3D11UnorderedAccessView* const* ppUAVs, const UINT* pUAVInitialCounts)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx && NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS)
+	discover_render_targets(NumRTVs, ppRTVs);
+	if (g_swap && g_tracking && h == g_ctx && NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS)
 		cap_set_om_uavs(UAVStartSlot, NumUAVs, ppUAVs);
 	CTX_ORIG(h)->OMSetRenderTargetsAndUnorderedAccessViews(This, NumRTVs, ppRTVs, pDSV, UAVStartSlot, NumUAVs,
 	                                                       ppUAVs, pUAVInitialCounts);
@@ -767,7 +864,7 @@ static void STDMETHODCALLTYPE H_SOSetTargets(ID3D11DeviceContext* This, UINT Num
                                              ID3D11Buffer* const* ppTargets, const UINT* pOffsets)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx)
+	if (g_swap && g_tracking && h == g_ctx)
 		cap_set_so_targets(NumBuffers, ppTargets);
 	CTX_ORIG(h)->SOSetTargets(This, NumBuffers, ppTargets, pOffsets);
 }
@@ -775,7 +872,7 @@ static void STDMETHODCALLTYPE H_SOSetTargets(ID3D11DeviceContext* This, UINT Num
 static void STDMETHODCALLTYPE H_ClearState(ID3D11DeviceContext* This)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_tracking && h == g_ctx)
+	if (g_swap && g_tracking && h == g_ctx)
 		cap_state_cleared();
 	CTX_ORIG(h)->ClearState(This);
 }
@@ -785,7 +882,7 @@ static void STDMETHODCALLTYPE H_ExecuteCommandList(ID3D11DeviceContext* This, ID
 	HookedObj* h = ctx_of(This);
 	g_hstats.exec_cmdlists++;
 	// Whatever the list wrote is invisible to us: forget everything we cached.
-	if (g_tracking && h == g_ctx)
+	if (g_swap && g_tracking && h == g_ctx)
 		cap_invalidate_all();
 	CTX_ORIG(h)->ExecuteCommandList(This, pList, Restore);
 }
@@ -824,6 +921,9 @@ static void apply_context_hooks(HookedObj* h, bool ctx1)
 
 bool hooks_install_context(ID3D11DeviceContext* ctx)
 {
+	HookedObj* installed = find_obj(ctx);
+	if (installed && installed->role == ROLE_CONTEXT && *(void***)ctx == installed->clone)
+		return true;
 	HookedObj* h = new_obj(ctx, sizeof(ID3D11DeviceContextVtbl) / sizeof(void*), ROLE_CONTEXT);
 	if (!h)
 		return false;
@@ -835,8 +935,7 @@ bool hooks_install_context(ID3D11DeviceContext* ctx)
 		ID3D11DeviceContext1_Release(c1);
 	}
 	apply_context_hooks(h, ctx1);
-	g_ctx_has_ctx1 = ctx1;
-	g_ctx = h;
+	h->context1 = ctx1;
 	activate(h);
 	plog("hooks: immediate context %p hooked (%zu vtable entries, context1=%d)", ctx, h->n, (int)ctx1);
 	return true;

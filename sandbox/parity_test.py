@@ -200,6 +200,8 @@ def main() -> int:
         print(f"second capture: cache hits {cap2.stats.get('cache_hits')}, "
               f"arena bytes {cap2.stats.get('arena_bytes')}, game ib/vb hashes identical: {same}")
         if not same:
+            print(f"first game geometry: {game_hashes(cap)}")
+            print(f"second game geometry: {game_hashes(cap2)}")
             rc = 1
         client.close()
         if not args.keep:

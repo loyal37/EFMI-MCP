@@ -244,6 +244,19 @@ def live_items(frame: dict) -> list[list]:
     return [it for it in frame["items"] if it[1] != "xxmi"]
 
 
+def live_after_frames(client: ProbeClient, count: int = 5) -> tuple[int, list[dict]]:
+    """Wait for rendering to progress, including any in-flight live readbacks."""
+    first, frames = client.live_get()
+    now = first
+    deadline = time.monotonic() + 3
+    while now - first < count and time.monotonic() < deadline:
+        time.sleep(0.01)
+        now, frames = client.live_get()
+    if now - first < count:
+        raise RuntimeError(f"sandbox stopped presenting: frame {first} -> {now}")
+    return now, frames
+
+
 def test_live(extra: list[str], label: str) -> dict | None:
     print(f"\n== continuous mode, {label}")
     sb = Sandbox(extra + ["--skip", "80"])
@@ -276,6 +289,41 @@ def test_live(extra: list[str], label: str) -> dict | None:
         client.live(enable=False)
         _, after = client.live_get()
         check("switching off clears the ring", after == [])
+        _, after = live_after_frames(client)
+        check("stopped ring stays empty after in-flight frames finish", after == [])
+
+        # Start the new generation with a cadence that cannot record within
+        # this test. Any frame arriving here belongs to the stopped stream.
+        # Repetition exercises stop/start at different points in a render frame.
+        leaked = []
+        for _ in range(8):
+            client.live(enable=True)
+            live_after_frames(client)
+            client.live(enable=False)
+            client.live(enable=True, every=0xffffffff)
+            _, restarted = live_after_frames(client)
+            leaked.extend(f["frame"] for f in restarted)
+            client.live(enable=False)
+        check("rapid restart cannot publish a previous live generation", not leaked, str(leaked))
+
+        client.live(enable=True)
+        live_after_frames(client)
+        client.close()
+        client = connect(sb.pid)
+        _, reconnected = client.live_get()
+        check("reconnect starts with live off and no previous client's frames",
+              not client.status()["capture"]["live"] and reconnected == [], str(reconnected))
+        client.live(enable=True, every=0xffffffff)
+        _, restarted = live_after_frames(client)
+        check("reconnected live session rejects old in-flight frames", restarted == [], str(restarted))
+        client.live(enable=True)
+        _, fresh = live_after_frames(client)
+        deadline = time.monotonic() + 3
+        while not fresh and time.monotonic() < deadline:
+            time.sleep(0.01)
+            _, fresh = client.live_get()
+        check("new live session still records normally after reconnect", bool(fresh))
+        client.live(enable=False)
         client.close()
         return result
     finally:

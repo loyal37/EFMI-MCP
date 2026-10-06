@@ -82,6 +82,11 @@ static void status_json(JsonW& w)
 	w.kb("saw_wrapper", g_attach_wrapped);
 	w.ks("runtime", narrow(g_runtime_path));
 	w.kb("swap_chain", g_swap != nullptr);
+	w.key("capture_target"); w.begin_obj();
+	w.key("device"); w.ptr(g_dev ? g_dev->obj : nullptr);
+	w.key("context"); w.ptr(g_ctx ? g_ctx->obj : nullptr);
+	w.key("swap_chain"); w.ptr(g_swap ? g_swap->obj : nullptr);
+	w.end_obj();
 	w.kb("context1", g_ctx_has_ctx1);
 	w.ku("feature_level", (uint32_t)g_feature_level);
 	w.ku("frame", (uint32_t)g_frame_no);
@@ -94,6 +99,7 @@ static void status_json(JsonW& w)
 
 	w.key("counters"); w.begin_obj();
 	w.ku("draw_calls", (uint32_t)g_hstats.draws);
+	w.ku("tracked_draw_calls", (uint32_t)g_hstats.tracked_draws);
 	w.ku("creations", (uint32_t)g_hstats.creates);
 	w.ku("presents", (uint32_t)g_hstats.presents);
 	w.ku("maps", (uint32_t)g_hstats.maps);
