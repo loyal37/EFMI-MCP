@@ -5,6 +5,7 @@
   3. functional self-test of the probe
   4. multiple-device regression (with and without the private XXMI runtime)
   5. end-to-end test of the MCP server
+  6. reload workflow/input unit tests (fake input; real F10 test is opt-in)
 """
 from __future__ import annotations
 
@@ -32,6 +33,8 @@ def main() -> int:
         ("multiple-device regression", ["sandbox/multidevice_test.py"]),
         ("multiple-device regression with XXMI", ["sandbox/multidevice_test.py", "--xxmi"]),
         ("MCP server end to end", ["sandbox/mcp_test.py"]),
+        ("reload input guards (no OS input)", ["sandbox/reload_input_test.py"]),
+        ("reload workflow MCP contract (fake probe/input)", ["sandbox/reload_workflow_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")

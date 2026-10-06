@@ -1,6 +1,17 @@
 # EFMI MCP — 当前开发状态
 
-> 最后更新：2026-10-06。游戏外读取流程性能优化已验证；探针仍为0.1.1，无需重新注入。
+> 最后更新：2026-10-06。MCP 服务 0.1.2 已实现自动 F10 后采集；探针仍为 0.1.1，只需重启 MCP 服务，无需重新注入。
+
+## 自动重载后采集（T-007，2026-10-06）
+
+- 用户要求 agent 自动完成修改 mod 后的 F10/等待/重新采集。新增 `efmi_reload_and_capture`，默认 `detail=full`、`cb_data=true`、`settle_ms=2000`、`timeout_ms=15000`、`focus_game=true`；捕获超时不包含等待时间，无需狩猎模式。
+- 预检连接管道 PID、XXMI 路径及所选 device/context/swap chain，读取当前安装 `[Hunting]` 的 `reload_config`、`reload_fixes`，必须各为单条 `no_modifiers VK_F10`。只对该进程的有效前台窗口发送一次 F10，拒绝修饰键已按住或焦点失败；无任意按键、自动提升权限、重连换进程或重发 F10。
+- 开始执行后停止 live、release 并清空会话旧捕获和 mod 索引；等待后记录帧号 barrier，再接受同一进程和渲染目标下比原帧/barrier 都新的非空捕获，保存为 latest。live 保持停止。预检失败保留旧缓存，执行开始后的失败不再发布旧捕获。
+- `reload_requested=true` 仅指键盘输入已发送，`reload_confirmed=false` 明确无 XXMI 重载回执；仍须验证目标 draw/资源。输入异常分别报告未发送、已发送或未知，后续捕获失败不能自动再次 F10。工具不直接写 mod/Core/启动器，正常 F10 仍可让 XXMI 保存持久变量配置。
+- 当前已验证：Win32 输入专项 19 项、工作流/MCP 调用边界 30 项，合计 49 项全部通过；本轮既有 MCP 端到端 39 项通过。两组专项无系统输入，已纳入 `run_all.py`；实际输入集成必须单独运行 `sandbox/reload_integration_test.py`，发现其他探针时拒绝，未向用户游戏发送按键。
+- 私有 XXMI 沙盒集成已通过，证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`，进程 40584 正常退出 0。`hunting=0`，未按 Numpad0；新增私有 `ShaderOverride checktextureoverride=ib` 及 `TextureOverride hash=64e97b80 / match_index_count=864 / handling=skip`，实际 F10 后该 IB 从 1 次变为 0，其余 `3c980a7d` 仍 2 次、`3970063e` 仍 1 次。工具原帧 5、barrier 209、新帧 210（10 draws，6 game/4 xxmi）；旧缓存、live、新 mod 索引及保留 IB 读回均符合预期。真实游戏自动重载仍未验证。
+- 集成过程修正沙盒自身默认 `SC_KEYMENU` 的 modal loop，并给测试规则补齐 `match_index_count` 才命中 IB；不构成产品依赖狩猎模式的证据。一次 F10 down/up、约 200ms 按住期间，XXMI 1.2.2 重建按键注册可能发生多次内部重载；工具只承诺一次输入脉冲且不重发，不能承诺 XXMI 只重载一次。
+- 服务版本 0.1.2，探针源码/DLL 保持 0.1.1；重启已运行 MCP 服务后可发现新工具，无需重注入。用户另明确要求完成后及后续轮次提交并推送 `https://github.com/loyal37/EFMI-MCP`，已更新 AGENTS / D-007；历史“不 push”记录保留为当时事实。
 
 ## 读取性能优化（2026-10-06）
 

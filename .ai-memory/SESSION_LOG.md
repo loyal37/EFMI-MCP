@@ -2,6 +2,20 @@
 
 > 每轮结束追加简短摘要，记录实际完成、验证范围、遗留问题和下次入口；不粘贴聊天或完整日志。
 
+## 2026-10-06：自动 F10 后采集与推送约定
+
+用户要求 MCP 自动完成修改 mod 后的刷新与重新采集。服务升至 0.1.2，新增 `reload_input.py` 固定 F10/前台/PID/修饰键输入模块、`reload_workflow.py` 同一管道与渲染目标的重载后捕获流程；探针仍为 0.1.1，只需重启 MCP 服务，无需重注入或狩猎模式。读取原始双 F10 绑定，不直接编辑 EFMI 文件；正常 F10 可能保存持久变量，文档明确保留此副作用。
+
+工作流停止 live、release 并失效旧捕获/mod 索引，单次 F10 后默认等 2 秒，再接受严格晚于 barrier 的非空帧；不重连换进程、不自动重发 F10、live 不自动恢复。`reload_requested` 与恒 false 的 `reload_confirmed` 分开，后者没有 XXMI 回执。专项发现未知输入异常曾被误报为未发送，修正为 null；检查 live 的 recording 时先停止 live，不能误判为另一个未完成单帧请求。
+
+最终输入 19 项与工作流/MCP 边界 30 项、既有 MCP 39 项、私有沙盒实际 F10 集成均通过。前两组用 fake 输入和探针，纳入 `run_all.py`，无系统输入；实际集成单独运行 `reload_integration_test.py`，会真实聚焦/F10，发现其他探针则拒绝。
+
+集成证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`：`hunting=0` 且未按 Numpad0，私有新 INI 的 VS `checktextureoverride=ib` 加 IB `hash=64e97b80 / match_index_count=864 / handling=skip` 经实际 F10 生效。目标 IB 次数 1→0，其余 `3c980a7d:2`、`3970063e:1` 完全保留；工具帧 5→barrier 209→新帧 210（10 draws，6 game/4 xxmi）。旧缓存清除、新 mod 索引、live 停止及保留 IB 读回通过，沙盒进程退出 0。此为私有沙盒验证，未对用户游戏执行 F10，不声称真实角色重载通过。
+
+初次集成暴露沙盒默认 `SC_KEYMENU` 进入 modal loop，修正测试窗口处理；随后 IB 规则因遗漏 `match_index_count` 未命中，补齐后通过。两者没有证明产品依赖狩猎模式。另观察到 XXMI 1.2.2 在单次约 200ms F10 按住期间重建按键注册，可内部多次 reload；工具保证单次 down/up 脉冲、不自动重发，不能保证 XXMI 内部只重载一次。
+
+用户本轮另明确要求完成后及后续轮次推送 `https://github.com/loyal37/EFMI-MCP`，已更新 AGENTS 和 D-007。旧日志“不 push”保留当时上下文；当前按验证、记忆、差异审查、提交、推送顺序完成，不把截图、捕获或忽略的构建产物加入源码提交。
+
 ## 2026-10-06：优化真实数据读取耗时
 
 用户反馈采集慢。先对PID29988完整归档剖析，再优化游戏外CRC32C、PNG压缩/共享解码、JSON编码、身份复核无用VB哈希和离线桥接重复读缓冲。新增独立 `server/native/build.bat` 构建CRC helper，不改探针；缺失/CPU不支持/自测不通过自动回Python，保留增量种子及各类buffer语义。MCP测试在其子进程屏蔽启动测试前已有probe，可在用户游戏运行时安全验证。

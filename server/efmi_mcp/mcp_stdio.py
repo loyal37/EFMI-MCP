@@ -25,6 +25,7 @@ class Tool:
     schema: dict
     fn: Callable[..., Any]
     read_only: bool = True
+    annotations: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -42,12 +43,12 @@ class Server:
     tools: dict[str, Tool] = field(default_factory=dict)
 
     def tool(self, name: str, description: str, properties: dict | None = None,
-             required: list[str] | None = None, read_only: bool = True):
+             required: list[str] | None = None, read_only: bool = True, annotations: dict | None = None):
         def deco(fn):
             schema = {"type": "object", "properties": properties or {}, "additionalProperties": False}
             if required:
                 schema["required"] = required
-            self.tools[name] = Tool(name, description, schema, fn, read_only)
+            self.tools[name] = Tool(name, description, schema, fn, read_only, dict(annotations or {}))
             return fn
         return deco
 
@@ -85,7 +86,7 @@ class Server:
                     "name": t.name,
                     "description": t.description,
                     "inputSchema": t.schema,
-                    "annotations": {"readOnlyHint": t.read_only, "openWorldHint": False},
+                    "annotations": {"readOnlyHint": t.read_only, "openWorldHint": False, **t.annotations},
                 })
             return ok({"tools": tools})
         if method == "tools/call":

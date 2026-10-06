@@ -15,12 +15,13 @@ from .mcp_stdio import Image, Server, ToolError
 from .mods import ModCache
 from .parity import compare_sets
 from .probe_client import ProbeClient, ProbeError, ProbeNotFound, find_probes
+from .reload_workflow import reload_and_capture
 from .shader import disassemble
 
 INSTRUCTIONS = """\
 Live view of what Arknights: Endfield is drawing, taken from inside the running game by a probe DLL that sits \
-next to EFMI/XXMI (3DMigoto). It replaces frame-analysis dumps: nothing is written to disk by the game and no \
-hotkey is pressed.
+next to EFMI/XXMI (3DMigoto). Normal capture replaces frame-analysis dumps without pressing a hotkey or \
+asking the game to write a dump. The separate efmi_reload_and_capture tool deliberately sends F10.
 
 Hashes are the ones XXMI uses: the `ib` hash of a draw is the region hash that mods put in \
 `[TextureOverride...] hash = ...`; shader hashes are 16 hex digits; texture and buffer hashes are 8.
@@ -29,7 +30,14 @@ Typical flow: efmi_status -> efmi_capture_frame -> efmi_list_draws / efmi_find_h
 efmi_read_buffer / efmi_read_texture / efmi_get_shader. For "what is on screen right now, continuously" use \
 efmi_live_start, then efmi_live_now or efmi_watch_hash.
 
+After changing mod INI/BUF files, use efmi_reload_and_capture to focus the connected game's window, request \
+the configured unmodified F10 reload and retain a fresh frame. This stops continuous capture and invalidates \
+old captures. It changes game state and must not be used just to get newer data: ordinary capture is already live. \
+Input delivery plus a new frame is not a reload acknowledgement; verify expected draws/resources afterward. \
+On a post-input error, use efmi_capture_frame rather than blindly repeating F10.
+
 Things to know:
+- Capture and live mode work with hunting disabled; do not ask the user to press numpad 0 to collect data.
 - origin "xxmi" marks draws and resources issued by XXMI or a mod rather than by the game (a heuristic based on \
 the call stack). With a mod active the game's original draw of that mesh is replaced, so it does not appear.
 - Only the most recent capture keeps its resources readable; capture again if a read says the capture is gone.
@@ -274,6 +282,30 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path) -> Server:
                 lines.append(f"  ib={h} ic={info[h]['args'].get('index_count')} first draw #{info[h]['index']}{s.mod_note(h)}")
         lines.append("next: efmi_list_draws (filterable), efmi_find_hash, efmi_get_draw")
         return "\n".join(lines)
+
+    # ================================================================ reload
+    @srv.tool("efmi_reload_and_capture",
+              "After editing mod files, send one unmodified F10 to the connected XXMI game's verified foreground "
+              "window, wait, and capture a strictly later nonempty frame as 'latest'. May focus the game; "
+              "stops live mode and invalidates old captures. Requires this EFMI installation's default F10 "
+              "reload_config and reload_fixes bindings. Refuses held modifiers/F10 or failed focus/input. "
+              "Does not edit mod/Core/launcher files or inject a new DLL. Normal F10 side effects apply, "
+              "including XXMI saving persistent settings; this tool never sends wipe-settings modifiers or F11. "
+              "Reports requested reload separately from confirmation: the probe has no reload acknowledgement. "
+              "Verify expected mod draws/resources afterward; ordinary frame capture already obtains current data.",
+              {"detail": {"type": "string", "enum": ["full", "light"], "default": "full"},
+               "cb_data": {"type": "boolean", "default": True},
+               "settle_ms": {"type": "integer", "minimum": 250, "maximum": 10000, "default": 2000,
+                             "description": "Wait after F10 release before establishing the fresh-frame barrier."},
+               "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 30000, "default": 15000,
+                              "description": "Probe capture timeout; F10 is not retried on timeout."},
+               "focus_game": {"type": "boolean", "default": True,
+                              "description": "Try to bring the exact connected process's window to the foreground. "
+                                             "False requires it to be already foreground."}},
+              read_only=False, annotations={"destructiveHint": False, "idempotentHint": False})
+    def efmi_reload_and_capture(detail="full", cb_data=True, settle_ms=2000, timeout_ms=15000, focus_game=True):
+        return reload_and_capture(s, detail=detail, cb_data=cb_data, settle_ms=settle_ms,
+                                  timeout_ms=timeout_ms, focus_game=focus_game)
 
     # ================================================================ list
     @srv.tool("efmi_list_draws",

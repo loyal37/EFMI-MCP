@@ -168,3 +168,7 @@ class ModCache:
         if self._index is None or time.time() - self._index.scanned_at > self.max_age:
             self._index = scan_mods(self.root)
         return self._index
+
+    def invalidate(self) -> None:
+        """Force the next lookup to see files changed immediately before reload."""
+        self._index = None

@@ -712,6 +712,10 @@ float4 aux_ps(float4 pos : SV_Position) : SV_Target { return marker; }
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
 	if (m == WM_DESTROY) { PostQuitMessage(0); return 0; }
+	// DefWindowProc turns F10 key-up into SC_KEYMENU. This menu-less test
+	// window must keep presenting while the real XXMI reload key is tested,
+	// rather than entering the default system-menu modal loop.
+	if (m == WM_SYSCOMMAND && (w & 0xfff0) == SC_KEYMENU) return 0;
 	return DefWindowProcW(h, m, w, l);
 }
 

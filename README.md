@@ -2,7 +2,7 @@
 
 让 agent 在《明日方舟：终末地》运行时，实时拿到以往要靠 EFMI/XXMI 抓帧（frame analysis dump）才能得到的数据：每个绘制调用用了哪个索引/顶点缓冲、哪些着色器、哪些贴图和常量缓冲，以及它们的哈希和内容。
 
-不修改任何原版工具：XXMI 的 `d3d11.dll`、`d3dx.ini`、`Core\`、XXMI Launcher、现有 mod 都只读不写。
+工具不直接修改原版文件：XXMI 的 `d3d11.dll`、`d3dx.ini`、`Core\`、XXMI Launcher、现有 mod 均只读。`efmi_reload_and_capture` 会发送正常 F10 重载请求，因此会产生 XXMI 原有的运行时副作用，包括保存持久变量配置。
 
 ## 状态
 
@@ -13,6 +13,7 @@
 | 探针功能自测 / MCP 端到端 | 0.1.1：83 项 / 39 项全部通过（沙盒，含连续采集停止/重启/重连隔离） |
 | 多 D3D11 设备 | 0.1.1 按交换链所属设备选择采集上下文；辅助设备先建/后建、带/不带 XXMI，共 192 项通过 |
 | **在真实游戏中运行** | **0.1.1 已在伊冯画面验证**：非空帧、连续摘要、角色 IB/VB/CB、纹理与着色器读回成功；细节见项目记忆 |
+| 自动 F10 后重新采集 | MCP 服务 0.1.2 已实现；探针仍为 0.1.1。49 项离线专项、本轮 MCP 39 项及私有 XXMI 沙盒实际 F10 集成通过；真实游戏重载尚未验证 |
 
 沙盒是一个按 Unity/终末地方式使用 D3D11 的测试程序，配上一份 XXMI 运行时的私有拷贝。它能验证探针与真正的 XXMI DLL 共存、哈希一致、不卡顿，但验证不了游戏本身的行为，尤其是反作弊。
 
@@ -73,6 +74,8 @@
 
 更新探针后需要退出并重新启动游戏；游戏进程中的 DLL 不会随磁盘文件变化而更新。需要在旧 DLL 仍占用时构建，可运行 `probe\build.bat "F:\EFMI MCP\dist\candidate"`，游戏退出后再把生成的 DLL 放到原注入路径。
 
+本次 **MCP 服务 0.1.2** 的自动重载功能只需重启 MCP 服务，让客户端重新发现工具；探针保持 **0.1.1**，无需重新注入游戏。
+
 卸载：在启动器里取消"注入库"即可；探针不会在别处留下东西。
 
 ## 工具
@@ -81,6 +84,7 @@
 |---|---|
 | `efmi_status` | 游戏和探针是否就绪、分辨率、已见到的资源数、已安装 mod |
 | `efmi_capture_frame` | 记录下一帧（`full` 含全部绑定；`cb_data=true` 连同每个 draw 当时的常量缓冲内容） |
+| `efmi_reload_and_capture` | 发送一次无修饰键 F10，等待后记录非空新帧；用于已修改 mod 后重载验证，会停止 live 并清除旧捕获 |
 | `efmi_list_draws` | 按哈希、调用类型、来源等过滤列出绘制调用 |
 | `efmi_get_draw` | 单个绘制调用的完整管线状态 |
 | `efmi_find_hash` | 某个哈希在这一帧里以什么角色出现，以及哪些 mod 的 ini 引用了它 |
@@ -95,6 +99,28 @@
 | `efmi_verify_against_dump` | 自检：把一次抓取和 XXMI 的抓帧对比，看哈希是否仍一致 |
 
 `ib` 哈希就是 mod 里 `[TextureOverride] hash =` 用的区域哈希。
+
+### 修改 mod 后自动重载和采集
+
+让 agent 调用 `efmi_reload_and_capture`，默认参数即可完成“定位当前探针的游戏窗口 → F10 → 等待 2 秒 → 抓取新帧”。之后用 `efmi_list_draws`、`efmi_get_draw`、`efmi_read_buffer` 检查 `capture="latest"`。只想获取当前画面时，直接用 `efmi_capture_frame`，不必重复 F10。无需开启狩猎模式。
+
+| 参数 | 默认值与范围 |
+|---|---|
+| `detail` | `"full"`；也可设为 `"light"` |
+| `cb_data` | `true`，保存 draw 当时的常量缓冲 |
+| `settle_ms` | `2000`；250–10000 毫秒，F10 释放后等待 |
+| `timeout_ms` | `15000`；1000–30000 毫秒，仅为后续捕获超时，不包含等待时间 |
+| `focus_game` | `true`，尝试把该游戏窗口切到前台；`false` 要求它已在前台 |
+
+工具先核对同一管道/PID、XXMI 安装路径和渲染设备，且本安装 `d3dx.ini` 的 `[Hunting]` 中 `reload_config`、`reload_fixes` 必须各有一条 `no_modifiers VK_F10`。不自动改自定义按键；窗口无法确认、前台切换失败或修饰键/F10 已按住时拒绝发送。随后停止 live、释放资源、清除旧捕获与 mod 索引，只发送一次 F10，等待后建立帧号界限，再接受同一进程/设备的更晚非空帧。live 保持停止。
+
+成功结果的 `reload_requested=true` 表示输入已发送，**`reload_confirmed` 始终为 `false`**：探针没有 XXMI 重载完成回执，新帧也不能证明所有 INI 已解析成功。应继续核对预期 draw/资源。失败结果说明输入未发送、已发送或状态未知；工具不自动重发 F10，已发送后抓帧失败可直接再调 `efmi_capture_frame`。正常 F10 可能保存持久变量，不能把此操作当作纯只读。
+
+Windows 可能拒绝前台切换，或因进程权限级别不同而拦截 `SendInput`（UIPI）；此时按错误信息处理，不使用强抢前台、任意按键或自动提升权限作为兜底。
+
+工具保证一次 F10 按下/释放脉冲且不重发。实测 XXMI 1.2.2 在约 200ms 的按住期间，重建按键注册可能触发多次内部重载，因此不保证 XXMI 内部只重载一次。
+
+私有沙盒已在 `hunting=0` 下验证：新增 `handling=skip` 规则后，由工具发送 F10，只有指定 IB 的 draw 消失，其余 IB 次数保持一致，新帧缓冲仍可读取。证据为 `sandbox/build/reload-xuxnsq73/reload-evidence.json`；此结果不替代真实游戏验证。`sandbox/run_all.py` 包含两组无系统输入的单元检查；实际输入集成需单独运行 `python sandbox/reload_integration_test.py`，它会切换沙盒到前台并发送真实 F10，发现其他运行中的探针即拒绝执行。
 
 ## 已知限制
 
