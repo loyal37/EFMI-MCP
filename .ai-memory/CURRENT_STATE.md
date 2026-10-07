@@ -9,8 +9,8 @@
 - 接入方式：默认使用所选 Blender 中已安装的插件目录（本机 `%APPDATA%\Blender Foundation\Blender\4.5\scripts\addons\LoyalTools`，1.6.8），服务进程与 Blender 内是同一份代码；`--loyaltools-root`／`EFMI_LOYALTOOLS` 仅作覆盖，且只作用于服务进程内的步骤（Blender 内始终是它自己安装的插件）。`efmi_extract_model` 指定别的 `blender_path` 时，服务进程也改用那个 Blender 的插件；指定的 Blender 不存在时报错，不会换用别的安装。命令行 `scripts/export_merged_workspace.py` 采用同样的默认。LOD 调用 `map_merged_skeleton_lod`／`restore_merged_skeleton_lod`，导入导出调用操作器 `loyal.import_workspace`／`ssmt.generate_mod_blueprint`，不复制算法。帧匹配时把函数里打开目录的那一处换成“归档或帧分析皆可”的工厂，算法不动。
 - 项目目录即 LoyalTools 自定义工作空间根目录（目录名即模组名），不再有计划里的 `project/` 一层；布局见计划书第 9 节。
 - 检查只依据产物和 XXMI 的 INI 语法：导出看文件引用、尺寸、绘制范围、入口覆盖；游戏内核对按缓冲内容（区域 CRC + 整缓冲 SHA256）并沿 INI 的 `run`／`ref` 引用找入口对应的文件。插件日志保存时会去掉表情符号，失败以“Mod生成失败”字样识别，找不到完成语句只记警告。
-- 已验证（离线，真实 LoyalTools 1.6.8 + Blender 4.5.7）：仅漫射导入（伊冯 11 组件中 9 个、梨诺 18 组件中 16 个有漫射图，其余无别名）；JSON 匹配（伊冯 10／11 组件与原映射一致，1 个被 LoyalTools 判不兼容并报告）；帧匹配（吉尔伯塔两份帧分析目录，9 组件与原映射一致）；原生导出（伊冯含 LOD 77 文件、梨诺 113 文件，`.blend` 未被改写）；`sandbox/model_workflow_test.py` 37 项；`sandbox/model_offline_integration.py` 18 项；既有回归见本轮日志。
-- **未验证（需要游戏）**：MCP 工具形式的三采样提取（桥接此前只由脚本对梨诺跑过一次，磁盘上已无当时的归档）；探针归档作为一侧的 LOD 帧匹配；部署→F10→逐组件核对；修改后导出的往返。本轮游戏未运行，未连接探针、未发键、未向 EFMI 目录写入。
+- 已验证（离线，真实 LoyalTools 1.6.8 + Blender 4.5.7）：仅漫射导入（伊冯 11 组件中 9 个、梨诺 18 组件中 16 个有漫射图，其余无别名）；JSON 匹配（伊冯 10／11 组件与原映射一致，1 个被 LoyalTools 判不兼容并报告）；帧匹配（吉尔伯塔两份帧分析目录，9 组件与原映射一致）；原生导出（伊冯含 LOD 77 文件、梨诺 113 文件，`.blend` 未被改写）；`sandbox/model_workflow_test.py` 37 项；`sandbox/model_offline_integration.py` 33 项，其中包含编辑后再导出：后台 Blender 把全部网格沿世界 X 移动 0.01 并保存，再次导出后 77 个文件中只有 10 个顶点缓冲改变，每个缓冲的全部顶点移动同一向量（X −0.01），索引缓冲不变；桌面端启动的 MCP 服务 0.1.5 上离线调用 `efmi_model_project`／`efmi_export_mod`／`efmi_model_job` 正常（任务运行期间应答不受影响）；既有回归见本轮日志。
+- **未验证（需要游戏）**：MCP 工具形式的三采样提取（桥接此前只由脚本对梨诺跑过一次，磁盘上已无当时的归档）；探针归档作为一侧的 LOD 帧匹配；部署→F10→逐组件核对；修改后的模型在游戏中的表现（改权重或拓扑的编辑离线也未做）。本轮游戏未运行，未连接探针、未发键、未向 EFMI 目录写入。
 - 耦合点：`loyal_bridge.py` 的归档版提取器继承并替换了 `DumpWorkspaceExtractor` 的几个内部方法，LoyalTools 重构该部分时需跟着改。去耦方案是把探针数据写成帧分析目录格式，需在游戏运行时与 XXMI 的帧分析对照后再做。
 
 ## 模型流程的计划阶段记录（T-008，2026-10-06，已被上节取代）
