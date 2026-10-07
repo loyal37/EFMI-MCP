@@ -89,6 +89,7 @@ struct Pending {
 	RKey     key;
 	uint64_t epoch;
 	uint32_t gen;
+	uint64_t serial;     // of the buffer object the copy was taken from
 };
 
 struct Capture {
@@ -173,7 +174,12 @@ static volatile LONG g_client_gen = 0;           // bumped whenever a client (re
 static LONG g_seen_client_gen = 0;
 static uint32_t g_track_gen = 1;
 
-struct RVal { uint32_t hash; uint64_t epoch; uint32_t gen; };
+// Region hashes kept from frame to frame. The key is an address, and addresses
+// are handed out again: a mod's buffers are destroyed and created anew at every
+// reload, usually in the same places and with the same sizes. A new buffer that
+// was never written after its creation has the same write epoch as the old one
+// had, so the entry also names the object it was computed for.
+struct RVal { uint32_t hash; uint64_t epoch; uint32_t gen; uint64_t serial; };
 static std::unordered_map<RKey, RVal, RKeyHash> g_rcache;
 
 // Buffers the GPU may write to (UAVs, stream output).
@@ -533,7 +539,8 @@ static int32_t region(Capture* c, ID3D11Buffer* buf, int32_t rid, uint32_t off, 
 			return f->second.idx;
 		if (g_tracking) {
 			auto p = g_rcache.find(key);
-			if (p != g_rcache.end() && p->second.gen == g_track_gen && hist_intact(hist, off, size, p->second.epoch)) {
+			if (p != g_rcache.end() && p->second.gen == g_track_gen && p->second.serial == cr.serial
+			    && hist_intact(hist, off, size, p->second.epoch)) {
 				p->second.epoch = epoch;
 				r.hash = p->second.hash;
 				r.state = RS_CACHED;
@@ -565,7 +572,7 @@ static int32_t region(Capture* c, ID3D11Buffer* buf, int32_t rid, uint32_t off, 
 		return idx;
 	}
 	c->regions.push_back(r);
-	c->pending.push_back({ 0, idx, chunk, at, size, key, epoch, g_track_gen });
+	c->pending.push_back({ 0, idx, chunk, at, size, key, epoch, g_track_gen, cr.serial });
 	if (epoch)
 		c->frame_regions[key] = { idx, epoch };
 	return idx;
@@ -601,7 +608,7 @@ static int32_t snapshot(Capture* c, ID3D11Buffer* buf, int32_t rid, uint32_t off
 		return idx;
 	}
 	c->snaps.push_back(s);
-	c->pending.push_back({ 1, idx, chunk, at, size, key, epoch, g_track_gen });
+	c->pending.push_back({ 1, idx, chunk, at, size, key, epoch, g_track_gen, cr.serial });
 	if (epoch)
 		c->frame_snaps[key] = { idx, epoch };
 	return idx;
@@ -1033,7 +1040,7 @@ static bool try_readback(Capture* c, bool block)
 				if (p.epoch && g_tracking && p.gen == g_track_gen) {
 					if (g_rcache.size() > 400000)
 						g_rcache.clear();
-					g_rcache[p.key] = { r.hash, p.epoch, p.gen };
+					g_rcache[p.key] = { r.hash, p.epoch, p.gen, p.serial };
 				}
 			} else {
 				CapSnap& sn = c->snaps[p.idx];
@@ -1177,9 +1184,12 @@ static bool start_read_buffer(Job* j)
 	j->staging = (ID3D11Resource*)st;
 	j->r_off = off; j->r_size = size; j->r_bw = bw;
 	WriteHist hist;
+	ResInfo now;
 	if (cr->known && cr->epoch && reg_write_hist(cr->ptr, &hist)) {
 		j->unchanged_known = true;
-		j->unchanged = hist_intact(hist, (uint32_t)off, (uint32_t)size, cr->epoch);
+		// Still the object that was captured, and nothing has written to this range since.
+		j->unchanged = reg_get_resource(cr->ptr, &now) && now.serial == cr->serial
+		            && hist_intact(hist, (uint32_t)off, (uint32_t)size, cr->epoch);
 	}
 	return true;
 }

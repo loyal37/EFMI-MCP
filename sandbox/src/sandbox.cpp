@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -195,6 +196,8 @@ static void make_grid(Mesh* m, int n, float ox, float oy, float size, float r, f
 static bool g_plain_draw = false;           // --plain-draw: use Draw() instead of DrawInstanced()
 static bool g_stream = false;               // --stream: keep adding unrelated data to the shared buffer
 static bool g_rewrite_mesh1 = false;        // --rewrite-mesh1: re-upload mesh 1's indices every frame
+static int g_recreate_mesh3 = 0;            // --recreate-mesh3 N: every N frames destroy mesh 3's buffers and
+                                            // create new ones of the same sizes holding other bytes
 static int g_repeat = 1;                    // --repeat: issue the mesh draws this many times per frame
 static int g_vsync = 1;                     // --novsync sets this to 0
 static unsigned g_skip = 0;                 // --skip bit mask, for bisecting a scene
@@ -234,6 +237,53 @@ struct Scene {
 	ID3D11DepthStencilState* dss = nullptr;
 	ID3D11RasterizerState* rs = nullptr;
 };
+
+// Mesh 3 in its own immutable buffers (hash includes the data), 32-bit indices.
+// A variant other than 0 keeps every size and changes the bytes: the vertices
+// move a little, the colours fade and each triangle starts at another corner.
+static bool create_mesh3(Scene& s, int variant)
+{
+	std::vector<V0> v0 = s.m3.v0;
+	std::vector<V1> v1 = s.m3.v1;
+	std::vector<uint32_t> idx32(s.m3.idx.begin(), s.m3.idx.end());
+	for (V0& v : v0) v.pos[2] += 0.0005f * (float)variant;
+	for (V1& c : v1) c.col[3] -= 0.001f * (float)variant;
+	for (size_t i = 0; variant % 3 && i + 2 < idx32.size(); i += 3)
+		std::rotate(idx32.begin() + i, idx32.begin() + i + variant % 3, idx32.begin() + i + 3);
+
+	D3D11_BUFFER_DESC d = {};
+	D3D11_SUBRESOURCE_DATA init = {};
+	HRESULT hr;
+	d.Usage = D3D11_USAGE_IMMUTABLE;
+	d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+	d.ByteWidth = (UINT)(v0.size() * sizeof(V0)); init.pSysMem = v0.data();
+	hr = s.dev->CreateBuffer(&d, &init, &s.vb3a); CHECK(hr, "vb3a");
+	d.ByteWidth = (UINT)(v1.size() * sizeof(V1)); init.pSysMem = v1.data();
+	hr = s.dev->CreateBuffer(&d, &init, &s.vb3b); CHECK(hr, "vb3b");
+	d.BindFlags = D3D11_BIND_INDEX_BUFFER;
+	d.ByteWidth = (UINT)(idx32.size() * 4); init.pSysMem = idx32.data();
+	hr = s.dev->CreateBuffer(&d, &init, &s.ib3); CHECK(hr, "ib3");
+	return true;
+}
+
+// Destroys mesh 3's buffers before creating the next variant, so that the new
+// objects can be given the addresses of the old ones.
+static bool recreate_mesh3(Scene& s, int variant, int frame)
+{
+	ID3D11Buffer* none[2] = { nullptr, nullptr };
+	UINT zero[2] = { 0, 0 };
+	s.ctx->IASetVertexBuffers(0, 2, none, zero, zero);
+	s.ctx->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+	void* old_vb = s.vb3a;
+	void* old_ib = s.ib3;
+	s.vb3a->Release(); s.vb3b->Release(); s.ib3->Release();
+	s.vb3a = s.vb3b = s.ib3 = nullptr;
+	s.ctx->Flush();
+	if (!create_mesh3(s, variant))
+		return false;
+	say("mesh3 recreated frame=%d variant=%d vb %p -> %p ib %p -> %p", frame, variant, old_vb, (void*)s.vb3a, old_ib, (void*)s.ib3);
+	return true;
+}
 
 static bool heap_write(Scene& s, UINT dst_off, const void* data, UINT size)
 {
@@ -315,21 +365,9 @@ static bool build_scene(Scene& s)
 		if (!heap_write(s, m->off_i, m->idx.data(), (UINT)(m->idx.size() * sizeof(uint16_t)))) return false;
 	}
 
-	// ---- a mesh in its own immutable buffers (hash includes the data), 32-bit indices
-	{
-		D3D11_BUFFER_DESC d = {};
-		D3D11_SUBRESOURCE_DATA init = {};
-		d.Usage = D3D11_USAGE_IMMUTABLE;
-		d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-		d.ByteWidth = (UINT)(s.m3.v0.size() * sizeof(V0)); init.pSysMem = s.m3.v0.data();
-		hr = s.dev->CreateBuffer(&d, &init, &s.vb3a); CHECK(hr, "vb3a");
-		d.ByteWidth = (UINT)(s.m3.v1.size() * sizeof(V1)); init.pSysMem = s.m3.v1.data();
-		hr = s.dev->CreateBuffer(&d, &init, &s.vb3b); CHECK(hr, "vb3b");
-		std::vector<uint32_t> idx32(s.m3.idx.begin(), s.m3.idx.end());
-		d.BindFlags = D3D11_BIND_INDEX_BUFFER;
-		d.ByteWidth = (UINT)(idx32.size() * 4); init.pSysMem = idx32.data();
-		hr = s.dev->CreateBuffer(&d, &init, &s.ib3); CHECK(hr, "ib3");
-	}
+	// ---- a mesh in its own immutable buffers
+	if (!create_mesh3(s, 0))
+		return false;
 
 	// ---- a vertex buffer written by a compute shader every frame
 	{
@@ -755,6 +793,7 @@ int wmain(int argc, wchar_t** argv)
 		else if (a == L"--novsync") g_vsync = 0;
 		else if (a == L"--stream") g_stream = true;
 		else if (a == L"--rewrite-mesh1") g_rewrite_mesh1 = true;
+		else if (a == L"--recreate-mesh3") g_recreate_mesh3 = _wtoi(next().c_str());
 		else if (a == L"--skip") g_skip = (unsigned)wcstoul(next().c_str(), nullptr, 0);
 		else if (a == L"--seconds") max_seconds = _wtoi(next().c_str());
 		else if (a == L"--dump-vk") dump_vk = (WORD)wcstoul(next().c_str(), nullptr, 0);
@@ -883,6 +922,8 @@ int wmain(int argc, wchar_t** argv)
 			if (!aux.create(create, adapter)) return 3;
 			say("AUXILIARY READY frame=%d order=after", frame);
 		}
+		if (g_recreate_mesh3 > 0 && frame && frame % g_recreate_mesh3 == 0 && !recreate_mesh3(s, frame / g_recreate_mesh3, frame))
+			return 3;
 		float time = animate ? (float)(GetTickCount64() - t0) / 1000.0f : 0.0f;
 		render(s, time);
 		if (aux.dev && !aux.render(frame)) return 3;

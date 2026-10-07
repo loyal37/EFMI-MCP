@@ -214,9 +214,9 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
     whole buffers behind matched draws are then read back and compared by
     SHA256. Draw arguments are checked against the INI's draw commands.
 
-    A vertex buffer of such a draw that has an exported file's size but was
-    recorded with another hash is decided by reading it: the hash a draw is
-    recorded with can be older than the buffer, its bytes cannot.
+    A buffer that has an exported file's size but was recorded with another
+    hash is decided by reading it: a probe before 0.1.4 can record the hash of
+    a destroyed buffer for a new one at its address, the bytes cannot be old.
     """
     mod_dir = Path(manifest["mod_dir"])
     digests = {item["path"]: item for item in manifest["files"]}
@@ -252,12 +252,43 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
     mod_draws, foreign_draws, stale = [], 0, []
     resources_to_read: dict[int, str] = {}
     undecided = []      # vertex bindings of this mod's draws: an exported file's size, another recorded hash
+    hash_disagreements, other_bytes = [], []
+    budget, whole = READ_BUDGET, {}
+    read: dict[int, tuple[str | None, str]] = {}
+
+    def digest_now(rid):
+        """SHA256 of a whole buffer as it is now, or why it was not read."""
+        nonlocal budget
+        if rid not in read:
+            size = cap.resource(rid)["size"]
+            if size > budget:
+                read[rid] = (None, "not_read_budget")
+            else:
+                budget -= size
+                try:
+                    _, payload = client.read_buffer(cap.frame, rid, size=size)
+                    read[rid] = (hashlib.sha256(payload).hexdigest(), "read")
+                except Exception as exc:   # the capture may have been released meanwhile
+                    read[rid] = (None, f"read_failed: {exc}")
+        return read[rid]
+
+    def file_with_bytes_of(binding):
+        """The exported file a buffer holds, found by reading it; notes that its recorded hash said otherwise."""
+        rid = binding["res"]
+        digest, _ = digest_now(rid)
+        name = next((n for n in by_size.get(cap.resource(rid)["size"], []) if digests[n]["sha256"] == digest), None)
+        if name and not any(item["resource"] == rid for item in hash_disagreements):
+            hash_disagreements.append({"resource": rid, "file": name, "recorded_hash": binding["region"]["hash"]})
+        return name, digest
+
     xxmi_indexed = 0
     for draw in cap.draws():
         if draw["origin"] != "xxmi" or draw["call"] not in INDEXED or "ib" not in draw:
             continue
         xxmi_indexed += 1
         name, state, region = match_region(draw["ib"])
+        if name is None and state == "same_size_different_bytes":
+            name, _ = file_with_bytes_of(draw["ib"])
         if name is None:
             if state == "same_size_different_bytes":
                 stale.append({"draw": draw["index"], "ib_bytes": cap.resource(draw["ib"]["res"]).get("size"),
@@ -282,42 +313,18 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
         mod_draws.append(record)
 
     # Whole buffers: the draw ranges above need not cover a file completely.
-    budget, whole = READ_BUDGET, {}
-    read: dict[int, tuple[str | None, str]] = {}
-
-    def digest_now(rid):
-        """SHA256 of a whole buffer as it is now, or why it was not read."""
-        nonlocal budget
-        if rid not in read:
-            size = cap.resource(rid)["size"]
-            if size > budget:
-                read[rid] = (None, "not_read_budget")
-            else:
-                budget -= size
-                try:
-                    _, payload = client.read_buffer(cap.frame, rid, size=size)
-                    read[rid] = (hashlib.sha256(payload).hexdigest(), "read")
-                except Exception as exc:   # the capture may have been released meanwhile
-                    read[rid] = (None, f"read_failed: {exc}")
-        return read[rid]
-
     for rid, name in sorted(resources_to_read.items()):
         digest, state = digest_now(rid)
         whole[name] = state if digest is None else "identical" if digest == digests[name]["sha256"] else "different"
 
-    hash_disagreements, other_bytes = [], []
     for record, slot, binding in undecided:
-        rid = binding["res"]
-        digest, _ = digest_now(rid)
-        name = next((n for n in by_size.get(cap.resource(rid)["size"], []) if digests[n]["sha256"] == digest), None)
+        name, digest = file_with_bytes_of(binding)
         if name:
             record["vertex_buffers"][slot] = name
-            used_files.setdefault(name, {"draws": 0, "resource": rid})["draws"] += 1
+            used_files.setdefault(name, {"draws": 0, "resource": binding["res"]})["draws"] += 1
             whole[name] = "identical"
-            if not any(item["resource"] == rid for item in hash_disagreements):
-                hash_disagreements.append({"resource": rid, "file": name, "recorded_hash": binding["region"]["hash"]})
         elif digest:
-            other_bytes.append({"draw": record["draw"], "slot": slot, "bytes": cap.resource(rid)["size"]})
+            other_bytes.append({"draw": record["draw"], "slot": slot, "bytes": cap.resource(binding["res"])["size"]})
 
     # Draw arguments against the INI's draw commands for the same index file.
     argument_mismatches = []

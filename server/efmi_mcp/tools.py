@@ -298,6 +298,10 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             else:
                 lines.append(f"mods switch: probe {st['probe']} cannot press F11; efmi_toggle_mods needs 0.1.3+. "
                              f"Restart the game to load {s.probe_dll}")
+            if "region_hash_per_object" not in st.get("features", ()):
+                lines.append(f"hashes: probe {st['probe']} can record a destroyed buffer's region hash for a new buffer "
+                             "at the same address (mod buffers after a reload); read the buffer to be sure. "
+                             f"Fixed in 0.1.4: restart the game to load {s.probe_dll}")
             if s.mods_display:
                 lines.append(f"mods display: {'ON' if s.mods_display['enabled'] else 'OFF'} according to EFMI after this "
                              f"server's last F11 (frame {s.mods_display['frame']}); a manual F11 since then is not seen")

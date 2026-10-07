@@ -271,6 +271,14 @@ class VerifyCaptureTests(Scratch):
                          [{"resource": 1, "file": "Meshes/mesh-Position.buf", "recorded_hash": "deadbeef"}])
         self.assertEqual(result["exported_buffers_not_seen"], [])
 
+    def test_index_buffer_recorded_with_an_older_hash_is_judged_by_its_bytes(self):
+        result, _ = self.check([{"origin": "xxmi", "ib": 0, "vb": 1, "count": 6, "ib_hash": "0badf00d"}],
+                               {0: (INDICES, "xxmi"), 1: (POSITIONS, "xxmi")})
+        self.assertEqual((result["target_mod_status"], result["draws_of_this_mod"]), ("passed", 1))
+        self.assertEqual(result["stale_or_foreign_same_size"], [])
+        self.assertEqual(result["recorded_hash_disagreements"],
+                         [{"resource": 0, "file": "Meshes/mesh-Index.buf", "recorded_hash": "0badf00d"}])
+
     def test_position_buffer_of_the_right_size_with_other_bytes_fails(self):
         result, _ = self.check([{"origin": "xxmi", "ib": 0, "vb": 1, "count": 6}],
                                {0: (INDICES, "xxmi"), 1: (bytes(reversed(POSITIONS)), "xxmi")})

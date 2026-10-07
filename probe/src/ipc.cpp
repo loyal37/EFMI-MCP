@@ -76,7 +76,8 @@ static void status_json(JsonW& w)
 	w.ks("probe", PROBE_VERSION);
 	w.ku("protocol", PROBE_PROTOCOL);
 	// Optional abilities, so the server need not compare version strings.
-	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key"); w.end_arr();
+	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
+	w.str("region_hash_per_object"); w.end_arr();
 	bool elevated = false;
 	uint32_t integrity = 0;
 	reload_process_info(&elevated, &integrity);

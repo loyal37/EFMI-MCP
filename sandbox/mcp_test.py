@@ -166,6 +166,7 @@ def main() -> int:
         check("status with the game", not err and "attached: True" in text and "1280x720" in text and "xxmi: present" in text, text)
         check("status says that the probe can press the reload key and the mods switch",
               "the probe presses F10" in text and "the probe presses F11" in text, text)
+        check("status has no warning about hashes kept by buffer address", "destroyed buffer" not in text, text)
 
         text, err, _ = mcp.call("efmi_capture_frame", detail="full", cb_data=True)
         if verbose: print(text)

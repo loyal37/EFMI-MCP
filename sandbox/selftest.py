@@ -9,6 +9,8 @@ the sandbox is known to have created:
   * the continuous stream stays cached while unrelated data is streamed into
     the shared buffer, and flags a region that is rewritten every frame
   * a second client can connect after the first one leaves
+  * a buffer that is destroyed and created again, at the same address or not,
+    is recorded with the hash of its own bytes
 """
 from __future__ import annotations
 
@@ -242,6 +244,42 @@ def test_capture_and_reads(xxmi: bool) -> None:
         sb.quit()
 
 
+def test_recreated_buffers() -> None:
+    """Mod buffers are destroyed and created again at every reload, often at the same addresses."""
+    print("\n== buffers destroyed and created again with other bytes")
+    sb = Sandbox(["--recreate-mesh3", "12"], xxmi=False)
+    try:
+        if not sb.ready.wait(30):
+            check("sandbox starts", False)
+            return
+        client = connect(sb.pid)       # a connected client is what switches the region hash cache on
+        objects: dict[tuple[str, str], set[int]] = {}
+        wrong, looked = [], 0
+        for _ in range(60):
+            doc, blob = client.capture(detail="light")
+            cap = Capture(doc, blob)
+            draw = next((d for d in game_draws(cap) if d["call"] == "DrawIndexed" and d["ib"]["format"] == 42), None)
+            if draw is None:
+                continue
+            for name, binding in (("ib", draw["ib"]), ("vb0", draw["vb"][0]), ("vb1", draw["vb"][1])):
+                resource, region = cap.resource(binding["res"]), binding["region"]
+                _, data = client.read_buffer(cap.frame, binding["res"], offset=region["offset"], size=region["size"])
+                looked += 1
+                objects.setdefault((name, resource["ptr"]), set()).add(resource["sn"])
+                if region["hash"] != hex32(crc32c(data)):
+                    wrong.append((cap.frame, name, resource["ptr"], resource["sn"], region["hash"], hex32(crc32c(data))))
+            client.release()           # as a reload does: the old buffers can then really be destroyed
+            time.sleep(0.03)
+        reused = sorted(key for key, serials in objects.items() if len(serials) > 1)
+        check("the buffers were replaced while the test watched", len({sn for s in objects.values() for sn in s}) > 6,
+              str(objects))
+        check("a new buffer was given the address of a destroyed one", bool(reused), str(objects))
+        check("every recorded hash is the hash of the bytes in that buffer", looked > 100 and not wrong,
+              f"{len(wrong)} of {looked}: {wrong[:4]}")
+    finally:
+        sb.quit()
+
+
 def live_items(frame: dict) -> list[list]:
     return [it for it in frame["items"] if it[1] != "xxmi"]
 
@@ -339,6 +377,7 @@ def main() -> int:
 
     test_capture_and_reads(xxmi=True)
     test_capture_and_reads(xxmi=False)
+    test_recreated_buffers()
 
     r = test_live(["--stream"], "unrelated data streamed into the shared buffer every frame")
     if r:

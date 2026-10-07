@@ -17,6 +17,13 @@ from .reload_input import ReloadInputError, send_reload_f10, send_reload_via_pro
 
 RESUME_TIMEOUT_S = 10.0    # how long a reload may keep the game from presenting a frame
 
+# Probes before 0.1.4 kept region hashes by buffer address. A reload destroys the mods' buffers and
+# creates new ones, usually at the same addresses: such a probe can record the old buffer's hash.
+STALE_HASH_CAUTION = ("This probe ({version}) can record, for a buffer created by the reload, the region hash of the "
+                      "buffer that was at the same address before it. Do not conclude from an unchanged ib/vb hash "
+                      "that an edited buffer was not loaded: read it with efmi_read_buffer. Probe 0.1.4 fixes this; "
+                      "restart the game to load the updated efmi_probe.dll.")
+
 # The server cannot deliver a key to an elevated game (UIPI); only the probe can.
 _OLD_PROBE_HINT = ("This probe cannot press the key itself, and Windows silently drops keys that this "
                    "unelevated server sends to a game running as administrator. Probe 0.1.2 or later sends "
@@ -246,7 +253,10 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
             origin = draw["origin"]
             counts[origin] = counts.get(origin, 0) + 1
         evidence = reload_evidence(cap, receipt) if in_process else None
+        caution = None if "region_hash_per_object" in (before.get("features") or ()) else \
+            STALE_HASH_CAUTION.format(version=before.get("probe", "?"))
         return {
+            **({"hash_caution": caution} if caution else {}),
             "status": "captured_after_reload_request", "pid": identity[0],
             "reload_requested": True, "reload_confirmed": bool(evidence and evidence["confirmed"]),
             "confirmation_note": _note(in_process, receipt, evidence),

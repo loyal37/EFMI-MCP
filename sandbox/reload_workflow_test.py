@@ -542,6 +542,16 @@ class ProbePressedReloadTests(unittest.TestCase):
         self.assertLess(events.index("release"), events.index("key"))
         self.assertLess(events.index("key"), events.index("capture"))
 
+    def test_probe_that_keeps_hashes_by_address_gets_a_caution(self):
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertIn("0.1.2", result["hash_caution"])
+        self.assertIn("efmi_read_buffer", result["hash_caution"])
+        self.probe.status_overrides["features"] = ["reload_key", "create_frames", "region_hash_per_object"]
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertNotIn("hash_caution", result)
+
     def test_settle_time_starts_when_the_game_presents_again(self):
         # The reload keeps the game from presenting for two seconds after the key went up at frame 220.
         self.probe.receipt = {"frame_at_key_up": 220}
