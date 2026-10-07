@@ -104,6 +104,32 @@ def inspect_archive(archive_dir: str | Path) -> dict:
     }
 
 
+def left_out_draws(readback: dict, draw_ids) -> list[int]:
+    """Draws an archive left out, because the game rewrites their index data, of the object that issued ``draw_ids``.
+
+    The archive records the per-object constants of every draw it kept and of
+    every such draw it left out; an object is the draws that share them.
+    """
+    left = (readback.get("left_out") or {}).get("rewritten_index_data") or []
+    if not left:
+        return []
+    instance = {int(item["draw"]): item["instance"] for item in readback.get("instances", [])}
+    own = {instance[index] for index in draw_ids if index in instance}
+    return sorted(int(item["draw"]) for item in left if item["instance"] in own)
+
+
+def _object_draws(extractor, obj) -> set[int]:
+    return {record.shader_call.id for component in obj.components
+            for record in extractor.get_component_draw_records(component)}
+
+
+def _require_complete(extractor, obj, readback: dict, archive: Path) -> None:
+    missing = left_out_draws(readback, _object_draws(extractor, obj))
+    if missing:
+        raise BridgeError(f"Object {obj.id} in {archive.name}: the index data of draw(s) {missing[:8]} is in a "
+                          "buffer the game rewrites, which is not supported")
+
+
 def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict], object_name: str,
                      readback: dict | None = None):
     e, r, b, fd = native.extract, native.resources, native.buffers, native.descriptors
@@ -623,6 +649,7 @@ def export_merged_workspace(archive_dir: str | Path, workspace_dir: str | Path,
             verified_buffer_caches.append(extractor._bridge_buffer_bytes)
             candidates = extractor.get_merged_skeleton_candidates()
             selected = extractor.select_merged_skeleton_object(candidates)
+            _require_complete(extractor, selected, readback, archive)
             candidate_summary = [{"name": str(obj.id), "components": len(obj.components),
                                   "vertices": sum(int(c.mesh.format.vertex_count) for c in obj.components)}
                                  for obj in candidates]
@@ -637,6 +664,7 @@ def export_merged_workspace(archive_dir: str | Path, workspace_dir: str | Path,
                         se, _ = _build_extractor(sample_archive, native, sc, sd, object_name, sr)
                         verified_buffer_caches.append(se._bridge_buffer_bytes)
                         so = se.select_merged_skeleton_object(se.get_merged_skeleton_candidates())
+                        _require_complete(se, so, sr, sample_archive)
                     if sr.get("complete") is not True or sr.get("errors") or sr.get("validation_scope") != "deferred_skeleton_static":
                         raise BridgeError(f"Archive {sample_archive} is not a completed deferred_skeleton_static collection")
                     samples.append(_static_sample(se, so, native, sc, sr))
@@ -736,16 +764,21 @@ def list_candidates(archive_dir: str | Path, loyaltools_root: str | Path = DEFAU
                         "cpu_posed": bool(component.mesh.cpu_posed),
                         "draws": sorted(record.shader_call.id for record in extractor.get_component_draw_records(component)),
                     })
+                left = left_out_draws(readback, [index for item in components for index in item["draws"]])
                 objects.append({"name": str(obj.id), "components": components,
                                 "component_count": len(components),
                                 "vertices": sum(item["vertex_count"] for item in components),
-                                "indices": sum(item["index_count"] for item in components)})
+                                "indices": sum(item["index_count"] for item in components),
+                                **({"draws_left_out": left,
+                                    "incomplete": "The game rewrites the index data of these draws, so they were not "
+                                                  "archived; this object cannot be extracted."} if left else {})})
     finally:
         if extractor is not None:
             extractor._bridge_buffer_bytes.clear()
         sys.dont_write_bytecode = previous
     return {"archive": str(archive), "frame": capture.frame, "default_object": default, "objects": objects,
-            "eligible_draws": len(draws), "missing_texture_resources": missing_textures,
+            "eligible_draws": len(draws), "left_out": readback.get("left_out"),
+            "missing_texture_resources": missing_textures,
             "screenshot": str(archive / "current-screen.png") if (archive / "current-screen.png").is_file() else ""}
 
 
@@ -767,6 +800,7 @@ class _LodSources:
         self.native = native
         self.opened = []
         self.kinds = {}
+        self.readbacks = {}
 
     def __call__(self, folder, *args, **kwargs):
         path = Path(folder).resolve()
@@ -777,12 +811,23 @@ class _LodSources:
             extractor, _ = _build_extractor(path, self.native, capture, draws, "", readback)
             self.opened.append(extractor)
             self.kinds[str(path)] = "probe_archive"
+            self.readbacks[str(path)] = (extractor, readback)
             return extractor
         self.kinds[str(path)] = "frame_analysis"
         return self.native.extract.DumpWorkspaceExtractor(str(folder), *args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self.native.extract.DumpWorkspaceExtractor, name)
+
+    def left_out(self, folder, object_name: str) -> list[int]:
+        """Draws of the named object that the archive in ``folder`` left out (rewritten index data)."""
+        extractor, readback = self.readbacks.get(str(Path(folder).resolve()), (None, None))
+        if extractor is None:
+            return []
+        for candidate in extractor.get_merged_skeleton_candidates():
+            if str(candidate.id) == object_name:
+                return left_out_draws(readback, _object_draws(extractor, candidate))
+        return []
 
     def close(self):
         for extractor in self.opened:
@@ -886,6 +931,7 @@ def map_lod(workspace_dir: str | Path, lod_source: str | Path, full_source: str 
                                        function.__name__, function.__defaults__, function.__closure__)
             bound.__kwdefaults__ = function.__kwdefaults__
             result = bound(str(workspace), str(full), str(lod), allow_overwrite=True)
+            left = sources.left_out(lod, str(result.lod_object_name))
             report = _lod_report(native, workspace)
     except ValueError as exc:
         if isinstance(exc, BridgeError):
@@ -900,7 +946,10 @@ def map_lod(workspace_dir: str | Path, lod_source: str | Path, full_source: str 
                   matched_component_count=result.matched_component_count,
                   lower_poly_component_count=result.lower_poly_component_count,
                   preview_workspace_folder=result.preview_workspace_folder,
-                  preview_component_count=result.preview_component_count, warnings=result.warnings,
+                  preview_component_count=result.preview_component_count,
+                  warnings=list(result.warnings) + ([
+                      f"The LoD frame was archived without draw(s) {left[:8]} of {result.lod_object_name}: the game "
+                      "rewrites their index data. A component drawn only that way has no LoD mesh here."] if left else []),
                   upstream_log=[line for line in log.getvalue().splitlines() if line.strip()][-40:])
     return report
 

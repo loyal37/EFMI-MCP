@@ -162,6 +162,24 @@ def _note(in_process: bool, receipt: dict, evidence: dict | None) -> str:
     return text
 
 
+def confirm_on_frame(reload: dict, cap: Capture) -> dict | None:
+    """Evidence from a later frame for a reload that its first frame could not confirm.
+
+    For some frames after a reload no mod may be drawn at all, so nothing that
+    XXMI created is in use yet; a frame captured afterwards shows it. Returns
+    the fields to update in the reload result, or None when this frame
+    confirms nothing either.
+    """
+    if reload.get("reload_confirmed") or not reload.get("reload_requested"):
+        return None
+    evidence = reload_evidence(cap, reload.get("input"))
+    if not evidence or not evidence["confirmed"]:
+        return None
+    return {"reload_confirmed": True, "reload_evidence": evidence, "confirmed_on_frame": cap.frame,
+            "confirmation_note": _note(True, reload["input"], evidence).replace(
+                "that this frame uses", f"that frame {cap.frame} uses (the first frame after the reload used none yet)")}
+
+
 def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
                        timeout_ms=15000, focus_game=True, restore_focus=True):
     """One input attempt, no reconnect/reload retry; the resulting capture stays readable.

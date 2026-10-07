@@ -16,7 +16,7 @@ from .loyal_bridge import BridgeError
 from .mcp_stdio import ToolError
 from .model_workflow import Project, WorkflowError
 from .probe_client import ProbeError
-from .reload_workflow import reload_and_capture
+from .reload_workflow import confirm_on_frame, reload_and_capture
 
 WAIT = {"type": "integer", "minimum": 0, "maximum": 300, "default": 50,
         "description": "Seconds to wait for the job before returning its ID instead of the result."}
@@ -120,7 +120,10 @@ def register(srv, s) -> None:
               "this project's own profile or the copy kept before re-extraction) and needs no capture. method='frame' "
               "matches the project's full-detail frame against a frame that shows the character at LoD distance "
               "(source: a FrameAnalysis dump folder or a probe archive). method='capture' takes that LoD frame from "
-              "the running game now, so the character must currently be drawn at LoD distance. The mapping is stored "
+              "the running game now, so the character must currently be drawn at LoD distance, by the game itself "
+              "(switch mods off with efmi_toggle_mods if a mod replaces it). The job needs the game only until that "
+              "frame is taken: efmi_model_job then shows probe_in_use=false and mods can be switched back on while "
+              "the matching, which takes about a minute, goes on. The mapping is stored "
               "in workplace/EFMI_MergedSkeleton.json; the .blend keeps one mesh per component and the add-on generates "
               "the LoD entry points and buffer variants at export. Components without a LoD mesh are reported as "
               "fallback; nothing is invented for a LoD that was not captured.",
@@ -223,7 +226,14 @@ def register(srv, s) -> None:
                 s.add_capture(later)
                 return later
 
+            first = cap
             cap, checked = mod_runtime.verify_when_drawn(cap, another, client, manifest, baseline)
+            # The frame that was judged may show the reload when the first one, without any mod drawing, could not.
+            later = confirm_on_frame(reload, cap) if cap is not first else None
+            if later:
+                report["reload"].update(later)
+                model_workflow.write_json(run_dir / "reload.json", {
+                    **reload, **later, "first_frame_evidence": reload.get("reload_evidence")})
         else:
             checked = mod_runtime.verify_capture(cap, client, manifest, baseline)
         if check_textures:

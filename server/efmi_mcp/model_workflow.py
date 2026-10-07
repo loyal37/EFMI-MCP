@@ -264,6 +264,10 @@ def map_lod(root: str | Path, method: str, *, loyaltools_root: Path, client=None
             lod = project.source / ("lod-" + time.strftime("%Y%m%d-%H%M%S"))
             model_capture.archive_sample(client, lod, deferred_skeleton=True,
                                          on_stage=(lambda text: step("LoD frame: " + text)))
+            if job:
+                # The frame is on disk. Matching takes about a minute and needs no game:
+                # mods that were switched off for the capture can be switched on meanwhile.
+                job.probe_done()
         else:
             if not source:
                 raise WorkflowError("method 'frame' needs source: a probe archive or a FrameAnalysis dump folder")

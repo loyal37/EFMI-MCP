@@ -589,6 +589,20 @@ class ProbePressedReloadTests(unittest.TestCase):
         self.assertEqual(result["reload_evidence"]["resources_created_after_key"], 0)
         self.assertIn("no mod content is on screen", result["confirmation_note"])
 
+    def test_a_later_frame_can_confirm_what_the_first_frame_after_the_reload_could_not(self):
+        result, error = self.call()
+        self.assertFalse(error, result)
+        self.assertIs(result["reload_confirmed"], False)          # no mod was drawing yet
+        used = {"frame": 260, "resources": [xxmi_buffer(150)], "draws": [{"i": 0, "t": 4, "o": "xxmi", "srv": [[4, 60, 0]]}]}
+        later = reload_workflow.confirm_on_frame(result, Capture(used))
+        self.assertEqual((later["reload_confirmed"], later["confirmed_on_frame"]), (True, 260))
+        self.assertEqual(later["reload_evidence"]["resources_created_after_key"], 1)
+        self.assertIn("frame 260 uses", later["confirmation_note"])
+        still_old = {"frame": 261, "resources": [xxmi_buffer(90)], "draws": used["draws"]}
+        self.assertIsNone(reload_workflow.confirm_on_frame(result, Capture(still_old)))
+        self.assertIsNone(reload_workflow.confirm_on_frame({**result, "reload_confirmed": True}, Capture(used)))
+        self.assertIsNone(reload_workflow.confirm_on_frame({**result, "reload_requested": False}, Capture(used)))
+
     def test_resource_from_the_frame_of_the_key_or_earlier_is_not_evidence(self):
         for created in (50, 100):
             with self.subTest(created=created):

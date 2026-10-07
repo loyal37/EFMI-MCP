@@ -64,6 +64,32 @@ def candidates(cap: Capture):
             and (cfg := instance_config(cap, d)) is not None]
 
 
+def select_draws(cap: Capture):
+    """The draws worth archiving, and what was left out of them.
+
+    A model that can be extracted has at least one mesh skinned on the GPU.
+    Draws that share their per-object constants with no such mesh are scenery:
+    in the open world several hundred props, and the game's dynamic batches,
+    whose index data is rewritten every frame. Of an object that does have
+    one, a draw whose index data the game rewrites cannot be read back later;
+    it is left out and listed, so the object is not taken for complete.
+    """
+    pairs = candidates(cap)
+    skinned = {cfg["instance"] for _, cfg in pairs if cfg["gpu_posed"]}
+    kept, scenery, rewritten = [], [], []
+    for d, cfg in pairs:
+        if cfg["instance"] not in skinned:
+            scenery.append(cfg["instance"])
+        elif cap.resource(d["ib"]["res"]).get("usage") == DYNAMIC:
+            rewritten.append({"draw": d["index"], "instance": cfg["instance"], "ib_hash": d["ib"]["hash"],
+                              "index_count": d["args"].get("index_count")})
+        else:
+            kept.append((d, cfg))
+    return kept, {"draws_of_objects_without_gpu_skinning": len(scenery),
+                  "objects_without_gpu_skinning": len(set(scenery)),
+                  "rewritten_index_data": rewritten}
+
+
 def addressing(cap: Capture):
     result = {}
     for d, cfg in candidates(cap):
@@ -108,10 +134,12 @@ def _read_volatile(client, cap: Capture, pairs, volatile: set, buffers: dict, ou
     The game keeps such data (the positions of a CPU-posed component) in a ring
     of dynamic buffers: a range stays as it was drawn for only a few frames,
     too short for a read after the full capture. So one more, light capture is
-    taken and the ranges are read at once. The probe's write history and that
-    capture's draw-time hash prove that the bytes are what its draw read. They
-    are the same vertices in the pose of that later frame, and are stored where
-    the main frame bound them; the rest of such a buffer is left zero.
+    taken and the ranges are read at once: one request per buffer, because
+    with several characters in view a second request would already come too
+    late. The probe's write history and that capture's draw-time hash prove
+    that the bytes are what its draw read. They are the same vertices in the
+    pose of that later frame, and are stored where the main frame bound them;
+    the rest of such a buffer is left zero.
     """
     wanted = {}     # (draw identity, slot) -> where the main frame bound it and the bytes the extractor may read
     for d, _ in pairs:
@@ -134,7 +162,7 @@ def _read_volatile(client, cap: Capture, pairs, volatile: set, buffers: dict, ou
             args = d["args"]
             drawn.setdefault((d["ib"]["hash"], args.get("index_count"), args.get("first_index", 0),
                               args.get("first_vertex", 0)), d)
-    reads, slots = {}, []
+    plan, spans = [], {}
     for (identity, slot), want in wanted.items():
         binding = drawn.get(identity, {}).get("vb", {}).get(slot)
         region = (binding or {}).get("region")
@@ -144,17 +172,24 @@ def _read_volatile(client, cap: Capture, pairs, volatile: set, buffers: dict, ou
                                    "for its rewritten vertex data")
         start = min(region["offset"], binding["offset"] + want["first"])
         end = max(region["offset"] + region["size"], binding["offset"] + want["end"])
-        key = (binding["res"], start, end)
-        if key not in reads:
-            meta, data = client.read_buffer(light.frame, binding["res"], offset=start, size=end - start)
-            hashed = data[region["offset"] - start:region["offset"] - start + region["size"]]
-            if (len(data) != end - start or meta.get("unchanged_since_capture") is not True
-                    or hex32(crc32c(hashed)) != region["hash"]):
-                raise VolatileGeometry(f"Vertex data of ib {identity[0]} (vb{slot}) was rewritten by the game "
-                                       f"{meta.get('read_frame', light.frame) - light.frame} frame(s) after the capture, "
-                                       "before it could be read")
-            reads[key] = (meta, data)
-        meta, data = reads[key]
+        plan.append((identity, slot, want, binding, region, start, end))
+        low, high = spans.get(binding["res"], (start, end))
+        spans[binding["res"]] = (min(low, start), max(high, end))
+    reads, slots = {}, []
+    for rid, (low, high) in spans.items():
+        meta, data = client.read_buffer(light.frame, rid, offset=low, size=high - low)
+        if len(data) != high - low or meta.get("unchanged_since_capture") is not True:
+            raise VolatileGeometry(f"Vertex data in buffer {rid} was rewritten by the game "
+                                   f"{meta.get('read_frame', light.frame) - light.frame} frame(s) after the capture, "
+                                   "before it could be read")
+        reads[rid] = (meta, data, low)
+    for identity, slot, want, binding, region, start, end in plan:
+        meta, whole, low = reads[binding["res"]]
+        data = whole[start - low:end - low]
+        hashed = data[region["offset"] - start:region["offset"] - start + region["size"]]
+        if hex32(crc32c(hashed)) != region["hash"]:
+            raise VolatileGeometry(f"Vertex data of ib {identity[0]} (vb{slot}) is not what its draw read in the "
+                                   "frame taken for it")
         want.update(data=data, shift=start - binding["offset"])
         slots.append({"ib": identity[0], "index_count": identity[1], "slot": slot, "bytes": len(data),
                       "stride": want["stride"], "read_frame": meta.get("read_frame"),
@@ -240,9 +275,12 @@ def _archive_once(client, output: Path, deferred_skeleton: bool, on_stage, attem
         stage("capture")
         cap = Capture(doc, blob)
         save_capture("capture.json", "cb-snapshots.bin", doc, blob)
-        pairs = candidates(cap)
+        pairs, left_out = select_draws(cap)
+        report["left_out"] = left_out
         if not pairs:
-            raise ValueError("No indexed character candidates with instance CB and structured vs-t0")
+            scenery = left_out["draws_of_objects_without_gpu_skinning"]
+            raise ValueError("No indexed character candidates with instance CB and structured vs-t0"
+                             + (f" ({scenery} draws belong to objects without a mesh skinned on the GPU)" if scenery else ""))
         report["frame"] = cap.frame
         report["eligible_draws"] = [d["index"] for d, _ in pairs]
         report["instances"] = [{"draw": d["index"], **cfg} for d, cfg in pairs]
@@ -250,12 +288,9 @@ def _archive_once(client, output: Path, deferred_skeleton: bool, on_stage, attem
         geometry = {d["ib"]["res"] for d, _ in pairs}
         geometry.update(v["res"] for d, _ in pairs for slot, v in d.get("vb", {}).items() if slot < 3)
         # Buffers the game rewrites cannot be read whole or this late; their
-        # vertex ranges are taken separately at the end (_read_volatile).
+        # vertex ranges are taken separately at the end (_read_volatile). No
+        # index data is among them: select_draws left those draws out.
         volatile = {rid for rid in geometry if cap.resource(rid).get("usage") == DYNAMIC}
-        for d, _ in pairs:
-            if d["ib"]["res"] in volatile:
-                raise ValueError(f"Draw {d['index']}: its index data is in a buffer the game rewrites, "
-                                 "which is not supported")
         stage("save_capture_and_select")
         begin("buffers")
         buffers = {}

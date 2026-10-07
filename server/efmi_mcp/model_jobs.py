@@ -57,6 +57,10 @@ class Job:
         with self._lock:
             self._process = process
 
+    def probe_done(self) -> None:
+        """The rest of this job does not touch the probe: other tools may use it meanwhile."""
+        self.uses_probe = False
+
     # -- used by the tool --------------------------------------------------
     def cancel(self) -> None:
         self._cancel.set()
@@ -72,6 +76,8 @@ class Job:
         info = {"job_id": self.id, "kind": self.kind, "summary": self.summary, "status": self.status,
                 "stage": self.stage, "elapsed_s": round((self.finished or time.time()) - self.started, 1),
                 "recent": self.messages[-messages:]}
+        if self.status == "running":
+            info["probe_in_use"] = self.uses_probe
         if self.status == "done":
             info["result"] = self.result
         elif self.status in ("failed", "cancelled"):

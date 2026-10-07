@@ -390,6 +390,28 @@ class JobTests(unittest.TestCase):
         self.assertNotIn(quiet.id, str(ctx.exception))
         quiet.thread.join(5)
 
+    def test_a_job_hands_the_probe_back_when_it_no_longer_needs_it(self):
+        session = tools.Session(Path("."), Path("."), Path("probe.dll"))
+        taken, gate = threading.Event(), threading.Event()
+
+        def capture_then_match(job):
+            job.probe_done()        # the frame is on disk; what follows needs no game
+            taken.set()
+            gate.wait(5)
+
+        job = session.jobs.start("lod", "capture, then a long match", capture_then_match)
+        try:
+            self.assertTrue(taken.wait(5))
+            self.assertEqual((job.status, job.describe()["probe_in_use"]), ("running", False))
+            with patch.object(tools.ProbeClient, "connect", side_effect=ProbeNotFound("none")):
+                with self.assertRaises(tools.ToolError) as ctx:
+                    session.probe()
+            self.assertNotIn(job.id, str(ctx.exception))      # refused for want of a game, not because of the job
+        finally:
+            gate.set()
+            job.thread.join(5)
+        self.assertNotIn("probe_in_use", job.describe())
+
 
 class VolatileVertexDataTests(Scratch):
     """Vertex streams the game rewrites every few frames (CPU-posed components)."""
@@ -450,6 +472,25 @@ class VolatileVertexDataTests(Scratch):
         self.assertEqual(sha256_file(self.tmp / "buffers" / "1.buf"), record["sha256"])
         self.assertEqual(buffers[1], stored)
 
+    def test_meshes_that_share_a_rewritten_buffer_are_read_with_one_request(self):
+        # A second mesh, as with two characters in view: its vertices follow further on in the same buffer.
+        second_main, second_light = 800, 120 + 64
+        binding = {"res": 1, "offset": second_main, "stride": self.STRIDE, "region": None}
+        self.pairs.append(({"index": 9, "args": {"index_count": 6, "first_index": 0, "first_vertex": 0},
+                            "ib": {"res": 0, "format": 57, "offset": 0, "hash": "bbbbbbbb"}, "vb": {0: binding}}, {}))
+        self.stream = bytes(range(200, 232)) + bytes(32) + bytes(range(100, 132))     # first mesh, a gap, second mesh
+        self.light["regions"] += [[1, second_light, 16, hex32(crc32c(self.stream[64:80])), "ok"],
+                                  [0, 0, 12, "bbbbbbbb", "ok"]]
+        self.light["draws"].append({"i": 1, "t": 4, "o": "game", "ic": 6, "fi": 0, "fv": 0, "inst": 1, "topo": 4,
+                                    "ib": [0, 57, 0, 3], "vb": [[0, 1, self.STRIDE, second_light, 2]]})
+        result, report, buffers = self.read()
+        self.assertEqual(self.reads, [(60, 1, self.LIGHT_AT, 96)])
+        self.assertEqual([slot["bytes"] for slot in result["slots"]], [32, 32])
+        stored = (self.tmp / "buffers" / "1.buf").read_bytes()
+        self.assertEqual(stored[self.MAIN_AT:self.MAIN_AT + 32], bytes(range(200, 232)))
+        self.assertEqual(stored[second_main:second_main + 32], bytes(range(100, 132)))
+        self.assertEqual(report["buffers"]["1"]["ranges"], [[self.MAIN_AT, 32], [second_main, 32]])
+
     def test_data_rewritten_before_the_read_is_not_accepted(self):
         self.intact = False
         with self.assertRaises(model_capture.VolatileGeometry):
@@ -482,6 +523,52 @@ class VolatileVertexDataTests(Scratch):
             with self.assertRaises(model_capture.VolatileGeometry):
                 model_capture.archive_sample(None, self.tmp / "never")
         self.assertEqual(always.call_count, model_capture.ATTEMPTS)
+
+
+class DrawSelectionTests(unittest.TestCase):
+    """Which draws of a frame are archived: a frame of the open world is mostly scenery."""
+
+    READBACK = {"instances": [{"draw": 1, "instance": "hero"}, {"draw": 3, "instance": "other"}],
+                "left_out": {"rewritten_index_data": [{"draw": 2, "instance": "hero"}]}}
+
+    def select(self, draws):
+        """draws: (number, per-object constants, skinned on the GPU, index data in a rewritten buffer)."""
+        resources = [{"kind": "buffer", "size": 64, "usage": 0}, {"kind": "buffer", "size": 64, "usage": 2}]
+        cap = Capture({"frame": 1, "resources": resources, "draws": []})
+        pairs = [({"index": index, "args": {"index_count": 6}, "ib": {"res": int(rewritten), "hash": f"{index:08x}"}},
+                  {"instance": instance, "gpu_posed": posed}) for index, instance, posed, rewritten in draws]
+        with patch.object(model_capture, "candidates", return_value=pairs):
+            kept, left_out = model_capture.select_draws(cap)
+        return [d["index"] for d, _ in kept], left_out
+
+    def test_objects_without_a_gpu_skinned_mesh_are_scenery(self):
+        kept, left = self.select([(1, "hero", True, False), (2, "hero", False, False),       # a CPU-posed part of the hero
+                                  (3, "rock", False, False), (4, "batch", False, True), (5, "batch", False, True)])
+        self.assertEqual(kept, [1, 2])
+        self.assertEqual((left["draws_of_objects_without_gpu_skinning"], left["objects_without_gpu_skinning"]), (3, 2))
+        self.assertEqual(left["rewritten_index_data"], [])
+
+    def test_rewritten_index_data_of_a_skinned_object_is_left_out_and_listed(self):
+        kept, left = self.select([(1, "hero", True, False), (2, "hero", False, True), (3, "other", True, False)])
+        self.assertEqual(kept, [1, 3])
+        self.assertEqual(left["rewritten_index_data"],
+                         [{"draw": 2, "instance": "hero", "ib_hash": "00000002", "index_count": 6}])
+
+    def test_left_out_draws_are_found_by_the_constants_of_the_object(self):
+        self.assertEqual(loyal_bridge.left_out_draws(self.READBACK, [1]), [2])
+        self.assertEqual(loyal_bridge.left_out_draws(self.READBACK, [3]), [])
+        self.assertEqual(loyal_bridge.left_out_draws({"instances": self.READBACK["instances"]}, [1]), [])   # older archives
+
+    def test_an_object_with_left_out_draws_is_not_extracted(self):
+        class Extractor:   # the add-on's extractor: one record per draw, shader_call.id is the draw number
+            def get_component_draw_records(self, component):
+                return [type("Record", (), {"shader_call": type("Call", (), {"id": draw})()})() for draw in component]
+
+        hero = type("Object", (), {"id": "Character 9", "components": [[1]]})()
+        other = type("Object", (), {"id": "Character 3", "components": [[3]]})()
+        with self.assertRaisesRegex(loyal_bridge.BridgeError, r"Character 9 in sample-1.*draw\(s\) \[2\]"):
+            loyal_bridge._require_complete(Extractor(), hero, self.READBACK, Path("sample-1"))
+        loyal_bridge._require_complete(Extractor(), other, self.READBACK, Path("sample-1"))
 
 
 class SampleValidationTests(unittest.TestCase):
