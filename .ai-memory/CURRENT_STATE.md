@@ -1,6 +1,15 @@
 # EFMI MCP — 当前开发状态
 
-> 最后更新：2026-10-07。服务 0.1.5 接入模型流程（提取、LOD 匹配、Blender 导入、原生导出、部署核对），离线部分已验证，**实时提取与部署核对尚未实机验证**。探针仍为 0.1.2；自动重载（T-007）已实机通过。只需重启 MCP 服务。
+> 最后更新：2026-10-07。探针 0.1.3 / 服务 0.1.6 增加 F11 开关全部 mod（`efmi_toggle_mods`），沙盒实键通过，**尚未实机验证**；服务 0.1.5 的模型流程离线部分已验证，**实时提取与部署核对尚未实机验证**。自动重载（T-007）已实机通过。新探针已装入 `dist`，需重启游戏和 MCP 服务才生效。
+
+## 开关全部 mod（T-009，2026-10-07，探针 0.1.3 / 服务 0.1.6）
+
+- 用户要求：“再添加一个 f11，用于 agent 可随时启用或禁用所有 mod，便于对比原始绘制数据和 mod 绘制数据”。EFMI 自带这个键：`Core\EFMI\KeyBindings.ini` 的 `[KeyToggleMods] Key = no_modifiers VK_F11` → `CommandListToggleMods` 翻转 `$enable_mods`；`main.ini` 的 `[ShaderRegexEnableTextureOverrides]` 只在它为 1 时执行 `CheckTextureOverride = ib`。关闭时游戏画回原始网格，mod 不卸载、不重载。变量不持久，F10 重载或重启后为 1。
+- 探针 0.1.3：`reload.cpp` 的按键过程改为两个固定动作共用（`key_press_run`）：`reload_key`＝F10，新命令 `mods_key`＝F11，特性 `mods_key`。F11 的前置检查：`[KeyToggleMods]` 的 `Key`／`run` 为默认值，且 `d3dx.ini` `[Hunting]` 中没有不带修饰键就绑在 F11 上的功能（默认 `show_original` 需 Ctrl、`analyse_frame` 需 Shift）。其余（取前台、读到按下后计帧、第二个 Present 或晚于 10ms 的第一个 Present 松开、还原焦点、修饰键保护）与 F10 相同。`[Key…]` 绑定按一次只触发一次，与按住几帧无关。
+- 服务 0.1.6：`efmi_toggle_mods`（`mods_toggle.py`），`state=toggle／on／off`。按键后立即采集一帧（full），在绑定为着色器输入的小缓冲里找 EFMI 的提示文字；两段文字取自本机 `main.ini` 的 `ResourceModsDisplayEnabled／Disabled`，不写死。`on`／`off` 在第一次按键走到相反状态时补按一次，最多两次；读不到提示时 `mods_enabled=null`、不再按键。不停止 live、不清旧捕获。会话记住最后一次由提示确认的状态，`efmi_capture_frame` 在关闭期间给出提醒，`efmi_verify_exported_mod action=check` 在已知关闭时拒绝；F10 重载会清掉这个记忆。mod 自己绑在 F11 上的 `[Key…]` 段列在 `other_f11_bindings`。
+- 已验证：`sandbox/mods_toggle_test.py` 22 项（伪探针）；`sandbox/mods_toggle_integration_test.py` 25 项（私有 XXMI 1.2.2＋EFMI 核心 1.4.8 副本，真实按键，探针 0.1.3）：只写了 `TextureOverride`（没有自己的着色器规则）的测试 mod 在重载后生效，说明沙盒里走的就是 EFMI 的 `$enable_mods` 规则；F11 关→EFMI 打印 Disabled、该网格由游戏画出；再按→Enabled、再次被隐藏；已关时 `off` 与已开时 `on` 各按两次；关着时 F10 重载后恢复开启；绕过服务端直接调用探针时，改动过的 `[KeyToggleMods]` 和单独绑在 F11 上的 `[Hunting]` 功能都被探针自己拒绝且不发键。提示文字出现在 `cs-t113`（文字排版的 Dispatch）。每次开关约 0.18 秒。`run_all.py` 12 步全过（自测 83、多设备 96＋96、端到端 40、重载 27＋46、模型 37、开关 22），真实 F10 沙盒测试通过。
+- 已安装：`dist\efmi_probe.dll` 为 0.1.3（SHA256 `ff503f9d…a999`），0.1.2 备份在 `dist\backup-0.1.2\`。安装时游戏未运行。
+- **未验证（需要游戏）**：真实游戏里的 F11 按键、提示文字能否从采集帧读出、真实 mod 的替换绘制是否随开关出现／消失、关闭状态下提取被 mod 替换的角色。需要用户重启游戏以加载 0.1.3，并重启 MCP 服务以加载 0.1.6。
 
 ## 模型流程接入（T-008，2026-10-07，服务 0.1.5）
 

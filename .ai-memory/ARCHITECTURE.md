@@ -38,6 +38,7 @@
 | `efmi_mcp/blender_runner.py` | 找 Blender 及其已安装的插件目录；后台运行脚本，输出进日志文件 |
 | `efmi_mcp/model_jobs.py` | 任务线程、阶段、取消；同一时间一个任务 |
 | `efmi_mcp/model_workflow.py` | 项目目录、提取／LOD／导出的编排、导出产物检查与清单 |
+| `efmi_mcp/mods_toggle.py` | F11 开关全部 mod：核对 `[KeyToggleMods]` 绑定、让探针按键、采集新帧并从 EFMI 的提示文字读回状态，最多两次按键 |
 | `efmi_mcp/mod_runtime.py` | 部署到专用目录（标记、备份、SHA256 核对）、冲突列表、绘制与贴图对照 |
 | `efmi_mcp/model_tools.py` | 模型流程的七个 MCP 工具 |
 | `efmi_mcp/probe_client.py` | 发现 `\\.\pipe\efmi-probe-<PID>` 并发送请求；每个探针同时服务一个客户端 |
@@ -50,7 +51,7 @@
 
 ### 探针 0.1.2 / 服务 0.1.4：进程内重载按键与重载证据
 
-`probe/src/reload.cpp` 实现管道命令 `reload_key`，在 IPC 线程执行；渲染线程只在按键进行期间于 Present 钩子里记时间并置事件（`reload_on_present`）。流程：核对交换链、XXMI、d3dx.ini 两项默认绑定、窗口与按键状态 → 取前台（`direct`，被拒则 `attach_input`）→ 等 3 帧 → `SendInput` 按下并等到读到按下状态 → 在第二个 Present 或晚于 10ms 的第一个 Present 处松开 → 可选还原焦点。回执经 `{"ok":true,"result":{...,"code":...}}` 返回，`code!="ok"` 由服务端转成 `ReloadInputError`。
+`probe/src/reload.cpp` 实现管道命令 `reload_key`，在 IPC 线程执行；渲染线程只在按键进行期间于 Present 钩子里记时间并置事件（`reload_on_present`）。流程：核对交换链、XXMI、d3dx.ini 两项默认绑定、窗口与按键状态 → 取前台（`direct`，被拒则 `attach_input`）→ 等 3 帧 → `SendInput` 按下并等到读到按下状态 → 在第二个 Present 或晚于 10ms 的第一个 Present 处松开 → 可选还原焦点。回执经 `{"ok":true,"result":{...,"code":...}}` 返回，`code!="ok"` 由服务端转成 `ReloadInputError`。0.1.3 起同一过程（`key_press_run`）也用于命令 `mods_key`：按 F11，前置检查换成 `Core\EFMI\KeyBindings.ini` 的 `[KeyToggleMods]` 以及 `[Hunting]` 中不带修饰键的 F11 绑定，其余相同。
 
 状态的 `features` 列表决定服务端走哪条路径（`reload_workflow.py`）：含 `reload_key` 用 `send_reload_via_probe`，否则用旧的 `send_reload_f10`。`reload_evidence()` 读取捕获里资源/着色器的 `cf`，与回执的 `frame_at_key_down` 比较。0.1.3 一节描述的预检、失效旧缓存、等待和新帧门槛不变。
 

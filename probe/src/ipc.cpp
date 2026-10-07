@@ -76,7 +76,7 @@ static void status_json(JsonW& w)
 	w.ks("probe", PROBE_VERSION);
 	w.ku("protocol", PROBE_PROTOCOL);
 	// Optional abilities, so the server need not compare version strings.
-	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.end_arr();
+	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key"); w.end_arr();
 	bool elevated = false;
 	uint32_t integrity = 0;
 	reload_process_info(&elevated, &integrity);
@@ -266,9 +266,12 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		return send_msg(pipe, w.s, nullptr, 0);
 	}
 
-	if (cmd == "reload_key") {
-		// Fixed function: F10, to this process's own window, nothing else.
-		ReloadKeyRequest q;
+	if (cmd == "reload_key" || cmd == "mods_key") {
+		// Two fixed functions with a fixed key each, to this process's own window
+		// and nothing else: F10 reloads XXMI's configuration, F11 switches all
+		// mods off or on (EFMI's own key).
+		KeyPressRequest q;
+		q.key = cmd == "mods_key" ? GameKey::ToggleMods : GameKey::Reload;
 		q.focus = rq.bool_or("focus", true);
 		q.restore_focus = rq.bool_or("restore_focus", true);
 		double hold = rq.num_or("max_hold_ms", 3000);
@@ -279,7 +282,7 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		w.kb("ok", true);
 		w.key("result"); w.begin_obj();
 		std::string message;
-		const char* code = reload_key_run(q, w, &message);
+		const char* code = key_press_run(q, w, &message);
 		w.ks("code", code);
 		w.ks("message", message);
 		w.end_obj();

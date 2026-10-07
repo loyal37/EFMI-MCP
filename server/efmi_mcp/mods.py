@@ -156,6 +156,62 @@ def scan_mods(efmi_root: str | os.PathLike) -> ModIndex:
     return ModIndex(root, refs, by_hash, mods, time.time(), includes, excludes)
 
 
+def ini_sections(path: Path) -> list[tuple[str, list[tuple[str, str]]]]:
+    """One ini as [(section, [(key, value), ...])]: comment lines dropped, keys in lower case."""
+    sections: list[tuple[str, list[tuple[str, str]]]] = []
+    for line in _read_text(path).splitlines():
+        if line.lstrip().startswith(";"):
+            continue
+        m = _RE_SECTION.match(line)
+        if m:
+            sections.append((m.group(1).strip(), []))
+            continue
+        m = _RE_KEY.match(line)
+        if m and sections:
+            sections[-1][1].append((m.group(1).strip().lower(), m.group(2)))
+    return sections
+
+
+def key_tokens(value: str) -> list[str]:
+    """A key binding as lower-case tokens, without a trailing comment."""
+    return value.split(";", 1)[0].lower().split()
+
+
+def is_plain_key(tokens: list[str], vk: str) -> bool:
+    """True when the key alone satisfies the binding: no modifier or second key is required."""
+    return vk in tokens and all(token == vk or token.startswith("no_") for token in tokens)
+
+
+def plain_key_sections(efmi_root: str | os.PathLike, vk: str) -> list[dict]:
+    """[Key...] sections that pressing the key alone triggers, in the ini files XXMI may load.
+
+    Core and the include roots are searched. A file under Core that d3dx.ini
+    never includes can show up here too: the list says what to look at, not
+    what is certain to fire.
+    """
+    root = Path(efmi_root)
+    includes, excludes = _include_rules(root)
+    found = []
+    for base in dict.fromkeys(["Core", *includes]):
+        if not (root / base).is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(root / base):
+            dirnames[:] = [d for d in dirnames if not _excluded(d, excludes)]
+            for fn in filenames:
+                if not fn.lower().endswith(".ini") or _excluded(fn, excludes):
+                    continue
+                full = Path(dirpath) / fn
+                try:
+                    sections = ini_sections(full)
+                except OSError:
+                    continue
+                for name, entries in sections:
+                    if name.lower().startswith("key") and any(
+                            key == "key" and is_plain_key(key_tokens(value), vk) for key, value in entries):
+                        found.append({"ini": str(full.relative_to(root)), "section": name})
+    return found
+
+
 class ModCache:
     """Rescans at most every few seconds; mods change while people work on them."""
 

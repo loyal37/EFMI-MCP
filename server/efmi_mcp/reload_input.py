@@ -287,15 +287,28 @@ def send_reload_via_probe(client, focus_game: bool = True, restore_focus: bool =
     cannot reach it. The probe applies the same guards itself (foreground, held
     keys, default bindings) and lets go of the key at a frame boundary.
     """
+    return _press_via_probe(client.reload_key, "F10", focus_game, restore_focus)
+
+
+def send_mods_key_via_probe(client, focus_game: bool = True, restore_focus: bool = True) -> dict:
+    """Have the probe press F11, EFMI's key that switches all mods off or on.
+
+    Same guards and timing as the reload key; the probe checks EFMI's binding
+    itself and refuses when F11 alone would trigger anything else in XXMI.
+    """
+    return _press_via_probe(client.mods_key, "F11", focus_game, restore_focus)
+
+
+def _press_via_probe(press, key: str, focus_game: bool, restore_focus: bool) -> dict:
     if not isinstance(focus_game, bool) or not isinstance(restore_focus, bool):
         raise ReloadInputError("invalid_focus_game", "focus_game and restore_focus must be booleans.")
     if not _SEND_LOCK.acquire(blocking=False):
-        raise ReloadInputError("reload_busy", "Another F10 pulse is already in progress.")
+        raise ReloadInputError("reload_busy", "Another key press is already in progress.")
     try:
-        receipt = client.reload_key(focus=focus_game, restore_focus=restore_focus)
+        receipt = press(focus=focus_game, restore_focus=restore_focus)
     finally:
         _SEND_LOCK.release()
     if receipt.get("code") != "ok":
         raise ReloadInputError(str(receipt.get("code") or "probe_error"),
-                               receipt.get("message") or "The probe could not press F10.", receipt)
+                               receipt.get("message") or f"The probe could not press {key}.", receipt)
     return receipt

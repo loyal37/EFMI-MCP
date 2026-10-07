@@ -62,7 +62,8 @@ def register(srv, s) -> None:
               "Captures one frame and lists the characters LoyalTools recognises in it: the object names that "
               "efmi_extract_model accepts, their components (index-buffer hash, index and vertex counts) and a "
               "screenshot of the frame. A character whose mesh a mod currently replaces is not listed, because its "
-              "original draws are not issued; disable that mod and reload first.",
+              "original draws are not issued; switch mods off with efmi_toggle_mods first (or disable that mod and "
+              "reload).",
               read_only=False)
     def efmi_list_models():
         try:
@@ -84,8 +85,8 @@ def register(srv, s) -> None:
               "must agree on geometry and bone-group sources), optionally applies a stored LoD mapping (lod_json, "
               "LoyalTools' JSON match), and imports the result in background Blender as <project>.blend with only the "
               "diffuse map connected to the material. The other game textures stay in the workspace for the export. "
-              "Runs as a job. The character must be drawn by the game itself: with a mod active on it, disable the "
-              "mod and reload first.",
+              "Runs as a job. The character must be drawn by the game itself: with a mod active on it, switch mods "
+              "off with efmi_toggle_mods first (or disable the mod and reload).",
               {"output_dir": {"type": "string", "description": "New (or empty) project folder; its name becomes the mod's name."},
                "object_name": {"type": "string", "default": "", "description": "Name from efmi_list_models; needed when several characters are in view."},
                "samples": {"type": "integer", "minimum": 3, "maximum": 6, "default": 3},
@@ -291,6 +292,10 @@ def register(srv, s) -> None:
                     project.note("deployment_removed", target=str(target))
                     return removed
                 return start("remove", f"remove deployment of {root.name}", run, wait_s, True)
+            if action == "check" and s.mods_display and not s.mods_display["enabled"]:
+                raise WorkflowError(f"All mods were switched off by efmi_toggle_mods (frame {s.mods_display['frame']}), "
+                                    "so a deployed mod is not drawn. Switch them back on first, or use "
+                                    "action='verify', whose reload switches them on.")
             _, manifest = model_workflow.latest_export(project, export_id)
         except WorkflowError as exc:
             raise _fail(exc)

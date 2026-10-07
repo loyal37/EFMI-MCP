@@ -16,6 +16,7 @@ from . import blender_runner, loyal_bridge
 from .mcp_stdio import Image, Server, ToolError
 from .model_jobs import JobManager
 from .mods import ModCache
+from .mods_toggle import toggle_mods
 from .parity import compare_sets
 from .probe_client import ProbeClient, ProbeError, ProbeNotFound, find_probes
 from .reload_workflow import reload_and_capture
@@ -24,7 +25,8 @@ from .shader import disassemble
 INSTRUCTIONS = """\
 Live view of what Arknights: Endfield is drawing, taken from inside the running game by a probe DLL that sits \
 next to EFMI/XXMI (3DMigoto). Normal capture replaces frame-analysis dumps without pressing a hotkey or \
-asking the game to write a dump. The separate efmi_reload_and_capture tool deliberately sends F10.
+asking the game to write a dump. Two separate tools deliberately press a key inside the game: \
+efmi_reload_and_capture (F10) and efmi_toggle_mods (F11).
 
 Hashes are the ones XXMI uses: the `ib` hash of a draw is the region hash that mods put in \
 `[TextureOverride...] hash = ...`; shader hashes are 16 hex digits; texture and buffer hashes are 8.
@@ -44,10 +46,20 @@ parsed as intended, inspect the draws/resources you changed. On a post-input err
 rather than repeating F10. A probe older than 0.1.2 cannot press the key: the error then says that the game \
 has to be restarted to load the updated efmi_probe.dll.
 
+To compare what the game draws by itself with what mods draw, use efmi_toggle_mods. The probe presses EFMI's F11 \
+inside the game, which switches every mod off (state='off') or back on ('on') without reloading or touching a \
+file, and the next frame is kept as 'latest'. Typical: efmi_capture_frame with mods on -> efmi_toggle_mods \
+state='off' -> efmi_diff_captures a=<the first frame> -> read the original buffers or textures -> efmi_toggle_mods \
+state='on'. mods_enabled in the result is what EFMI itself printed after the key press; null means unknown. With \
+mods off, a character that a mod replaces is drawn by the game again, so efmi_list_models and efmi_extract_model \
+work on it. Mods stay off until the next F11, a reload (F10 switches them on again) or a game restart: always \
+switch them back on when you are done, and say so if you could not. Needs probe 0.1.3 or later.
+
 Things to know:
 - Capture and live mode work with hunting disabled; do not ask the user to press numpad 0 to collect data.
 - origin "xxmi" marks draws and resources issued by XXMI or a mod rather than by the game (a heuristic based on \
-the call stack). With a mod active the game's original draw of that mesh is replaced, so it does not appear.
+the call stack). With a mod active the game's original draw of that mesh is replaced, so it does not appear; \
+efmi_toggle_mods state='off' brings the original draws back for as long as mods are off.
 - Only the most recent capture keeps its resources readable; capture again if a read says the capture is gone.
 - Buffer and texture reads return the contents at the time of the read. Constant buffers as they were at each \
 draw are available when the frame was captured with cb_data=true.
@@ -100,6 +112,8 @@ class Session:
         self.captures: "OrderedDict[int, Capture]" = OrderedDict()
         self.latest: int | None = None
         self.mods = ModCache(efmi_root)
+        # What EFMI reported after this server's last F11: {"enabled", "frame"}; None when unknown.
+        self.mods_display: dict | None = None
 
     # -- LoyalTools -----------------------------------------------------
     def loyaltools(self, blender_path: str = "") -> dict:
@@ -279,6 +293,14 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             else:
                 lines.append(f"reload: probe {st['probe']} cannot press F10 itself; efmi_reload_and_capture needs 0.1.2+ "
                              f"when the game runs as administrator. Restart the game to load {s.probe_dll}")
+            if "mods_key" in st.get("features", ()):
+                lines.append("mods switch: the probe presses F11 inside the game (efmi_toggle_mods)")
+            else:
+                lines.append(f"mods switch: probe {st['probe']} cannot press F11; efmi_toggle_mods needs 0.1.3+. "
+                             f"Restart the game to load {s.probe_dll}")
+            if s.mods_display:
+                lines.append(f"mods display: {'ON' if s.mods_display['enabled'] else 'OFF'} according to EFMI after this "
+                             f"server's last F11 (frame {s.mods_display['frame']}); a manual F11 since then is not seen")
             if c["command_lists"]:
                 lines.append(f"note: {c['command_lists']} deferred command lists were executed; draws inside them are not visible")
             if not st["attached"]:
@@ -317,6 +339,9 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         if not draws:
             lines.append("WARNING: this frame contains no recorded draws; character/resource capture is not verified. "
                          "Check the selected device/context in efmi_status and efmi_probe.log.")
+        if s.mods_display and not s.mods_display["enabled"]:
+            lines.append(f"note: efmi_toggle_mods switched all mods OFF at frame {s.mods_display['frame']}; unless F11 was "
+                         "pressed by hand since, this frame shows the game's own drawing. Switch them back on when done.")
 
         if cap.detail == "full":
             passes: "OrderedDict[tuple, list[int]]" = OrderedDict()
@@ -357,7 +382,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
               "reload_config and reload_fixes bindings. Refuses held modifiers/F10, failed focus/input, "
               "or an F10 pressed state that was never observed. "
               "Does not edit mod/Core/launcher files or inject a new DLL. Normal F10 side effects apply, "
-              "including XXMI saving persistent settings; this tool never sends wipe-settings modifiers or F11. "
+              "including XXMI saving persistent settings; this tool never sends wipe-settings modifiers or another key. "
+              "A reload also switches mods back on if efmi_toggle_mods had switched them off. "
               "reload_confirmed is true when the fresh frame uses resources/shaders XXMI created after the key press "
               "(mods on screen are loaded again after a reload); otherwise verify the edited draws/resources. "
               "Ordinary frame capture already obtains current data: do not use this just to refresh.",
@@ -378,6 +404,37 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                                 restore_focus=True):
         return reload_and_capture(s, detail=detail, cb_data=cb_data, settle_ms=settle_ms,
                                   timeout_ms=timeout_ms, focus_game=focus_game, restore_focus=restore_focus)
+
+    # ================================================================ mods on/off
+    @srv.tool("efmi_toggle_mods",
+              "Switches ALL mods off or on with EFMI's own F11 key and captures the next frame as 'latest', so that what "
+              "the game draws by itself can be compared with what the mods draw. The probe presses one unmodified F11 "
+              "inside the game (the window is brought to the front if needed and the focus handed back). While mods "
+              "are off, EFMI no longer applies the mods' index-buffer overrides: characters look as the game draws "
+              "them, their original draws appear with origin 'game', and a modded character can be listed or "
+              "extracted. Nothing is reloaded and no file is touched; mods that hook shaders on their own are not "
+              "affected. state='toggle' presses once; 'on' and 'off' press once and, only if EFMI then reports the "
+              "other state, once more. mods_enabled is read from the notification EFMI prints after each press "
+              "('Mods Display: Enabled/Disabled') in the captured frame; null means it could not be read and the "
+              "state is unknown. Earlier captures are kept for efmi_diff_captures. Mods stay off until the next "
+              "F11, a reload (F10 switches them on again) or a game restart: switch them back on when the "
+              "comparison is done. Requires EFMI's default [KeyToggleMods] binding and probe 0.1.3 or later; "
+              "refuses held modifiers/F11 and failed focus or input, and never repeats a failed press.",
+              {"state": {"type": "string", "enum": ["toggle", "on", "off"], "default": "toggle"},
+               "cb_data": {"type": "boolean", "default": False,
+                           "description": "Also keep every constant buffer as it was at each draw of the captured frame."},
+               "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 30000, "default": 8000,
+                              "description": "Probe capture timeout; F11 is not retried on timeout."},
+               "focus_game": {"type": "boolean", "default": True,
+                              "description": "Try to bring the exact connected process's window to the foreground. "
+                                             "False requires it to be already foreground."},
+               "restore_focus": {"type": "boolean", "default": True,
+                                 "description": "Give the foreground back to the window that had it once F11 is "
+                                                "released. Ignored when the game was already in front."}},
+              read_only=False, annotations={"destructiveHint": False, "idempotentHint": False})
+    def efmi_toggle_mods(state="toggle", cb_data=False, timeout_ms=8000, focus_game=True, restore_focus=True):
+        return toggle_mods(s, state=state, cb_data=cb_data, timeout_ms=timeout_ms, focus_game=focus_game,
+                           restore_focus=restore_focus)
 
     # ================================================================ list
     @srv.tool("efmi_list_draws",

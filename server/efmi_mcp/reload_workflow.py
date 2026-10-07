@@ -196,6 +196,8 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
 
         phase = "input"
         requested = None  # An unexpected error at the input boundary has unknown delivery.
+        # A reload sets EFMI's $enable_mods back to 1: what efmi_toggle_mods last saw no longer holds.
+        session.mods_display = None
         if in_process:
             receipt = send_reload_via_probe(client, focus_game=focus_game, restore_focus=restore_focus)
         else:
