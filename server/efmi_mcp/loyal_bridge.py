@@ -29,6 +29,11 @@ from .capture_model import Capture
 DEFAULT_LOYALTOOLS = Path(r"E:\loyal tools\tools\LoyalTools")
 
 
+# Two matrices of one bone, as the game computes them for different components, differ by
+# rounding at most; different bones that are animated differ by orders of magnitude more.
+MERGE_TOLERANCE = 1e-5
+
+
 class BridgeError(ValueError):
     """The archive cannot faithfully supply the original extraction contract."""
 
@@ -328,10 +333,16 @@ def _build_extractor(archive: Path, native, capture: Capture, draws: list[dict],
             byte_end = byte_offset + (base + addressed_count) * stride
             if byte_offset < 0 or byte_end > path.stat().st_size:
                 raise BridgeError(f"Draw {index}: actual VB{slot_id} geometry exceeds its buffer")
+            record = readback_doc.get("buffers", {}).get(str(bind["res"]), {})
+            if record.get("volatile") and not any(start <= byte_offset and byte_end <= start + size
+                                                  for start, size in record.get("ranges", [])):
+                # Only ranges of a buffer the game rewrites are archived; the rest of the file is zero.
+                raise BridgeError(f"Draw {index}: VB{slot_id} reads bytes of a rewritten buffer that were not captured")
             geometry_windows.append({"draw": index, "slot": f"vb{slot_id}", "resource": bind["res"],
                                      "offset": byte_offset + base * stride, "size": addressed_count * stride,
                                      "vertices": addressed_count, "stride": stride,
-                                     "xxmi_hash_offset": region["offset"], "xxmi_hash_size": region["size"]})
+                                     "xxmi_hash_offset": region["offset"], "xxmi_hash_size": region["size"],
+                                     **({"volatile": True} if record.get("volatile") else {})})
             fmt = e.MigotoFormat(byte_offset=byte_offset, topology=topo, stride=stride,
                                  first_vertex=base, vertex_count=addressed_count,
                                  first_instance=0, instance_count=int(args.get("instance_count", 1)),
@@ -412,7 +423,10 @@ def _static_sample(extractor, selected, native, capture: Capture, readback: dict
     for key, item in zip(keys, metadata):
         for local in range(item["vg_count"]):
             global_sources[item["vg_offset"] + local] = (key, local)
-    signature, matrices, geometry_payloads = {}, {}, {}
+    signature, matrices, geometry_payloads, palettes = {}, {}, {}, {}
+    # Vertex streams the game rewrites every few frames: a pose, not static geometry.
+    volatile = {(window["draw"], window["slot"]) for window in extractor.geometry_windows if window.get("volatile")}
+    volatile_slots = []
     weighted_cross_bones = weighted_cross_channels = 0
     used_bones = 0
     geometry_bytes = 0
@@ -438,13 +452,18 @@ def _static_sample(extractor, selected, native, capture: Capture, readback: dict
             "canonical_sources": {},
         }
         for slot in build.slot_datas:
-            geometry_payloads[(key, f"vb{slot.slot_id}")] = slot.raw_bytes
             geometry_bytes += len(slot.raw_bytes)
             entry["vbs"][str(slot.slot_id)] = {
                 "stride": slot.stride, "bytes": len(slot.raw_bytes),
                 "sha256": hashlib.sha256(slot.raw_bytes).hexdigest(),
                 "layout": slot.layout.to_string(),
             }
+            if any((record.shader_call.id, f"vb{slot.slot_id}") in volatile for record in records):
+                # Differs from sample to sample by nature; its size and layout still have to agree.
+                entry["vbs"][str(slot.slot_id)].update(sha256=None, volatile=True)
+                volatile_slots.append([key, f"vb{slot.slot_id}"])
+            else:
+                geometry_payloads[(key, f"vb{slot.slot_id}")] = slot.raw_bytes
         if not component.mesh.cpu_posed:
             ids = np.asarray(component.mesh.get_data(semantic.Blendindices), dtype=np.uint32)
             weights = component.mesh.get_data(semantic.Blendweights)
@@ -459,6 +478,7 @@ def _static_sample(extractor, selected, native, capture: Capture, readback: dict
                 raise BridgeError(f"Invalid native weights for {key}")
             used = np.unique(ids[weights != 0])
             palette = extractor._get_component_skeleton_data(component)
+            palettes[key] = [np.array(palette[local], dtype=np.float32) for local in range(item["vg_count"])]
             for local_text, global_id in item["vg_map"].items():
                 source = global_sources.get(int(global_id))
                 if source is None:
@@ -481,14 +501,21 @@ def _static_sample(extractor, selected, native, capture: Capture, readback: dict
             geometry_resources.add(window["resource"])
     for rid in sorted(geometry_resources):
         record = readback.get("buffers", {}).get(str(rid), {})
+        if record.get("volatile"):
+            continue    # its ranges were proven identical to draw time when read, and each draw's window is inside them
         if record.get("meta", {}).get("unchanged_since_capture") is not True:
             raise BridgeError(f"Geometry buffer {rid} is not verified unchanged since capture")
     if not weighted_cross_bones or not weighted_cross_channels:
         raise BridgeError("Native mapping has no cross-component merge carrying nonzero vertex weights")
     return {
-        "signature": signature, "matrices": matrices, "geometry_payloads": geometry_payloads, "frame": capture.frame,
+        "signature": signature, "matrices": matrices, "geometry_payloads": geometry_payloads, "palettes": palettes,
+        "frame": capture.frame,
+        # Local bones that the native grouping gave to a bone of another component.
+        "merged_bones": sum(1 for key, entry in signature.items() for local, source in entry["canonical_sources"].items()
+                            if (source[0], source[1]) != (key, int(local))),
         "selected_object": str(selected.id), "components": len(selected.components),
         "geometry_bytes": geometry_bytes, "geometry_buffers": sorted(geometry_resources),
+        "volatile_vertex_slots": volatile_slots,
         "used_bones": used_bones, "weighted_cross_component_bones": weighted_cross_bones,
         "weighted_cross_component_channels": weighted_cross_channels,
         "canonical_bones": len({tuple(source) for entry in signature.values()
@@ -501,24 +528,45 @@ def _validate_static_samples(samples: list[dict], archives: list[Path]) -> dict:
         raise BridgeError("Deferred-skeleton static export requires at least three distinct archives")
     if len({sample["frame"] for sample in samples}) != len(samples):
         raise BridgeError("Validation archives must represent distinct captured frames")
+    import numpy as np
+
+    def static_part(signature):
+        return {key: {name: value for name, value in entry.items() if name != "canonical_sources"}
+                for key, entry in signature.items()}
+
     reference = samples[0]
     changed = set()
     summaries = []
     for archive, sample in zip(archives, samples):
-        if sample["signature"] != reference["signature"]:
+        if static_part(sample["signature"]) != static_part(reference["signature"]):
             different = sorted(key for key in set(reference["signature"]) | set(sample["signature"])
-                               if reference["signature"].get(key) != sample["signature"].get(key))
-            raise BridgeError(f"Static geometry/layout or canonical bone sources differ in {archive}: {different}")
+                               if static_part(reference["signature"]).get(key) != static_part(sample["signature"]).get(key))
+            raise BridgeError(f"Static geometry or layout differ in {archive}: {different}")
         if sample.get("geometry_payloads") != reference.get("geometry_payloads"):
             raise BridgeError(f"Actual complete exported geometry bytes differ in {archive}")
         if set(sample["matrices"]) != set(reference["matrices"]):
             raise BridgeError(f"Used bone identities differ in {archive}")
-        import numpy as np
+        # The native grouping merges bones of different components whose matrices
+        # are bit for bit equal in its frame. The game's matrices of one bone can
+        # differ in the last bit between components, so which bones get merged
+        # varies from frame to frame, harmlessly. What must not happen is two
+        # different bones that merely coincided in the exported frame: every merge
+        # of the first sample has to be the same bone, measured, in every sample.
+        for key, entry in reference["signature"].items():
+            for local, (source_key, source_local) in entry["canonical_sources"].items():
+                if (source_key, source_local) == (key, int(local)):
+                    continue
+                if source_key not in sample["palettes"]:
+                    raise BridgeError(f"{key} bone {local} was merged with a bone of {source_key}, which has no bone data")
+                mine, theirs = sample["palettes"][key][int(local)], sample["palettes"][source_key][source_local]
+                if not np.allclose(mine, theirs, rtol=MERGE_TOLERANCE, atol=MERGE_TOLERANCE):
+                    raise BridgeError(f"{key} bone {local} was merged with {source_key} bone {source_local} in the first "
+                                      f"sample, but their matrices differ in {archive}: they are not the same bone")
         this_changed = [key for key, matrix in sample["matrices"].items()
                         if not np.array_equal(matrix, reference["matrices"][key])]
         changed.update(this_changed)
         summary = {key: value for key, value in sample.items()
-                   if key not in ("signature", "matrices", "geometry_payloads")}
+                   if key not in ("signature", "matrices", "geometry_payloads", "palettes")}
         summary.update(archive=str(archive), changed_used_bone_matrices_vs_first=len(this_changed))
         summaries.append(summary)
     if not changed:
@@ -526,8 +574,13 @@ def _validate_static_samples(samples: list[dict], archives: list[Path]) -> dict:
     return {
         "scope": "static_geometry_and_canonical_vertex_groups", "samples": summaries,
         "changed_used_bone_matrices": len(changed),
-        "canonical_source_comparison": "component unique_str and local bone id, not numeric merged group alone",
+        "canonical_source_comparison": "every bone merge of the exported sample holds in all samples, by matrix within "
+                                       f"{MERGE_TOLERANCE:g}; samples may find fewer or more merges (see merged_bones)",
+        "merged_bones": [sample["merged_bones"] for sample in samples],
         "geometry_comparison": "Direct byte equality and SHA256 of actual index range and all exported vertex bytes, with unchanged whole geometry buffers",
+        # CPU-posed components: the game rewrites these vertex streams every few frames, so the samples
+        # hold different poses of them. Size and layout were compared; the workspace gets the first sample's.
+        "volatile_vertex_data": reference.get("volatile_vertex_slots", []),
         "pose_reconstruction": False,
         "pose_limitation": "Skeleton pools were read after the captured CBs; these samples do not reconstruct the pose of any specified capture frame.",
     }

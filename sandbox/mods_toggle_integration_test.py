@@ -164,7 +164,15 @@ def main():
               json.dumps(result["state_evidence"], ensure_ascii=False))
         check("the mod hides the mesh again", counts == with_mod, f"{dict(counts)}")
 
-        print("== on when already on: two presses, back on")
+        print("== on when known to be on: no key")
+        result, counts = toggle("on_known", state="on")
+        check("no press, because EFMI said so last time and the frame agrees",
+              result["presses"] == 0 and result["mods_enabled"] is True and result["state_evidence"]["source"] == "no key pressed",
+              json.dumps(result["state_evidence"], ensure_ascii=False))
+        check("the mod hides the mesh", counts == with_mod, f"{dict(counts)}")
+
+        print("== on when on but not known (a fresh server): two presses, back on")
+        session.mods_display = None
         result, counts = toggle("on_again", state="on")
         check("two presses and enabled", result["presses"] == 2 and result["mods_enabled"] is True, str(result["presses"]))
         check("the mod hides the mesh", counts == with_mod, f"{dict(counts)}")

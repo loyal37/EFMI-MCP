@@ -140,7 +140,20 @@ def drawn_summary(session, cap: Capture) -> dict:
             "those_meshes": [{"ib": h, "draws": n} for h, n in by_game.most_common(12)]}
 
 
+def draws_agree(drawn: dict, enabled: bool) -> bool:
+    """Does the frame look the way it does with mods on (off)? Only a clear picture counts.
+
+    On: XXMI draws meshes and the game draws none that a mod overrides. Off:
+    the reverse. With no modded mesh in view the frame says nothing.
+    """
+    by_xxmi, by_game = drawn["mesh_draws_by_xxmi"], drawn["game_draws_of_meshes_that_mods_override"]
+    return (by_xxmi > 0 and by_game == 0) if enabled else (by_xxmi == 0 and by_game > 0)
+
+
 def _note(state: str, enabled, presses: int, evidence: dict) -> str:
+    if not presses:
+        return (f"No key was pressed: EFMI reported mods {'ON' if enabled else 'OFF'} after this server's last F11 "
+                f"(frame {evidence['last_notification_frame']}), and the draws of the frame captured now agree with that.")
     pressed = f"F11 was pressed {presses} time(s) inside the game. "
     if enabled is None:
         return (pressed + "EFMI's notification could not be read from the frame after it (" + evidence.get("reason", "")
@@ -157,9 +170,12 @@ def _note(state: str, enabled, presses: int, evidence: dict) -> str:
 def toggle_mods(session, *, state="toggle", cb_data=False, timeout_ms=8000, focus_game=True, restore_focus=True):
     """Press F11 once, or twice when the first press led to the state that was not asked for.
 
-    A failed press is never repeated. Every frame captured after a press stays
-    in the session; the last one is 'latest'. Earlier captures are kept: no
-    resource is destroyed by this switch.
+    'on' and 'off' press nothing when EFMI's last notification, as read by this
+    server, already said so and the frame captured now agrees: without that a
+    request for the state mods are in would flip them away and back.
+    A failed press is never repeated. Every frame captured here stays in the
+    session; the last one is 'latest'. Earlier captures are kept: no resource
+    is destroyed by this switch.
     """
     phase = "preflight"
     started = time.monotonic()
@@ -189,7 +205,20 @@ def toggle_mods(session, *, state="toggle", cb_data=False, timeout_ms=8000, focu
         if before.get("capture", {}).get("recording") and not before.get("capture", {}).get("live"):
             raise ValueError("A capture is already recording; wait for that operation before pressing the key")
 
-        for _ in range(2):
+        known = session.mods_display
+        if want is not None and known and known["enabled"] is want:
+            # A manual F11 since then would show in what is drawn; a frame that
+            # shows no modded mesh either way proves nothing and leads to the key.
+            phase = "capture"
+            doc, blob = client.capture(detail="full", cb_data=cb_data, timeout_ms=timeout_ms)
+            now = Capture(doc, blob)
+            if now.frame > before["frame"] and len(now) and draws_agree(drawn_summary(session, now), want):
+                cap, enabled = now, want
+                session.add_capture(cap)
+                evidence = {"mods_enabled": want, "source": "no key pressed", "frame": cap.frame,
+                            "last_notification_frame": known["frame"], "draws_agree": True}
+
+        for _ in range(0 if cap else 2):
             phase = "input"
             sent = None      # An unexpected error at the input boundary has unknown delivery.
             receipt = send_mods_key_via_probe(client, focus_game=focus_game, restore_focus=restore_focus)
@@ -218,7 +247,8 @@ def toggle_mods(session, *, state="toggle", cb_data=False, timeout_ms=8000, focu
         if want is not None and enabled is not None and enabled != want:
             raise ValueError(f"EFMI still reports mods {'on' if enabled else 'off'} after two presses; no third press was made")
 
-        session.mods_display = None if enabled is None else {"enabled": enabled, "frame": cap.frame}
+        if presses:
+            session.mods_display = None if enabled is None else {"enabled": enabled, "frame": cap.frame}
         others = [item for item in plain_key_sections(session.efmi_root, KEY) if item["section"].lower() != "keytogglemods"]
         result = {
             "status": "state_unknown" if enabled is None else "ok", "requested": state, "pid": identity[0],

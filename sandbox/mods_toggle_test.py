@@ -42,6 +42,7 @@ class FakeProbe:
         self.stuck = False           # the key has no effect
         self.notice = True           # the frame after the key prints the notification
         self.notice_origin = "xxmi"  # how the probe's heuristic labels the draw that prints it
+        self.mesh_in_view = True     # the mesh that a mod overrides is on screen
         self.frame = 100
         self.live_on = False
         self.events: list[str] = []
@@ -49,6 +50,7 @@ class FakeProbe:
         self.capture_error = None
 
     def status(self):
+        self.frame += 1      # the game keeps presenting
         return {"pid": self.endpoint.pid, "exe": r"C:\Game\Endfield.exe", "probe": "0.1.3", "features": self.features,
                 "attached": True, "swap_chain": True, "frame": self.frame, "resolution": [1280, 720],
                 "xxmi": {"present": True, "path": str(self.root / "d3d11.dll")},
@@ -95,11 +97,14 @@ class FakeProbe:
                "resources": [{"kind": "buffer", "size": 6, "bind": 2, "hash": "aaaaaaaa", "known": True},
                              {"kind": "buffer", "size": len(text) + 3, "bind": 8, "known": True, "origin": "xxmi"},
                              {"kind": "buffer", "size": 4096, "bind": 8, "known": True, "origin": "xxmi"}],
-               "regions": [[0, 0, 6, MESH, "ok"]],
-               # The mesh a mod overrides: issued by XXMI while mods are on, by the game while they are off.
-               "draws": [{"i": 0, "t": 4, "o": "xxmi" if self.enabled else "game", "ic": 3, "fi": 0, "fv": 0,
-                          "inst": 1, "topo": 4, "ib": [0, 57, 0, 0]}],
+               "regions": [[0, 0, 6, MESH, "ok"], [0, 0, 6, "bbbbbbbb", "ok"]],
+               # Scenery no mod refers to, then the mesh a mod overrides: issued by XXMI while mods are on,
+               # by the game while they are off.
+               "draws": [{"i": 0, "t": 4, "o": "game", "ic": 3, "fi": 0, "fv": 0, "inst": 1, "topo": 4, "ib": [0, 57, 0, 1]}],
                "stats": {"record_ms": 0.01}}
+        if self.mesh_in_view:
+            doc["draws"].append({"i": 2, "t": 4, "o": "xxmi" if self.enabled else "game", "ic": 3, "fi": 0, "fv": 0,
+                                 "inst": 1, "topo": 4, "ib": [0, 57, 0, 0]})
         if getattr(self, "printing", False):
             doc["draws"].append({"i": 1, "t": 8, "o": self.notice_origin, "tg": [1, 1, 1],
                                  "srv": [[5, 100, 2], [5, 113, 1]]})
@@ -205,6 +210,34 @@ class ToggleTests(unittest.TestCase):
                 self.assertEqual((result["mods_enabled"], result["presses"], self.keys()), (start, 2, 2))
                 self.assertEqual(self.probe.events.count("capture"), 2)
                 self.assertIn("ON" if start else "OFF", result["note"])
+
+    def test_no_key_when_the_requested_state_is_known_and_the_frame_agrees(self):
+        for state, enabled in (("off", False), ("on", True)):
+            with self.subTest(state=state):
+                self.call(state=state)               # EFMI's notification is read here
+                self.probe.events.clear()
+                result, error = self.call(state=state)
+                self.assertFalse(error, result)
+                self.assertEqual((result["presses"], result["mods_enabled"], self.keys()), (0, enabled, 0))
+                self.assertEqual(result["state_evidence"]["source"], "no key pressed")
+                self.assertIn("No key was pressed", result["note"])
+                self.assertEqual(self.session.latest, result["capture"]["frame"])
+
+    def test_key_is_pressed_when_the_frame_contradicts_what_was_remembered(self):
+        self.call(state="off")
+        self.probe.enabled = True                    # someone pressed F11 by hand
+        self.probe.events.clear()
+        result, error = self.call(state="off")
+        self.assertFalse(error, result)
+        self.assertEqual((result["presses"], result["mods_enabled"], self.keys()), (1, False, 1))
+
+    def test_frame_without_a_modded_mesh_does_not_stand_in_for_the_key(self):
+        self.call(state="off")
+        self.probe.mesh_in_view = False
+        self.probe.events.clear()
+        result, error = self.call(state="off")
+        self.assertFalse(error, result)
+        self.assertEqual((result["presses"], result["mods_enabled"], self.keys()), (2, False, 2))
 
     def test_text_is_recognised_from_what_the_installed_core_defines(self):
         self.write("Core/EFMI/main.ini", MAIN.replace("Mods Display: Disabled", "模组显示：关闭"))

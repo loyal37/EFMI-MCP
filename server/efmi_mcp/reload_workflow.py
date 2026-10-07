@@ -15,6 +15,8 @@ from .capture_model import Capture
 from .mcp_stdio import ToolError
 from .reload_input import ReloadInputError, send_reload_f10, send_reload_via_probe
 
+RESUME_TIMEOUT_S = 10.0    # how long a reload may keep the game from presenting a frame
+
 # The server cannot deliver a key to an elevated game (UIPI); only the probe can.
 _OLD_PROBE_HINT = ("This probe cannot press the key itself, and Windows silently drops keys that this "
                    "unelevated server sends to a game running as administrator. Probe 0.1.2 or later sends "
@@ -210,6 +212,19 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
                              "an accepted SendInput event alone cannot establish effective input")
 
         phase = "settle"
+        # Loading a large mod can keep the game from presenting for longer than the
+        # settle time, which would then be over before the first frame after the
+        # reload. The wait counts from the moment the game presents again.
+        resumed_ms = None
+        key_up = receipt.get("frame_at_key_up")
+        if in_process and type(key_up) is int:
+            waiting = time.monotonic()
+            while client.status()["frame"] <= key_up:
+                if time.monotonic() - waiting >= RESUME_TIMEOUT_S:
+                    raise ValueError(f"The game presented no frame for {RESUME_TIMEOUT_S:.0f} s after the reload key "
+                                     "was released")
+                time.sleep(0.05)
+            resumed_ms = round((time.monotonic() - waiting) * 1000, 1)
         time.sleep(settle_ms / 1000)
         barrier = client.status()
         if _identity(barrier, session.efmi_root) != identity:
@@ -240,7 +255,8 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
             "input": receipt, "bindings": bindings,
             "before_frame": before["frame"], "barrier_frame": barrier["frame"],
             "live_stopped": live_stopped, "old_captures_invalidated": invalidated,
-            "settle_ms": settle_ms, "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+            "settle_ms": settle_ms, "resumed_after_ms": resumed_ms,
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
             "capture": {"frame": cap.frame, "detail": cap.detail, "draws": len(cap), "origins": counts,
                         "resources": len(cap.resources), "shaders": len(cap.shaders), "cb_data": cb_data,
                         "cb_snapshot_bytes": len(blob), "skipped_draws": cap.stats.get("skipped_draws", 0),

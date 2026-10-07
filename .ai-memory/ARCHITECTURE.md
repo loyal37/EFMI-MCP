@@ -33,7 +33,7 @@
 | `efmi_mcp/mcp_stdio.py`、`tools.py` | MCP 协议、工具定义、会话与捕获缓存 |
 | `efmi_mcp/reload_workflow.py` | 同一管道/PID/渲染目标下预检、停止 live、失效旧缓存、单次 F10 后等待和新帧门槛 |
 | `efmi_mcp/reload_input.py` | `send_reload_via_probe`：让探针在游戏内按 F10 并判读回执；`send_reload_f10`：旧的外部 Win32 按键（仅非管理员游戏可达）。均不提供任意按键接口 |
-| `efmi_mcp/model_capture.py` | 模型流程的采样：单帧归档（几何／骨骼缓冲、贴图、CB 快照、截图）与多次独立采样 |
+| `efmi_mcp/model_capture.py` | 模型流程的采样：单帧归档（几何／骨骼缓冲、贴图、CB 快照、截图）与多次独立采样；游戏重写的顶点流另采一帧轻量帧即时读取并校验（`_read_volatile`），失败重采 |
 | `efmi_mcp/loyal_bridge.py` | 调用 LoyalTools：候选角色、工作空间提取与三采样校验、LOD 帧匹配与 JSON 匹配；解析要使用的 LoyalTools 目录 |
 | `efmi_mcp/blender_runner.py` | 找 Blender 及其已安装的插件目录；后台运行脚本，输出进日志文件 |
 | `efmi_mcp/model_jobs.py` | 任务线程、阶段、取消；同一时间一个任务 |

@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-from efmi_mcp import blender_runner, loyal_bridge, mod_runtime, model_workflow, tools  # noqa: E402
+from efmi_mcp import blender_runner, loyal_bridge, mod_runtime, model_capture, model_workflow, tools  # noqa: E402
 from efmi_mcp.capture_model import Capture  # noqa: E402
 from efmi_mcp.hashes import crc32c, hex32  # noqa: E402
 from efmi_mcp.model_jobs import JobManager  # noqa: E402
@@ -236,7 +236,7 @@ def capture(draws, buffers) -> Capture:
         entry["ib"] = [rid, 42, 0, len(regions) - 1]
         if "vb" in draw:
             data = buffers[draw["vb"]][0]
-            regions.append([draw["vb"], 0, len(data), hex32(crc32c(data)), "ok"])
+            regions.append([draw["vb"], 0, len(data), draw.get("vb_hash") or hex32(crc32c(data)), "ok"])
             entry["vb"] = [[0, draw["vb"], 16, 0, len(regions) - 1]]
         raw.append(entry)
     return Capture({"frame": 500, "detail": "full", "resolution": [1280, 720], "resources": resources,
@@ -261,6 +261,38 @@ class VerifyCaptureTests(Scratch):
         self.assertEqual(result["mod_draws"][0]["vertex_buffers"], {"vb0": "Meshes/mesh-Position.buf"})
         self.assertEqual({info["whole_buffer"] for info in result["exported_buffers_seen"].values()}, {"identical"})
         self.assertEqual(sorted(client.reads), [0, 1])
+
+    def test_vertex_buffer_recorded_with_an_older_hash_is_judged_by_its_bytes(self):
+        result, client = self.check([{"origin": "xxmi", "ib": 0, "vb": 1, "count": 6, "vb_hash": "deadbeef"}],
+                                    {0: (INDICES, "xxmi"), 1: (POSITIONS, "xxmi")})
+        self.assertEqual(result["target_mod_status"], "passed")
+        self.assertEqual(result["mod_draws"][0]["vertex_buffers"], {"vb0": "Meshes/mesh-Position.buf"})
+        self.assertEqual(result["recorded_hash_disagreements"],
+                         [{"resource": 1, "file": "Meshes/mesh-Position.buf", "recorded_hash": "deadbeef"}])
+        self.assertEqual(result["exported_buffers_not_seen"], [])
+
+    def test_position_buffer_of_the_right_size_with_other_bytes_fails(self):
+        result, _ = self.check([{"origin": "xxmi", "ib": 0, "vb": 1, "count": 6}],
+                               {0: (INDICES, "xxmi"), 1: (bytes(reversed(POSITIONS)), "xxmi")})
+        self.assertEqual(result["target_mod_status"], "failed")
+        self.assertIn("vb0", result["reasons"][0])
+        self.assertEqual(result["vertex_bindings_with_other_bytes"], [{"draw": 0, "slot": "vb0", "bytes": len(POSITIONS)}])
+
+    def test_frames_before_the_mod_starts_drawing_are_not_judged(self):
+        buffers = {0: (INDICES, "xxmi"), 1: (POSITIONS, "xxmi"), 2: (INDICES, "game")}
+        client = FakeClient({rid: data for rid, (data, _) in buffers.items()})
+        skipped_only = capture([{"origin": "game", "ib": 2, "count": 6, "ib_hash": "bbbbbbbb"}], buffers)   # other scenery
+        original = capture([{"origin": "game", "ib": 2, "count": 6, "ib_hash": "aaaaaaaa"}], buffers)       # not skipped yet
+        drawn = capture([{"origin": "xxmi", "ib": 0, "vb": 1, "count": 6}], buffers)
+        later, pauses = [original, drawn], []
+        cap, result = mod_runtime.verify_when_drawn(skipped_only, lambda: later.pop(0), client, self.manifest_,
+                                                    sleep=pauses.append)
+        self.assertIs(cap, drawn)
+        self.assertEqual((result["target_mod_status"], result["frames_looked_at"], len(pauses)), ("passed", 3, 2))
+        # A mod that never draws is still reported as what the last frame shows, after a bounded number of looks.
+        cap, result = mod_runtime.verify_when_drawn(skipped_only, lambda: skipped_only, client, self.manifest_,
+                                                    looks=4, sleep=pauses.append)
+        self.assertEqual((result["target_mod_status"], result["frames_looked_at"]), ("inconclusive", 4))
 
     def test_game_mesh_still_drawn_fails_even_if_the_mod_is_drawn_too(self):
         buffers = {0: (INDICES, "xxmi"), 1: (POSITIONS, "xxmi"), 2: (INDICES, "game")}
@@ -349,6 +381,151 @@ class JobTests(unittest.TestCase):
                 session.probe()
         self.assertNotIn(quiet.id, str(ctx.exception))
         quiet.thread.join(5)
+
+
+class VolatileVertexDataTests(Scratch):
+    """Vertex streams the game rewrites every few frames (CPU-posed components)."""
+
+    MAIN_AT, LIGHT_AT, STRIDE = 400, 120, 8
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "buffers").mkdir()
+        self.indices = struct.pack("<6H", 1, 2, 3, 3, 2, 1)             # vertices 1..3
+        self.stream = bytes(range(200, 232))                             # what the later frame holds: 4 vertices
+        resources = [{"kind": "buffer", "size": 12, "usage": 0}, {"kind": "buffer", "size": 1024, "usage": 2}]
+        self.main = Capture({"frame": 50, "resources": resources, "draws": []})
+        binding = {"res": 1, "offset": self.MAIN_AT, "stride": self.STRIDE, "region": None}
+        draw = {"index": 7, "args": {"index_count": 6, "first_index": 0, "first_vertex": 0},
+                "ib": {"res": 0, "format": 57, "offset": 0, "hash": "aaaaaaaa"}, "vb": {0: binding, 3: dict(binding)}}
+        self.pairs = [(draw, {})]
+        self.intact, self.read_shift = True, 0
+        hashed = self.stream[:16]                                        # XXMI's window: the first two vertices
+        self.light = {"frame": 60, "resources": resources, "stats": {},
+                      "regions": [[0, 0, 12, "aaaaaaaa", "ok"], [1, self.LIGHT_AT, 16, hex32(crc32c(hashed)), "ok"]],
+                      "draws": [{"i": 0, "t": 4, "o": "game", "ic": 6, "fi": 0, "fv": 0, "inst": 1, "topo": 4,
+                                 "ib": [0, 57, 0, 0], "vb": [[0, 1, self.STRIDE, self.LIGHT_AT, 1]]}]}
+        self.reads = []
+
+    def capture(self, **kwargs):
+        self.assertEqual(kwargs["detail"], "light")
+        return self.light, b""
+
+    def read_buffer(self, frame, res, offset=0, size=0, **kwargs):
+        self.reads.append((frame, res, offset, size))
+        start = offset - self.LIGHT_AT
+        data = bytes((value + self.read_shift) % 256 for value in self.stream[start:start + size])
+        return {"read_frame": frame + 4, "unchanged_since_capture": self.intact}, data
+
+    def read(self):
+        report = {"buffers": {}}
+        buffers = {0: self.indices}
+        result = model_capture._read_volatile(self, self.main, self.pairs, {1}, buffers, self.tmp, report)
+        return result, report, buffers
+
+    def test_index_bounds_follow_format_and_first_index(self):
+        data = b"\0" * 4 + struct.pack("<4I", 9, 4, 7, 5)
+        self.assertEqual(model_capture._index_bounds(data, {"format": 42, "offset": 4}, {"index_count": 3, "first_index": 1}), (4, 7))
+        self.assertEqual(model_capture._index_bounds(self.indices, {"format": 57, "offset": 0}, {"index_count": 6}), (1, 3))
+
+    def test_ranges_are_read_from_a_light_capture_and_stored_where_the_main_frame_bound_them(self):
+        result, report, buffers = self.read()
+        # Vertices 1..3 are needed, the hashed window starts at vertex 0: one read covers both.
+        self.assertEqual(self.reads, [(60, 1, self.LIGHT_AT, 32)])
+        self.assertEqual((result["frame"], result["main_frame"]), (60, 50))
+        self.assertEqual(result["slots"][0]["bytes"], 32)
+        record = report["buffers"]["1"]
+        self.assertEqual((record["volatile"], record["ranges"], record["bytes"]), (True, [[self.MAIN_AT, 32]], 1024))
+        stored = (self.tmp / "buffers" / "1.buf").read_bytes()
+        self.assertEqual(stored[self.MAIN_AT:self.MAIN_AT + 32], self.stream)
+        self.assertEqual(stored[:self.MAIN_AT] + stored[self.MAIN_AT + 32:], bytes(1024 - 32))
+        self.assertEqual(sha256_file(self.tmp / "buffers" / "1.buf"), record["sha256"])
+        self.assertEqual(buffers[1], stored)
+
+    def test_data_rewritten_before_the_read_is_not_accepted(self):
+        self.intact = False
+        with self.assertRaises(model_capture.VolatileGeometry):
+            self.read()
+        self.intact, self.read_shift = True, 1          # the probe saw no write, but the bytes are not the draw's
+        with self.assertRaises(model_capture.VolatileGeometry):
+            self.read()
+        self.read_shift = 0
+        self.light["draws"][0]["ic"] = 9                # the mesh is not drawn the same way in the later frame
+        with self.assertRaises(model_capture.VolatileGeometry):
+            self.read()
+
+    def test_archive_starts_over_with_a_new_frame_and_gives_up_after_a_few(self):
+        target = self.tmp / "sample"
+        calls = []
+
+        def once(client, output, deferred, on_stage, attempt):
+            self.assertFalse(output.exists() and any(output.iterdir()), "leftovers of the failed attempt")
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "partial.bin").write_bytes(b"x")
+            calls.append(attempt)
+            if attempt < 3:
+                raise model_capture.VolatileGeometry("rewritten")
+            return {"attempt": attempt}
+
+        with patch.object(model_capture, "_archive_once", side_effect=once):
+            self.assertEqual(model_capture.archive_sample(None, target), {"attempt": 3})
+        self.assertEqual(calls, [1, 2, 3])
+        with patch.object(model_capture, "_archive_once", side_effect=model_capture.VolatileGeometry("rewritten")) as always:
+            with self.assertRaises(model_capture.VolatileGeometry):
+                model_capture.archive_sample(None, self.tmp / "never")
+        self.assertEqual(always.call_count, model_capture.ATTEMPTS)
+
+
+class SampleValidationTests(unittest.TestCase):
+    """Three samples: static geometry has to agree, bone merges have to be real."""
+
+    A, B = "aaaaaaaa-6-0", "bbbbbbbb-6-0"
+
+    def sample(self, frame, merged=True, apart=0.0, sha="s0", volatile=False):
+        import numpy as np
+        bone = np.eye(4, dtype=np.float32) + np.float32(frame * 1e-3)          # the pose differs from frame to frame
+        palettes = {self.A: [bone.copy(), bone + 1], self.B: [bone + np.float32(apart), bone + 5]}
+        stream = {"stride": 16, "bytes": 64, "sha256": None if volatile else sha, "layout": "POSITION"}
+        if volatile:
+            stream["volatile"] = True
+        entry = {"vertex_count": 4, "index_count": 6, "index_sha256": "i0", "vbs": {"0": stream}, "vg_count": 2, "cpu_posed": False}
+        signature = {self.A: {**entry, "canonical_sources": {"0": [self.A, 0], "1": [self.A, 1]}},
+                     self.B: {**entry, "canonical_sources": {"0": [self.A, 0] if merged else [self.B, 0], "1": [self.B, 1]}}}
+        payloads = {(self.A, "ib"): b"indices"}
+        if not volatile:
+            payloads[(self.A, "vb0")] = sha.encode()
+        return {"signature": signature, "palettes": palettes, "frame": frame, "merged_bones": int(merged),
+                "matrices": {(self.A, 0): palettes[self.A][0], (self.B, 0): palettes[self.B][0]},
+                "geometry_payloads": payloads,
+                "volatile_vertex_slots": [[self.A, "vb0"], [self.B, "vb0"]] if volatile else []}
+
+    def validate(self, *samples):
+        return loyal_bridge._validate_static_samples(list(samples), [Path(f"sample-{n}") for n in range(1, len(samples) + 1)])
+
+    def test_merges_found_in_only_some_frames_are_accepted_when_the_bones_are_the_same(self):
+        # The game's matrices of one bone differ in the last bit between components in some frames.
+        result = self.validate(self.sample(1), self.sample(2, merged=False, apart=6e-8), self.sample(3, merged=False, apart=3e-8))
+        self.assertEqual(result["merged_bones"], [1, 0, 0])
+        self.assertEqual(result["changed_used_bone_matrices"], 2)
+
+    def test_merge_of_bones_that_only_coincided_in_the_first_frame_is_refused(self):
+        with self.assertRaises(loyal_bridge.BridgeError) as ctx:
+            self.validate(self.sample(1), self.sample(2, merged=False, apart=0.01), self.sample(3))
+        self.assertIn("not the same bone", str(ctx.exception))
+
+    def test_different_static_geometry_is_refused(self):
+        with self.assertRaises(loyal_bridge.BridgeError) as ctx:
+            self.validate(self.sample(1), self.sample(2), self.sample(3, sha="s1"))
+        self.assertIn("Static geometry or layout differ", str(ctx.exception))
+
+    def test_rewritten_vertex_streams_are_compared_by_size_and_layout_only(self):
+        result = self.validate(*(self.sample(frame, volatile=True) for frame in (1, 2, 3)))
+        self.assertEqual(result["volatile_vertex_data"], [[self.A, "vb0"], [self.B, "vb0"]])
+
+    def test_samples_of_one_frame_do_not_validate_anything(self):
+        with self.assertRaises(loyal_bridge.BridgeError) as ctx:
+            self.validate(self.sample(1), self.sample(1), self.sample(1))
+        self.assertIn("distinct", str(ctx.exception))
 
 
 class LookupTests(Scratch):

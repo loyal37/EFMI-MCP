@@ -182,6 +182,7 @@ def register(srv, s) -> None:
             report["baseline"] = {"frame": before.frame, "game_draws_per_entry_point": baseline,
                                   "character_in_view": any(baseline.values())}
             job.step("deploying the export")
+            s.mods.invalidate()     # a mod that was disabled a moment ago must not be listed
             report["conflicts"] = mod_runtime.find_conflicts(manifest, s.mods.get(), target, s.efmi_root)
             deployment = mod_runtime.deploy_export(manifest, target, run_dir / "previous-deployment")
             model_workflow.write_json(run_dir / "deployment.json", deployment)
@@ -214,14 +215,25 @@ def register(srv, s) -> None:
             s.add_capture(cap)
         report["fresh_capture"] = True
         job.step("comparing the drawn buffers with the exported files")
-        checked = mod_runtime.verify_capture(cap, client, manifest, baseline)
+        if action == "verify":
+            def another():
+                job.check()
+                doc, blob = client.capture(detail="full", cb_data=False, timeout_ms=8000)
+                later = Capture(doc, blob)
+                s.add_capture(later)
+                return later
+
+            cap, checked = mod_runtime.verify_when_drawn(cap, another, client, manifest, baseline)
+        else:
+            checked = mod_runtime.verify_capture(cap, client, manifest, baseline)
         if check_textures:
             job.step("comparing bound textures with the exported files")
             checked["textures"] = mod_runtime.verify_textures(cap, client, manifest)
         model_capture.save_screenshot(client, cap, run_dir / "screenshots" / "after.png")
         model_workflow.write_json(run_dir / "draw-verification.json", checked)
         report.update(target_mod_status=checked["target_mod_status"], reasons=checked["reasons"],
-                      frame=checked["frame"], covered=checked["covered"], not_covered=checked["not_covered"],
+                      frame=checked["frame"], frames_looked_at=checked.get("frames_looked_at", 1),
+                      covered=checked["covered"], not_covered=checked["not_covered"],
                       draws_of_this_mod=checked["draws_of_this_mod"],
                       exported_buffers_seen=len(checked["exported_buffers_seen"]),
                       exported_buffers_identical=sum(1 for info in checked["exported_buffers_seen"].values()

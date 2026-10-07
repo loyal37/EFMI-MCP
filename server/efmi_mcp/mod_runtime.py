@@ -167,6 +167,25 @@ def find_conflicts(manifest: dict, mod_index, target: Path, efmi_root: Path) -> 
 
 
 # ---------------------------------------------------------------- verification
+def verify_when_drawn(first: Capture, another, client, manifest: dict, baseline_counts: dict[str, int] | None = None,
+                      looks: int = 6, pause_s: float = 0.5, sleep=time.sleep) -> tuple[Capture, dict]:
+    """verify_capture, looking at later frames while nothing of the mod is drawn yet.
+
+    Right after a reload a mod may not draw for some frames, whether or not it
+    already skips the game's mesh: its buffers and textures are loaded on first
+    use, and a merged skeleton is built first. ``another()`` returns the next
+    capture. Returns the capture that was judged and its result.
+    """
+    cap, checked, count = first, verify_capture(first, client, manifest, baseline_counts), 1
+    while not checked["draws_of_this_mod"] and count < looks:
+        sleep(pause_s)
+        cap = another()
+        checked = verify_capture(cap, client, manifest, baseline_counts)
+        count += 1
+    checked["frames_looked_at"] = count
+    return cap, checked
+
+
 def _matches(draw: dict, entry: dict) -> bool:
     ib, args = draw.get("ib") or {}, draw["args"]
     return (ib.get("hash") == entry["hash"]
@@ -194,6 +213,10 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
     the bytes the draw reads have the same CRC as that range of the file. The
     whole buffers behind matched draws are then read back and compared by
     SHA256. Draw arguments are checked against the INI's draw commands.
+
+    A vertex buffer of such a draw that has an exported file's size but was
+    recorded with another hash is decided by reading it: the hash a draw is
+    recorded with can be older than the buffer, its bytes cannot.
     """
     mod_dir = Path(manifest["mod_dir"])
     digests = {item["path"]: item for item in manifest["files"]}
@@ -228,6 +251,7 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
     used_files: dict[str, dict] = {}
     mod_draws, foreign_draws, stale = [], 0, []
     resources_to_read: dict[int, str] = {}
+    undecided = []      # vertex bindings of this mod's draws: an exported file's size, another recorded hash
     xxmi_indexed = 0
     for draw in cap.draws():
         if draw["origin"] != "xxmi" or draw["call"] not in INDEXED or "ib" not in draw:
@@ -253,22 +277,47 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
             if vb_name:
                 used_files.setdefault(vb_name, {"draws": 0, "resource": binding["res"]})["draws"] += 1
                 resources_to_read[binding["res"]] = vb_name
+            elif vb_state == "same_size_different_bytes":
+                undecided.append((record, f"vb{slot}", binding))
         mod_draws.append(record)
 
     # Whole buffers: the draw ranges above need not cover a file completely.
     budget, whole = READ_BUDGET, {}
+    read: dict[int, tuple[str | None, str]] = {}
+
+    def digest_now(rid):
+        """SHA256 of a whole buffer as it is now, or why it was not read."""
+        nonlocal budget
+        if rid not in read:
+            size = cap.resource(rid)["size"]
+            if size > budget:
+                read[rid] = (None, "not_read_budget")
+            else:
+                budget -= size
+                try:
+                    _, payload = client.read_buffer(cap.frame, rid, size=size)
+                    read[rid] = (hashlib.sha256(payload).hexdigest(), "read")
+                except Exception as exc:   # the capture may have been released meanwhile
+                    read[rid] = (None, f"read_failed: {exc}")
+        return read[rid]
+
     for rid, name in sorted(resources_to_read.items()):
-        size = cap.resource(rid)["size"]
-        if size > budget:
-            whole[name] = "not_read_budget"
-            continue
-        budget -= size
-        try:
-            _, payload = client.read_buffer(cap.frame, rid, size=size)
-        except Exception as exc:   # the capture may have been released meanwhile
-            whole[name] = f"read_failed: {exc}"
-            continue
-        whole[name] = "identical" if hashlib.sha256(payload).hexdigest() == digests[name]["sha256"] else "different"
+        digest, state = digest_now(rid)
+        whole[name] = state if digest is None else "identical" if digest == digests[name]["sha256"] else "different"
+
+    hash_disagreements, other_bytes = [], []
+    for record, slot, binding in undecided:
+        rid = binding["res"]
+        digest, _ = digest_now(rid)
+        name = next((n for n in by_size.get(cap.resource(rid)["size"], []) if digests[n]["sha256"] == digest), None)
+        if name:
+            record["vertex_buffers"][slot] = name
+            used_files.setdefault(name, {"draws": 0, "resource": rid})["draws"] += 1
+            whole[name] = "identical"
+            if not any(item["resource"] == rid for item in hash_disagreements):
+                hash_disagreements.append({"resource": rid, "file": name, "recorded_hash": binding["region"]["hash"]})
+        elif digest:
+            other_bytes.append({"draw": record["draw"], "slot": slot, "bytes": cap.resource(rid)["size"]})
 
     # Draw arguments against the INI's draw commands for the same index file.
     argument_mismatches = []
@@ -319,6 +368,10 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
         problems.append("a buffer bound by a matched draw differs from its exported file outside the drawn range")
     if argument_mismatches:
         problems.append(f"{len(argument_mismatches)} draw(s) use other arguments than the INI's draw commands")
+    # vb0 is the stream the INI binds from a file; other slots may hold what the game left bound.
+    wrong_positions = [item for item in other_bytes if item["slot"] == "vb0"]
+    if wrong_positions:
+        problems.append(f"{len(wrong_positions)} draw(s) of this mod read a vb0 with an exported file's size but other bytes")
     if "original_still_drawn" in statuses:
         problems.append("the game's own mesh is still drawn for: " + ", ".join(
             s["name"] for s in components.values() if s["status"] == "original_still_drawn"))
@@ -343,6 +396,9 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
                                   for name, info in sorted(used_files.items())},
         "exported_buffers_not_seen": sorted(set(geometry_files) - set(used_files)),
         "argument_mismatches": argument_mismatches[:10], "mod_draws": mod_draws[:200],
+        # Buffers whose bytes are an exported file's although the draw was recorded with another hash.
+        "recorded_hash_disagreements": hash_disagreements,
+        "vertex_bindings_with_other_bytes": other_bytes[:20],
         "scope": ("Geometry buffers by content. Buffers the mod computes at run time (skinned positions, bone data) "
                   "and render-state are not compared; LoD levels and branches that were not on screen are not covered."),
     }

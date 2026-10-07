@@ -180,7 +180,7 @@ def _extract(client, project: "Project", loyaltools_root, object_name, samples, 
         "upstream_warnings": bridge["upstream_warnings"][:20],
         "missing_texture_resources": bridge["missing_texture_resources"],
         "validation": {key: bridge["validation"][key] for key in (
-            "scope", "changed_used_bone_matrices", "pose_reconstruction", "pose_limitation")},
+            "scope", "changed_used_bone_matrices", "pose_reconstruction", "pose_limitation", "volatile_vertex_data")},
         "report": str(project.workplace / "live-bridge-report.json"),
     }
 

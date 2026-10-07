@@ -1,7 +1,7 @@
 # EFMI MCP 协作约定
 
 - 恢复工作先读 `.ai-memory/CURRENT_STATE.md` 和 `.ai-memory/TASKS.md`；架构、约束、既往判断分别见其余记忆文档。
-- 只修改本项目 `F:\EFMI MCP`。EFMI/XXMI 安装目录、启动器配置、`d3d11.dll`、`d3dx.ini`、`Core` 和现有 mod 均只读；沙盒使用本项目内的私有副本。唯一例外：`efmi_verify_exported_mod` 部署本工具导出的测试模组时，只在 `<EFMI>\Mods` 下由本工具创建并带 `efmi-mcp-deployment.json` 标记的专用目录内写入、更新或删除其记录的文件；其他模组不移动、不停用。
+- 只修改本项目 `F:\EFMI MCP`。EFMI/XXMI 安装目录、启动器配置、`d3d11.dll`、`d3dx.ini`、`Core` 和现有 mod 均只读；沙盒使用本项目内的私有副本。唯一例外：`efmi_verify_exported_mod` 部署本工具导出的测试模组时，只在 `<EFMI>\Mods` 下由本工具创建并带 `efmi-mcp-deployment.json` 标记的专用目录内写入、更新或删除其记录的文件；其他模组不移动、不停用；只有用户当场明确要求时才可临时停用其某个模组（改名为 `DISABLED_…`），用完改回并在结果里写明。
 - 用户已授权工具执行正常 F10 重载流程；`efmi_reload_and_capture` 不直接编辑原版文件，但 XXMI 自身可能保存持久变量。输入已发送、捕获新帧、目标 mod 已验证须分别报告；不得把 `reload_requested` 当成重载完成回执或自动重发 F10。用户还要求（2026-10-07）agent 可随时用 EFMI 自带的 F11 开关全部 mod（`efmi_toggle_mods`），以对比原始绘制和 mod 绘制：开／关状态以 EFMI 自己的提示为准，读不到就报告未知；对比结束后恢复为开启，失败的按键不重试。
 - 结束一轮工作前更新当前状态、任务和会话日志；有新决策或问题时同步对应文档。记录证据、验证范围、剩余事项，避免粘贴长日志。
 - 严格区分注入成功、连接成功、采集到数据和真实角色验证成功；历史沙盒结果不能冒充本轮或真实游戏验证。

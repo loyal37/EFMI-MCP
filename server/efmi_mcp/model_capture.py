@@ -6,11 +6,15 @@ probe document with draw-time constant buffers), buffers/<resource-id>.buf
 screenshot and readback.json. CBs are draw-time snapshots; every other
 resource is read back later, each shared resource once, and skeleton
 addressing is checked against a second capture.
+
+Vertex streams that the game itself rewrites every few frames (the positions
+of a CPU-posed component) are the exception: see _read_volatile.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import struct
 import time
 from pathlib import Path
@@ -20,8 +24,16 @@ from .decode import make_dds, texture_to_png
 from .hashes import crc32c, hex32
 
 
+DYNAMIC = 2       # D3D11_USAGE_DYNAMIC
+ATTEMPTS = 6      # per archive, when rewritten vertex data was lost to the game's next write
+
+
 class CaptureCancelled(RuntimeError):
     """The caller asked to stop between two steps of a collection."""
+
+
+class VolatileGeometry(ValueError):
+    """Vertex data the game keeps rewriting was overwritten before it was read; another frame may succeed."""
 
 
 def instance_config(cap: Capture, draw: dict):
@@ -82,19 +94,121 @@ def save_screenshot(client, cap: Capture, path: Path) -> bool:
     return True
 
 
+def _index_bounds(data: bytes, binding: dict, args: dict) -> tuple[int, int]:
+    """Lowest and highest vertex index a draw uses."""
+    width = 2 if binding["format"] == 57 else 4      # DXGI_FORMAT_R16_UINT, otherwise R32_UINT
+    start = binding["offset"] + args.get("first_index", 0) * width
+    values = memoryview(data)[start:start + args["index_count"] * width].cast("H" if width == 2 else "I")
+    return min(values), max(values)
+
+
+def _read_volatile(client, cap: Capture, pairs, volatile: set, buffers: dict, output: Path, report: dict) -> dict:
+    """Vertex streams that live in buffers the game rewrites every few frames.
+
+    The game keeps such data (the positions of a CPU-posed component) in a ring
+    of dynamic buffers: a range stays as it was drawn for only a few frames,
+    too short for a read after the full capture. So one more, light capture is
+    taken and the ranges are read at once. The probe's write history and that
+    capture's draw-time hash prove that the bytes are what its draw read. They
+    are the same vertices in the pose of that later frame, and are stored where
+    the main frame bound them; the rest of such a buffer is left zero.
+    """
+    wanted = {}     # (draw identity, slot) -> where the main frame bound it and the bytes the extractor may read
+    for d, _ in pairs:
+        args = d["args"]
+        base = args.get("first_vertex", 0)
+        identity = (d["ib"]["hash"], args["index_count"], args.get("first_index", 0), base)
+        for slot, binding in d.get("vb", {}).items():
+            if slot >= 3 or binding["res"] not in volatile or (identity, slot) in wanted:
+                continue
+            low, high = _index_bounds(buffers[d["ib"]["res"]], d["ib"], args)
+            first = low * binding["stride"]      # relative to the binding offset
+            wanted[(identity, slot)] = {"res": binding["res"], "offset": binding["offset"], "stride": binding["stride"],
+                                        "first": first, "end": first + (base + high - low + 1) * binding["stride"]}
+
+    doc, blob = client.capture(detail="light", cb_data=False, timeout_ms=8000)
+    light = Capture(doc, blob)
+    drawn = {}
+    for d in light.draws():
+        if d["origin"] == "game" and d.get("ib", {}).get("hash"):
+            args = d["args"]
+            drawn.setdefault((d["ib"]["hash"], args.get("index_count"), args.get("first_index", 0),
+                              args.get("first_vertex", 0)), d)
+    reads, slots = {}, []
+    for (identity, slot), want in wanted.items():
+        binding = drawn.get(identity, {}).get("vb", {}).get(slot)
+        region = (binding or {}).get("region")
+        if (not binding or binding["stride"] != want["stride"] or not region or region["state"] != "ok"
+                or not region["hash"] or light.resource(binding["res"]).get("usage") != DYNAMIC):
+            raise VolatileGeometry(f"The mesh with ib {identity[0]} was not drawn the same way in the frame taken "
+                                   "for its rewritten vertex data")
+        start = min(region["offset"], binding["offset"] + want["first"])
+        end = max(region["offset"] + region["size"], binding["offset"] + want["end"])
+        key = (binding["res"], start, end)
+        if key not in reads:
+            meta, data = client.read_buffer(light.frame, binding["res"], offset=start, size=end - start)
+            hashed = data[region["offset"] - start:region["offset"] - start + region["size"]]
+            if (len(data) != end - start or meta.get("unchanged_since_capture") is not True
+                    or hex32(crc32c(hashed)) != region["hash"]):
+                raise VolatileGeometry(f"Vertex data of ib {identity[0]} (vb{slot}) was rewritten by the game "
+                                       f"{meta.get('read_frame', light.frame) - light.frame} frame(s) after the capture, "
+                                       "before it could be read")
+            reads[key] = (meta, data)
+        meta, data = reads[key]
+        want.update(data=data, shift=start - binding["offset"])
+        slots.append({"ib": identity[0], "index_count": identity[1], "slot": slot, "bytes": len(data),
+                      "stride": want["stride"], "read_frame": meta.get("read_frame"),
+                      "draw_time_hash": region["hash"], "hashed_bytes": region["size"]})
+
+    sparse = {rid: bytearray(cap.resource(rid)["size"]) for rid in volatile}
+    ranges = {rid: [] for rid in volatile}
+    for (identity, slot), want in wanted.items():
+        at, data = want["offset"] + want["shift"], want["data"]
+        if at < 0 or at + len(data) > len(sparse[want["res"]]):
+            raise ValueError(f"Rewritten vertex data of ib {identity[0]} does not fit where the main frame bound it")
+        sparse[want["res"]][at:at + len(data)] = data
+        ranges[want["res"]].append([at, len(data)])
+    for rid, data in sparse.items():
+        data = bytes(data)
+        buffers[rid] = data
+        (output / "buffers" / f"{rid}.buf").write_bytes(data)
+        report["buffers"][str(rid)] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "skeleton": False,
+                                       "volatile": True, "ranges": sorted(ranges[rid]),
+                                       "meta": {"captured_frame": light.frame, "ranges_identical_to_draw_time": True}}
+    return {"frame": light.frame, "main_frame": cap.frame, "slots": slots,
+            "note": "These vertex streams are rewritten by the game every few frames (CPU-posed components). Their bytes "
+                    "are what the same draw read in the frame given here, not in the main frame: the same vertices in "
+                    "a pose a few frames later."}
+
+
 def archive_sample(client, output: Path, deferred_skeleton: bool = False, on_stage=None) -> dict:
     """Capture one frame through an open probe connection and archive its inputs.
 
     The caller keeps and closes the connection; the capture's resources are
-    released here. ``on_stage(name)`` is called as each step starts.
+    released here. ``on_stage(name)`` is called as each step starts. When
+    vertex data the game rewrites was lost to its next write, the archive is
+    started over with a new frame, a few times.
     """
     output = Path(output)
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError("Archive output must be a new or empty directory")
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            return _archive_once(client, output, deferred_skeleton, on_stage, attempt)
+        except VolatileGeometry:
+            if attempt == ATTEMPTS:
+                raise
+            if output.exists():
+                shutil.rmtree(output)   # only what this call wrote: the folder was new or empty
+            if on_stage:
+                on_stage(f"rewritten vertex data changed before it was read; attempt {attempt + 1} of {ATTEMPTS}")
+
+
+def _archive_once(client, output: Path, deferred_skeleton: bool, on_stage, attempt: int) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     (output / "buffers").mkdir(exist_ok=True)
     (output / "textures").mkdir(exist_ok=True)
-    report = {"buffers": {}, "textures": {}, "errors": [],
+    report = {"buffers": {}, "textures": {}, "errors": [], "attempt": attempt,
               "timing": "CB: draw snapshot; IB/VB/SRV/textures: later readback",
               "validation_scope": "deferred_skeleton_static" if deferred_skeleton else "unchanged_resources",
               "srv_view": "The probe does not record SRV view offsets; LoyalTools assumes full-buffer vs-t0"}
@@ -135,11 +249,18 @@ def archive_sample(client, output: Path, deferred_skeleton: bool = False, on_sta
         skeletons = {cfg["skeleton_resource"] for _, cfg in pairs}
         geometry = {d["ib"]["res"] for d, _ in pairs}
         geometry.update(v["res"] for d, _ in pairs for slot, v in d.get("vb", {}).items() if slot < 3)
+        # Buffers the game rewrites cannot be read whole or this late; their
+        # vertex ranges are taken separately at the end (_read_volatile).
+        volatile = {rid for rid in geometry if cap.resource(rid).get("usage") == DYNAMIC}
+        for d, _ in pairs:
+            if d["ib"]["res"] in volatile:
+                raise ValueError(f"Draw {d['index']}: its index data is in a buffer the game rewrites, "
+                                 "which is not supported")
         stage("save_capture_and_select")
         begin("buffers")
         buffers = {}
         # Copy each shared skeleton pool first, in one request for all components.
-        for rid in sorted(skeletons) + sorted(geometry - skeletons):
+        for rid in sorted(skeletons) + sorted(geometry - skeletons - volatile):
             resource = cap.resource(rid)
             meta, data = client.read_buffer(cap.frame, rid, size=resource["size"])
             if len(data) != resource["size"]:
@@ -156,7 +277,7 @@ def archive_sample(client, output: Path, deferred_skeleton: bool = False, on_sta
             bindings = [d["ib"], *(v for slot, v in d.get("vb", {}).items() if slot < 3)]
             for binding in bindings:
                 region = binding.get("region")
-                if not region or region["state"] != "ok" or not region["hash"]:
+                if not region or region["state"] != "ok" or not region["hash"] or region["res"] in volatile:
                     continue
                 key = (region["res"], region["offset"], region["size"], region["hash"])
                 if key in checks:
@@ -205,14 +326,27 @@ def archive_sample(client, output: Path, deferred_skeleton: bool = False, on_sta
         # Addresses may move in the game's shared pool. Static extraction can be
         # validated against independent samples in loyal_bridge; it must not be
         # mistaken for reconstructing the animation pose of this capture frame.
-        identity = lambda a: {k: sorted({tuple(v[:2]) for v in values}) for k, values in a.items()}
-        if identity(before_addressing) != identity(after_addressing):
-            raise ValueError("Character identity or skeleton resource changed during resource reads")
+        # A mesh has to keep its skeleton pool while its buffers are read. Its
+        # instance constants may differ: they start with the world matrix, and
+        # things in view move. Meshes that come into or leave the view are no
+        # concern of the ones that were captured.
+        pools = lambda a: {k: sorted({v[1] for v in values}) for k, values in a.items()}
+        instances = lambda a: {k: sorted({tuple(v[:2]) for v in values}) for k, values in a.items()}
+        both = sorted(before_addressing.keys() & after_addressing.keys())
+        repooled = [k for k in both if pools(before_addressing)[k] != pools(after_addressing)[k]]
+        report["skeleton_addressing"]["moved_meanwhile"] = [
+            k for k in both if instances(before_addressing)[k] != instances(after_addressing)[k]]
+        if repooled:
+            raise ValueError("The skeleton resource of a drawn mesh changed during resource reads: " + ", ".join(repooled[:6]))
         skeleton_intact = all(report["buffers"][str(rid)]["meta"].get("unchanged_since_capture") is True
                               for rid in skeletons)
         report["skeleton_unchanged_since_capture"] = skeleton_intact
         if not deferred_skeleton and not skeleton_intact:
             raise ValueError("Skeleton readback is not a verified draw-time snapshot; static extraction needs independent samples")
+        if volatile:
+            begin("rewritten vertex data")
+            report["volatile_geometry"] = _read_volatile(client, cap, pairs, volatile, buffers, output, report)
+            stage("volatile_vertex_readback")
         report["complete"] = True
         stage("save_validation_and_check")
     except Exception as exc:

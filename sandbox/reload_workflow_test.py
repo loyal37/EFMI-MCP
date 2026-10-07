@@ -542,6 +542,25 @@ class ProbePressedReloadTests(unittest.TestCase):
         self.assertLess(events.index("release"), events.index("key"))
         self.assertLess(events.index("key"), events.index("capture"))
 
+    def test_settle_time_starts_when_the_game_presents_again(self):
+        # The reload keeps the game from presenting for two seconds after the key went up at frame 220.
+        self.probe.receipt = {"frame_at_key_up": 220}
+        result, error = self.call(settle_ms=500)
+        self.assertFalse(error, result)
+        self.assertGreaterEqual(result["resumed_after_ms"], 2000)
+        self.assertEqual(self.clock.sleeps[-1], 0.5)
+        self.assertTrue(all(pause == 0.05 for pause in self.clock.sleeps[:-1]) and len(self.clock.sleeps) > 30)
+        self.assertGreater(result["capture"]["frame"], 220)
+
+    def test_a_game_that_never_presents_again_does_not_hang_the_tool(self):
+        self.probe.receipt = {"frame_at_key_up": 10 ** 9}
+        result, error = self.call(settle_ms=250)
+        self.assertTrue(error, result)
+        self.assertEqual((result["phase"], result["reload_requested"]), ("settle", True))
+        self.assertIn("presented no frame", result["reason"])
+        self.assertLessEqual(sum(self.clock.sleeps), reload_workflow.RESUME_TIMEOUT_S + 1)
+        self.assertNotIn("capture", [event[0] for event in self.probe.events])
+
     def test_resource_created_after_the_key_confirms_the_reload(self):
         self.bind_to_game_draw(xxmi_buffer(150))
         result, error = self.call()
