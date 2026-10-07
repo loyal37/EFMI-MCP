@@ -13,6 +13,9 @@
 # Sandbox working copy (holds copies of XXMI files, never the originals)
 /sandbox/run/
 
+# Planning documents stay on this machine (user, 2026-10-07)
+/docs/model-extraction-export-plan.md
+
 # Runtime output
 *.log
 /captures/

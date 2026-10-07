@@ -13,7 +13,7 @@
 
 ## 模型流程接入（T-008，2026-10-07，服务 0.1.5）
 
-- 用户要求按 `docs/model-extraction-export-plan.md` 接入模型提取等流程，并补充 LOD 匹配：以前靠帧分析目录生成映射，agent 采集的数据同样可以这样用；LoyalTools 1.6.8（`ea0f0de`）新增 JSON 匹配。随后明确“以接入为主，LoyalTools 更新不应要求改 MCP”。
+- （计划书 `docs/model-extraction-export-plan.md` 只在本地，不在仓库里，见 D-014。）用户要求按它接入模型提取等流程，并补充 LOD 匹配：以前靠帧分析目录生成映射，agent 采集的数据同样可以这样用；LoyalTools 1.6.8（`ea0f0de`）新增 JSON 匹配。随后明确“以接入为主，LoyalTools 更新不应要求改 MCP”。
 - 新工具：`efmi_list_models`、`efmi_extract_model`、`efmi_map_lod`、`efmi_export_mod`、`efmi_verify_exported_mod`、`efmi_model_project`、`efmi_model_job`（共 25 个工具）。模块：`model_capture`（采样，原脚本逻辑移入）、`loyal_bridge`（候选列表、LOD 两种匹配）、`blender_runner`、`model_jobs`、`model_workflow`、`mod_runtime`、`model_tools`；Blender 内脚本 `scripts/verify_merged_workspace_blender.py`（默认仅漫射）与 `scripts/export_mod_blender.py`。
 - 接入方式：默认使用所选 Blender 中已安装的插件目录（本机 `%APPDATA%\Blender Foundation\Blender\4.5\scripts\addons\LoyalTools`，1.6.8），服务进程与 Blender 内是同一份代码；`--loyaltools-root`／`EFMI_LOYALTOOLS` 仅作覆盖，且只作用于服务进程内的步骤（Blender 内始终是它自己安装的插件）。`efmi_extract_model` 指定别的 `blender_path` 时，服务进程也改用那个 Blender 的插件；指定的 Blender 不存在时报错，不会换用别的安装。命令行 `scripts/export_merged_workspace.py` 采用同样的默认。LOD 调用 `map_merged_skeleton_lod`／`restore_merged_skeleton_lod`，导入导出调用操作器 `loyal.import_workspace`／`ssmt.generate_mod_blueprint`，不复制算法。帧匹配时把函数里打开目录的那一处换成“归档或帧分析皆可”的工厂，算法不动。
 - 项目目录即 LoyalTools 自定义工作空间根目录（目录名即模组名），不再有计划里的 `project/` 一层；布局见计划书第 9 节。

@@ -180,7 +180,7 @@
 
 要点：
 
-- **项目目录就是 LoyalTools 的自定义工作空间根目录**，目录名即模组名（插件用它给蓝图和 INI 命名）。布局见 `docs/model-extraction-export-plan.md` 第 9 节。
+- **项目目录就是 LoyalTools 的自定义工作空间根目录**，目录名即模组名（插件用它给蓝图和 INI 命名），布局见本节末尾。
 - **被模组替换的角色提取不了**：游戏对它的原始绘制没有发出。先用 `efmi_toggle_mods state=off` 关掉全部 mod（探针 0.1.3，尚未实机验证），或者停用该模组并刷新。
 - **主控与 LOD 共用一份编辑网格**。LOD 入口、LOD 布局的缓冲变体和骨索引重映射由插件在导出时按 `workplace/EFMI_MergedSkeleton.json` 里的映射生成；没有采集过、JSON 里也没有的 LOD 不会被推算出来。该角色以前做过 LOD 映射时，提取时用 `lod_json` 指向旧项目即可，不用再采远景帧。
 - **Blender 里只连漫射贴图**（Base Color，以及插件原生连接的同图 Alpha）。法线等其他贴图仍留在工作空间里供导出使用。
@@ -190,7 +190,23 @@
 
 **验证范围（2026-10-07）。** 不需要游戏的部分已用真实的 LoyalTools 1.6.8（Blender 4.5.7 中已安装的插件）验证：仅漫射的 Blender 导入、LOD 的 JSON 匹配与帧匹配（两侧为帧分析目录）、插件原生导出及产物检查、在 Blender 里移动全部网格并保存后再次导出（只有顶点缓冲随之整体平移同样的距离，索引缓冲和其余文件不变）；部署规则、绘制对照、任务管理以及“用哪个 Blender、哪份插件”的选择有 37 项单元测试。需要游戏的部分尚未实机验证：MCP 工具形式的三采样提取、以探针归档作为一侧的 LOD 帧匹配、部署→F10→逐组件核对，以及修改后的模型在游戏里的表现。在这些完成之前，不能把整条流程当作已在游戏里跑通。
 
-设计、LOD 匹配的原理和实施记录见 `docs/model-extraction-export-plan.md`。
+项目目录的内容：
+
+```text
+<项目>/                         # 名字即模组名
+  workplace/                    # LoyalTools 原生工作空间（含 live-bridge-report.json）
+  <项目>.blend                  # 可编辑工程；<项目>.verification.json 是导入检查报告
+  source/sample-1..n/           # 三份独立采样及来源记录
+  source/lod-<时间>/            # 现采的 LOD 帧（如有）
+  exports/<export_id>/
+    mod/                        # 插件导出的模组
+    export-manifest.json        # 文件清单与 SHA256、入口、绘制命令
+    export-report.json          # 后台 Blender 的导出报告；.log.txt 为插件导出日志
+  verification/<run_id>/        # 部署记录、刷新回执、绘制对照、前后截图、被替换下来的旧部署文件
+  efmi-model-project.json       # 做过什么、用的哪些版本
+```
+
+**LOD 映射的两种来源。** 帧匹配：拿一帧近景（主控）和一帧远景（LOD）交给 LoyalTools 的匹配器，两帧各自可以是帧分析目录，也可以是本工具采集的归档；`method=capture` 就是现采一帧远景再匹配。JSON 匹配：同一角色以前做过映射时，直接从那份 `EFMI_MergedSkeleton.json`（或其所在项目）复用，不需要游戏。映射写进 `workplace/EFMI_MergedSkeleton.json`，没有对应 LOD 网格的组件标为回退。
 
 ## 已知限制
 
