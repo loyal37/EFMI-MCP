@@ -18,7 +18,8 @@ from .reload_input import ReloadInputError, send_reload_f10, send_reload_via_pro
 RESUME_TIMEOUT_S = 10.0    # how long a reload may keep the game from presenting a frame
 
 # Probes before 0.1.4 kept region hashes by buffer address. A reload destroys the mods' buffers and
-# creates new ones, usually at the same addresses: such a probe can record the old buffer's hash.
+# creates new ones, some of them at addresses earlier buffers had: such a probe can record an old
+# buffer's hash.
 STALE_HASH_CAUTION = ("This probe ({version}) can record, for a buffer created by the reload, the region hash of the "
                       "buffer that was at the same address before it. Do not conclude from an unchanged ib/vb hash "
                       "that an edited buffer was not loaded: read it with efmi_read_buffer. Probe 0.1.4 fixes this; "

@@ -176,9 +176,11 @@ static uint32_t g_track_gen = 1;
 
 // Region hashes kept from frame to frame. The key is an address, and addresses
 // are handed out again: a mod's buffers are destroyed and created anew at every
-// reload, usually in the same places and with the same sizes. A new buffer that
-// was never written after its creation has the same write epoch as the old one
-// had, so the entry also names the object it was computed for.
+// reload, with the same sizes, and some of them where an earlier buffer was. An
+// entry stays until its key is seen again, so that buffer need not be the one
+// just destroyed. A new buffer that was never written after its creation has
+// the same write epoch as the old one had, so the entry also names the object
+// it was computed for.
 struct RVal { uint32_t hash; uint64_t epoch; uint32_t gen; uint64_t serial; };
 static std::unordered_map<RKey, RVal, RKeyHash> g_rcache;
 
