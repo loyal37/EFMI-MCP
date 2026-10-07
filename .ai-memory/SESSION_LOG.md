@@ -179,3 +179,5 @@ LOD 入口的部署核对经用户当场同意后进行（两次询问：是否�
 用户问差异出在他的 mod 还是提取的模型上。只读检查了他已安装的 mod（不用重映射表，不碰相关组件）和旧工程 `yvonne test`（有 CPU 姿态组件的 LOD 条目），读了 LoyalTools 复用映射的规则，并做了一次蒙皮比较（近景网格按两种映射用 LOD 骨骼蒙皮，对照游戏的 LOD 网格）。结论：都不是；重映射的差异没有实际影响，缺的条目是 JSON 复用时被 LoyalTools 的检查去掉的。只改了文档。详见 CURRENT_STATE 首节、限制-004。
 
 **下次继续**：没有待定事项。用户随后说明 CPU 组件从不修改（删掉、用游戏原来的），缺的那条 LOD 条目没有影响，不补；已写入 `AGENTS.md`。
+
+用户又问这条在 JSON 匹配时丢失是本工具的问题还是 LoyalTools 的问题：是 LoyalTools 的复用检查（`_lod_entry_problem` 的顶点组范围一条）。已用插件自己的 `apply_lod_mapping` 在内存副本上验证（LoyalTools 1.6.8）：把旧工程 `yvonne test` 的映射套回它自己去掉 LOD 的档案，同样只匹配 10／11、同样的提示；把那条 LOD 记录里的 40 项顶点组映射清空后再套，11／11 全部保留。所以与数据由谁采集无关。脚本和输出在 `captures/verify-lod-3468/remap-check/json_reuse_experiment.py`、`json-reuse-result.txt`。
