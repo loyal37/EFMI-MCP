@@ -2,6 +2,27 @@
 
 > 最后更新：2026-10-08。
 
+## 限制-007：实时抓取尚未完整覆盖 FrameAnalysis（2026-10-08 审计）
+
+- 覆盖矩阵见 README，目标和剩余项见 T-013。`full` 是绑定记录，不是全资源内容快照；live 是聚合摘要；模型 archive 有意过滤资源。当前哈希对照工具不证明完整 dump 数据一致。
+- IB/VB draw-time 读回只留 CRC，SRV（含骨骼）和 CS UAV 只有绑定＋晚读；通用 MCP buffer 工具尚未开放 SRV/UAV buffer。选定 RTV/DSV 快照不覆盖 dispatch UAV，RT array 只取首 slice。
+- 用户提供的 dump 实际包含图形 OM UAV（4 个 draw），其中 #550–552 同一个 u0 对象有三份不同 BUF，当前连绑定也未导出；CB dump 含完整 4 MiB 常量池，而当前 CB 快照只保存绑定窗口。这两项都是该目录的实际差距。
+- 多视口只留第一个数值和总数；OM UAV、SO/counter、3D/MSAA 读回、完整 API 历史和 deferred draws 尚未覆盖。绑定摘要不能还原显式 Set/Map/Copy/Clear 顺序。
+- 系统 D3D11 探针看不到 XXMI 完全 skip 的原始调用、内部命令／变量轨迹、改写前后 shader 身份关系；这不是普通资源接口的缺口。不能承诺只扩展几个槽位便覆盖 log.txt。
+- `model_capture.py` 的 `srv_view` 和 `loyal_bridge.py` 的 `srv_view_scope` 仍说 FirstElement 未采集，已与 0.1.5 不符。探针已保存视图参数，桥接沿用完整 vs-t0 的假设应与采集能力分开描述。此轮只记录，未改运行时代码。
+
+## BUG-007：FrameAnalysis 解析器漏掉带 !S! 的资源文件（真实目录离线复现）
+
+- `fa_dump.py::_RE_FILE` 要求槽位后的等号紧跟 8 位 hash，不接受 `000474-vs-t0=!S!=d629cf1a-…dds` 这种实际文件名；日志 Dumping 映射也复用该正则。
+- 用户的 `FrameAnalysis-2026-10-07-123937` 有 18,666 个资源文件＋log.txt。生产 `efmi_frame_dump_summary` 只报告 18,509；漏掉 VS SRV 2、PS SRV 119、o0 36，共 157 个文件。调用数 776 没少，不能用调用数相等判断资源齐全。
+- 证据：`captures/audit-realtime-20261008/offline-dump-check.json`、`parser-unmatched-files.json`。本轮审计只记录，尚未修复；以后修正时保留标记本身，不臆测它与普通资源等价。
+
+## BUG-006：CB 快照失败时 get_draw 仍可能标已采集（源码确认，未实机复现）
+
+- `capture.cpp::snapshot` 超预算／staging 创建失败仍建立非负 snap ID，读回失败也会使该快照无 blob。`Capture.snap_bytes` 能识别无内容，但 `tools.py::efmi_get_draw` 的 `contents_captured` 只看 `snap>=0`，可误报 true。
+- `efmi_read_buffer` 随后会晚读，并在 `source` 明写不是 draw 当时的内容；因此不是无提示地把晚读称为快照。不过提示仍建议开启 `cb_data=true`，没有说明已开却失败的原因。
+- `arena_full` 摘要仅提示 hashes 缺失，GPU Map 失败无统一完整性摘要。后续应依据实际快照内容标记成功，并暴露每项缺失原因；全量 dump 验收不能依赖当前 `contents_captured`。
+
 ## 限制-006：管线状态与渲染目标拷贝（探针 0.1.5）的边界
 
 - 2026-10-08 已在实机核对（CURRENT_STATE）。带拷贝的那一帧的游戏内记录耗时：7.37 毫秒（16 份、94.6 MiB），同场景不带拷贝 7.28 毫秒；显卡一侧的耗时没有量。

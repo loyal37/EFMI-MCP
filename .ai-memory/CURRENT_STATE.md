@@ -1,6 +1,21 @@
 # EFMI MCP — 当前开发状态
 
-> 最后更新：2026-10-08 傍晚。服务 0.1.10，探针 0.1.5。当天下午按用户的明确要求把 `TangTang Seaside Breeze 1.4` 的 INI 从 RabbitFX 改成了槽位写法（首节）：绑定、改前改后的画面、对别的绘制的影响都已实机核对，只剩 LOD 距离没看。重载等待的新标准已在实机跑过一次。此前各节按时间倒序保留。
+> 最后更新：2026-10-08 晚。服务 0.1.10，探针 0.1.5。本轮审计实时采集与用户给的 FrameAnalysis 目录的覆盖差异，未修改实现；完整替代 dump 的目标尚未实现，见 T-013。TangTang 槽位转换仍只剩 LOD 距离没看。此前各节按时间倒序保留。
+
+## 实时数据覆盖审计（2026-10-08 晚，T-013）
+
+- 用户要求审查当前插件，目标是 `D:\XXMI-Launcher-Portable-v2.1.6\EFMI\FrameAnalysis-2026-10-07-123937` 的数据都能实时获取。本轮完成能力／差距审计，没有开始扩展实现。
+- 基线：服务 0.1.10、探针源码 0.1.5、27 个工具。AgentDock 工具搜索返回 Internal error；改用本地生产 Server 的 `tools/list`、`tools/call efmi_status` 核对，21:05（北京时间）无探针管道，也未发现 Endfield 进程。本轮没有连接、捕获、按 F10/F11 或改动 EFMI，不把历史实机结果当作本轮验证。
+- 目录：776 次调用＝715 次 Draw＋61 次 Dispatch；顶层 18,667 条文件（8,528 BUF／7,719 TXT，含 log.txt／1,300 DDS／1,120 JPG），deduped 2,767 文件。log.txt 56,389 行，含 D3D 调用历史及 XXMI 命令执行／变量求值；文件覆盖 IB、VB0–4、VS/PS/CS CB、缓冲与贴图 SRV、UAV、o0–o4。详细清单和 DDS 头在 `captures/audit-realtime-20261008/`，不提交资源数据。
+- 同一对象不同内容的直接证据：图形 draw #550／551／552 的 OM u0 均为资源 `0x14B2E1FCA0`、hash `81189244`，三份 65536 字节 BUF 不同；#481／482 的 o0 均为 `0x13A216C2E0`，两份 DDS SHA256 不同，调用间没有重绑。目录里的 UAV 覆盖 59 个 CS dispatch＋4 个图形 draw，因此 OM UAV 是此目标的实际缺口。证据见 `draw-time-version-evidence.json` 和日志摘录。
+- dump 自身范围：有完整 4 MiB 常量池 BUF，当前 CB 快照仅绑定窗口；810 次缓冲 TXT 创建失败但 BUF 存在；内置 t120 跳过；JPG 有损；无 shader 字节码文件；417 个去重 DDS 全是单 mip／单 slice 的 2D 数据。顶层多为指向 deduped 的硬链接，按 NTFS 身份仅 2768 文件共 2.761 GiB（含展开文本），不能用顶层逻辑字节总和当实际体积或 GPU 传输量。
+- 已有：draw/dispatch 当时的绑定和大部分管线状态、shader 字节码、可选 CB／间接参数快照、选定 draw 前后 RTV/DSV 快照；普通 IB/VB、SRV/UAV、贴图内容是晚读。VB/IB 的 draw-time 拷贝当前只留下 CRC，不能用它还原字节；骨骼晚读的三采样保障静态模型，不保证指定帧姿态。live 是聚合摘要，不是完整资源流。
+- 服务层缺口：底层可按资源 ID 读任意 buffer，但 `efmi_read_buffer` 只接受 IB/VB/CB，未开放 `vs-t0`／`ps-tN`／`cs-tN`／`uN` 缓冲；原始完整字段没有通用结构化工具入口；模型归档有角色和贴图筛选，不是全帧归档，也没有完整 FrameAnalysis 目录导出器。`verify_against_dump` 是哈希集合检查，不能验收全字节／全事件一致。
+- 探针缺口：动态资源的调用时刻内容、Dispatch 前后 UAV、OM UAV／SO／counter、完整多视口（只存第一个值＋数量）、3D／MSAA、RT array 全 slice、完整 API 事件流／deferred draws。服务保留最近六次记录及已取回的 CB／间接参数快照字节；依赖探针的普通资源读回仅最新一次可用。完整内容连续传输的性能未知。
+- 观测层边界：探针挂系统 D3D11，XXMI 完全 skip 的上游原始调用不存在；ShaderRegex 改写后 shader 不带原 hash 映射；XXMI 内部变量／命令／分支无法从最终绑定反推。这个边界必须独立于“增加资源接口”处理。
+- 审计发现需后续修正的状态说明：CB 快照预算或读回失败时 `get_draw.contents_captured` 仅判断 snap ID，可能误报 true；真正读取会标注晚读但不解释失败原因（见 BUG-006）。归档和桥接的两处 SRV FirstElement“未采集”文字已过时，0.1.5 已记录 view；不要据此误判探针能力。README 已补覆盖表，架构文档纠正多视口表述。
+- 离线工具复核新增发现：生产 `efmi_frame_dump_summary` 正确读到 776 次调用，但只识别 18,509 资源文件；157 个带 `!S!` 标记的 DDS/JPG 文件被 `_RE_FILE` 跳过（实际资源文件 18,666，另有 log.txt）。BUG-007、`offline-dump-check.json`、`parser-unmatched-files.json` 已记录，未修实现。
+
 
 ## TangTang 的 INI 从 RabbitFX 改成槽位（2026-10-08 15:08–15:40，游戏 PID 34896，探针 0.1.5，服务 0.1.10）
 

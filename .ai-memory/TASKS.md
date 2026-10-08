@@ -6,6 +6,15 @@
 
 T-001 至 T-007 已完成。T-007 的原因是 UIPI；探针 0.1.2 / 服务 0.1.4 改为进程内按键，沙盒与实机（游戏在前台、在后台各一次）均已验证。每次改完并完成相关验证后提交并推送指定仓库（见 `AGENTS.md` / D-007）。
 
+### T-013：实时获取 FrameAnalysis 的全部数据（审计完成，功能补齐尚未实施，2026-10-08）
+
+- 用户目标：`FrameAnalysis-2026-10-07-123937` 的全部数据可实时获取。本轮请求是审查功能，已对目录、探针、服务逐项审计，公开说明见 README“实时采集与 FrameAnalysis 的覆盖差异”；证据在 `captures/audit-realtime-20261008/`。
+- 当前只有部分调用时刻内容：可选 CB、间接参数、选定绘制的 RTV/DSV；其他动态缓冲和贴图主要晚读。live 只发聚合摘要。用户目标不能标为完成。
+- 补齐顺序建议（尚未实施）：① 通用 SRV/UAV buffer 与完整结构化 capture/resource 入口；② draw/dispatch 时刻动态 IB/VB、SRV、UAV／贴图快照和完整性状态，CB 区分绑定窗口与整个常量池；③ 此 dump 所需的 API 事件、资源范围、全帧归档（相同文件夹格式的导出不是实时数据可用的前提）；④ 调用／子资源／时刻／字节逐项验收，再单独量持续采集性能。OM UAV 已在此 dump 的 4 个图形 draw 里出现，必须补；SO/counter、多视口、3D/MSAA/deferred 等未证实出现的场景另列覆盖范围。
+- XXMI 命令、变量、分支、skip 原始调用／原 shader 身份属于上游内部信息，需要另行确定只读观测来源；当前系统 D3D11 探针不能凭最终状态还原。
+- 审计伴随问题：BUG-006（CB 快照失败却标已采集）、BUG-007（dump 解析器漏掉带 `!S!` 的 157 个文件）；`model_capture.py` 与 `loyal_bridge.py` 的“SRV view/FirstElement 未采集”文字过时，后续修正时保持 LoyalTools 原生算法，不在桥接里臆改骨骼偏移。
+- 本轮无运行中的探针，只有源码和已有目录检查；未改实现、未做新实机采集，未按键。
+
 ### T-012：把 RabbitFX 形式的 mod 改成槽位形式（TangTang 已按用户要求改完并实机核对；只剩 LOD 距离没看，2026-10-08）
 
 - **TangTang 已改**（CURRENT_STATE 首节）：原 INI 备份在 mod 目录的 `tangtang.ini.rabbitfx-backup-20261008`。取槽位的办法比下面设想的更直接——读 RabbitFX 改写后的着色器里的回退槽位，不需要关 mod、不需要提取。
