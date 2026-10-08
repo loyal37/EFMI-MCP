@@ -164,7 +164,7 @@ def compare_sets(cap: Capture, dump: FrameDump) -> ParityResult:
                            f"{absent} meshes of the dump not drawn in the captured frame")
 
     theirs_shaders = {h for d in dump.draws.values() for h in d.shaders.values()}
-    theirs_tex = {s.hash for d in dump.draws.values() for name, s in d.slots.items() if "-t" in name}
+    theirs_tex = {s.hash for d in dump.draws.values() for name, s in d.slots.items() if "-t" in name and s.hash}
     common_sh = theirs_shaders & ours_shaders
     common_tex = theirs_tex & ours_tex
     res.messages.append(f"shaders: {len(common_sh)} of the dump's {len(theirs_shaders)} hashes also seen by the probe")

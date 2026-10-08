@@ -26,20 +26,29 @@ DRAW_NAMES = {v: k for k, v in DRAW_CALLS.items()}
 _RE_CALL = re.compile(r"^(\d{6}) (\w+)\((.*)\)(?: hash=([0-9a-f]+))?\s*$")
 _RE_DUMP = re.compile(r"^(\d{6}) 3DMigoto Dumping (Buffer|Texture2D|Texture1D|Texture3D) (.*?) -> (.*)$")
 # 000012-ib=5ede2273(9a09f1f0)-vs=b960839f9608d37c-ps=7b067f2b06883a0c.buf
+# 000530-ps-t2=!S!=29c40628-vs=40426f24c41b60b9-ps=a9bbcbd75f739b89.dds   hash XXMI marked as no longer the contents'
+# 000741-o0-vs=65ae3450d9b1fba5-ps=be28620e0873f773.jpg                   a resource XXMI has no hash for
 _RE_FILE = re.compile(
-    r"^(?P<draw>\d{6})-(?P<slot>[a-z]+(?:-[a-z]+)?\d*)=(?P<hash>[0-9a-f]{8})"
-    r"(?:\((?P<full>[0-9a-f]{8})\))?(?P<shaders>(?:-[a-z]{2}=[0-9a-f]{16})*)\.(?P<ext>\w+)$"
+    r"^(?P<draw>\d{6})-(?P<slot>[a-z]+(?:-[a-z]+)?(?:\d+|D)?)"
+    r"(?:=!(?P<marks>[A-Z]+)!)?"
+    r"(?:=(?P<hash>[0-9a-f]{8})(?:\((?P<full>[0-9a-f]{8})\))?)?"
+    r"(?P<shaders>(?:-[a-z]{2}=[0-9a-f]{16})*)\.(?P<ext>\w+)$"
 )
 _RE_SHADER = re.compile(r"-([a-z]{2})=([0-9a-f]{16})")
+
+# The letters XXMI puts between "!" when it has seen the resource written to after its hash was taken
+# (FrameAnalysisFilename in XXMI-Libs: hash_contaminated).
+MARKS = {"M": "Map", "U": "UpdateSubresource", "C": "CopyResource", "S": "CopySubresourceRegion"}
 
 
 @dataclass
 class DumpSlot:
     slot: str                   # "ib", "vb0", "ps-t3", "vs-cb1", "o0", "oD", "u0" ...
-    hash: str                   # the hash XXMI put first in the file name
+    hash: str | None            # the hash XXMI put first in the file name; None when it wrote none
     full_hash: str | None = None  # resource hash in parentheses (region-hashed buffers only)
     files: list[str] = field(default_factory=list)
     deduped: dict[str, str] = field(default_factory=dict)  # extension -> deduped file name
+    marks: str | None = None    # "S", "MU", ...: see MARKS; the hash then names what the resource held at creation
 
 
 @dataclass
@@ -91,6 +100,12 @@ def parse_frame_dump(path: str | os.PathLike, keep_log: bool = False) -> FrameDu
             d = draws[n] = DumpDraw(n)
         return d
 
+    def slot_of(n: int, fm) -> DumpSlot:
+        slot = draw(n).slots.get(fm["slot"])
+        if slot is None:
+            slot = draw(n).slots[fm["slot"]] = DumpSlot(fm["slot"], fm["hash"], fm["full"], marks=fm["marks"])
+        return slot
+
     analyse_options = None
     log_path = root / "log.txt"
     has_log = log_path.exists()
@@ -108,8 +123,7 @@ def parse_frame_dump(path: str | os.PathLike, keep_log: bool = False) -> FrameDu
                     dst = os.path.basename(m.group(4))
                     fm = _RE_FILE.match(src)
                     if fm:
-                        slot = draw(n).slots.setdefault(fm["slot"], DumpSlot(fm["slot"], fm["hash"], fm["full"]))
-                        slot.deduped[fm["ext"]] = dst
+                        slot_of(n, fm).deduped[fm["ext"]] = dst
                     continue
                 m = _RE_CALL.match(line)
                 if m:
@@ -131,8 +145,7 @@ def parse_frame_dump(path: str | os.PathLike, keep_log: bool = False) -> FrameDu
             continue
         file_count += 1
         d = draw(int(fm["draw"]))
-        slot = d.slots.setdefault(fm["slot"], DumpSlot(fm["slot"], fm["hash"], fm["full"]))
-        slot.files.append(name)
+        slot_of(int(fm["draw"]), fm).files.append(name)
         for stage, h in _RE_SHADER.findall(fm["shaders"]):
             d.shaders.setdefault(stage, h)
 

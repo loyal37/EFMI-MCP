@@ -1,6 +1,15 @@
 # EFMI MCP — 当前开发状态
 
-> 最后更新：2026-10-08 晚。服务 0.1.10，探针 0.1.5。本轮审计实时采集与用户给的 FrameAnalysis 目录的覆盖差异，未修改实现；完整替代 dump 的目标尚未实现，见 T-013。TangTang 槽位转换仍只剩 LOD 距离没看。此前各节按时间倒序保留。
+> 最后更新：2026-10-08 深夜。服务 0.1.11，探针 0.1.5（0.1.6 在做）。T-013 开始补齐：第一步（只动服务）已完成并通过沙盒，见首节；调用当时的内容快照（探针 0.1.6）正在实现。TangTang 槽位转换仍只剩 LOD 距离没看。此前各节按时间倒序保留。
+
+## T-013 第一步：通用缓冲槽位与两处修正（2026-10-08 深夜，服务 0.1.11，游戏未运行）
+
+- 用户看了审计后要求“完善一下，目标是能做到基本能获取帧分析文件夹中的所有类型的数据”。分两步做：这一步只动服务（不需要重启游戏），下一步是探针 0.1.6 的调用时刻内容快照。
+- `efmi_read_buffer`：新模块 `slot_data.py` 把“一个槽位露出缓冲的哪一段”和“字节从哪来”分开。槽位除 `ib`／`vbN`／`*-cbN` 外新增 `vs-tN`／`ps-tN`／`cs-tN`（绑成 SRV 的缓冲，按视图的 FirstElement／NumElements 和元素大小：结构化缓冲取 stride，raw 视图 4 字节，其余按视图格式）和 `uN`（UAV）。`whole=true` 读整块。结果统一带 `source`（文字）和 `exact`（布尔）：来源依次是抓取自带的内容（0.1.6 才有）、`cb_data` 的窗口快照、晚读（探针报告该范围自抓取后是否被写过）。间接绘制的 `ib` 按间接参数里的数量取范围。
+- BUG-006 修正：`contents_captured` 以快照字节是否真的在抓取里为准；请求了却没有时另给 `contents_missing`。读取时也会说明“请求了 cb_data 但探针没能留下”。
+- BUG-007 修正：`_RE_FILE` 接受 `=!MUCS!=` 标记（XXMI 的 hash_contaminated：Map／UpdateSubresource／CopyResource／CopySubresourceRegion）、没有哈希的名字和 `oD`；标记保存在 `DumpSlot.marks`。用户那份目录：18,666 个资源文件全部识别，121 个槽位带 `S`，36 个槽位无哈希；`efmi_frame_dump_summary` 会报这两个数。
+- 过时文字：`model_capture.py` 的 `srv_view` 改为记录抓取里 `vs-t0` 视图的实际 FirstElement（`skeleton_views`），`loyal_bridge.py` 的 `srv_view_scope` 改为只陈述桥接的做法；没有改 LoyalTools 的算法或桥接的偏移计算。
+- 验证（沙盒，探针 0.1.5）：`mcp_test.py` 74 项通过（新增 6 项：SRV 缓冲按视图读、整块读、贴图槽位报错、间接绘制的索引、整块常量缓冲、计算着色器的 UAV）；离线单元测试 215 项通过。**没有实机验证**：游戏没开。
 
 ## 实时数据覆盖审计（2026-10-08 晚，T-013）
 

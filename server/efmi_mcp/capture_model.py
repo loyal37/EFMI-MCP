@@ -76,6 +76,13 @@ class Capture:
             return None
         return self.blob[blob_off:blob_off + size]
 
+    def snap(self, idx: int) -> dict | None:
+        """A window copied into the capture: where it lies in its buffer, and its bytes (None: not delivered)."""
+        if not (0 <= idx < len(self.snaps)):
+            return None
+        res, off, size, _blob_off = self.snaps[idx][:4]
+        return {"res": res, "offset": off, "size": size, "data": self.snap_bytes(idx)}
+
     def state(self, idx: int) -> dict | None:
         """A blend, depth-stencil, rasterizer or sampler state as the probe describes it; None: none bound."""
         return self.states[idx] if 0 <= idx < len(self.states) else None

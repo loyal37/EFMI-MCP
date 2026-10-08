@@ -90,6 +90,23 @@ def select_draws(cap: Capture):
                   "rewritten_index_data": rewritten}
 
 
+def skeleton_views(pairs) -> dict:
+    """The views through which the archived draws read their skeleton pool, as the capture recorded them.
+
+    LoyalTools applies a mesh's bone offset to the whole vs-t0 buffer. That is what the game's shader does
+    as long as the view starts at the buffer's first element, which this states rather than assumes.
+    """
+    views = [d["tex"]["vs-t0"].get("view") for d, _ in pairs]
+    if not all(views):
+        return {"recorded": False,
+                "note": "This capture has no view parameters (a probe older than 0.1.5); LoyalTools reads vs-t0 "
+                        "from the buffer's first element."}
+    firsts = sorted({view.get("first_element", 0) for view in views})
+    return {"recorded": True, "first_elements": firsts, "starts_at_buffer_start": firsts == [0],
+            "note": "LoyalTools reads vs-t0 from the buffer's first element"
+                    + ("." if firsts == [0] else "; these views start elsewhere, which would shift every bone offset.")}
+
+
 def addressing(cap: Capture):
     result = {}
     for d, cfg in candidates(cap):
@@ -246,7 +263,7 @@ def _archive_once(client, output: Path, deferred_skeleton: bool, on_stage, attem
     report = {"buffers": {}, "textures": {}, "errors": [], "attempt": attempt,
               "timing": "CB: draw snapshot; IB/VB/SRV/textures: later readback",
               "validation_scope": "deferred_skeleton_static" if deferred_skeleton else "unchanged_resources",
-              "srv_view": "The probe does not record SRV view offsets; LoyalTools assumes full-buffer vs-t0"}
+              "srv_view": None}
     started = last_stage = time.perf_counter()
     durations = report["durations_ms"] = {}
 
@@ -282,6 +299,7 @@ def _archive_once(client, output: Path, deferred_skeleton: bool, on_stage, attem
             raise ValueError("No indexed character candidates with instance CB and structured vs-t0"
                              + (f" ({scenery} draws belong to objects without a mesh skinned on the GPU)" if scenery else ""))
         report["frame"] = cap.frame
+        report["srv_view"] = skeleton_views(pairs)
         report["eligible_draws"] = [d["index"] for d, _ in pairs]
         report["instances"] = [{"draw": d["index"], **cfg} for d, cfg in pairs]
         skeletons = {cfg["skeleton_resource"] for _, cfg in pairs}

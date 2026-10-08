@@ -403,6 +403,38 @@ def main() -> int:
                   and d["outputs"]["o0"].endswith("| view: R8G8B8A8_UNORM tex2d mip 1")
                   and "| view:" not in d["textures"]["ps-t0"], f"{d['textures']} {d['outputs']}")
 
+            print("== buffers behind resource views")
+            xd = int(x_line.split()[0][1:])
+            text, err, _ = mcp.call("efmi_read_buffer", draw=xd, slot="vs-t9", count=2)
+            b = json.loads(text) if not err else {}
+            check("read_buffer: a buffer bound as a shader resource, by the elements of its view",
+                  b.get("element_bytes") == 16 and b.get("elements") == 24 and b.get("first_element_of_buffer") == 8
+                  and list(b.get("values", {})) == ["e0", "e1"] and b.get("exact") is True
+                  and b.get("view") == "UNKNOWN buffer elements 8..+24", text)
+            text, err, _ = mcp.call("efmi_read_buffer", draw=xd, slot="vs-t9", whole=True, save=True, count=1)
+            b = json.loads(text) if not err else {}
+            check("read_buffer: the whole buffer behind a view",
+                  b.get("elements") == 64 and b.get("first_element_of_buffer") == 0
+                  and Path(b.get("saved", "missing")).stat().st_size == 1024, text)
+            text, err, _ = mcp.call("efmi_read_buffer", draw=xd, slot="ps-t8")
+            check("read_buffer: a texture slot names the tool to use", err and "efmi_read_texture" in text, text)
+            text, err, _ = mcp.call("efmi_read_buffer", draw=xd, slot="ib", count=1)
+            b = json.loads(text) if not err else {}
+            check("read_buffer: the indices of an indirect draw, by the count it read from its buffer",
+                  b.get("index_count") == 294 and len(b.get("indices", [])) == 3, text)
+            text, err, _ = mcp.call("efmi_read_buffer", draw=xd, slot="vs-cb0", whole=True, count=1)
+            b = json.loads(text) if not err else {}
+            check("read_buffer: a whole constant buffer, with the window that was bound",
+                  b.get("registers") == 4096 and b.get("bound_window") == {"first_constant": 160, "num_constants": 16}, text)
+
+        compute = next((l for l in lines if l.split()[1] == "Dispatch"), "")
+        text, err, _ = mcp.call("efmi_read_buffer", draw=int(compute.split()[0][1:]) if compute else 0, slot="u0", count=3)
+        b = json.loads(text) if not err else {}
+        check("read_buffer: what a compute shader wrote through an unordered access view",
+              bool(compute) and b.get("kind") == "unordered access view" and b.get("element_bytes") == 4
+              and b.get("elements") == 441 * 8 and [round(b["values"][k][0], 4) for k in ("e0", "e1", "e2")] == [0.35, -0.85, 0.5]
+              and "source" in b, text)
+
         mesh3 = next((l for l in lines if l.split()[1] == "DrawIndexed" and "ic=294" in l), "")
         if mesh3:
             ib3 = mesh3.split("ib=")[1].split()[0]

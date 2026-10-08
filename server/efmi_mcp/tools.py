@@ -8,10 +8,10 @@ import time
 from collections import Counter, OrderedDict
 from pathlib import Path
 
-from . import __version__, decode, model_tools, pipeline
+from . import __version__, decode, model_tools, pipeline, slot_data
 from .capture_model import Capture
 from .draw_outputs import capture_draw_outputs
-from .fa_dump import DRAW_NAMES, find_frame_dumps, parse_frame_dump
+from .fa_dump import DRAW_NAMES, MARKS, find_frame_dumps, parse_frame_dump
 from .hashes import crc32c, hex32, index_region
 from . import blender_runner, loyal_bridge
 from .mcp_stdio import Image, Server, ToolError
@@ -554,9 +554,16 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                                    f"offset={e['offset']}{' per-instance' if e['per_instance'] else ''}" for e in lay]
         out["shaders"] = d["shaders"]
         if "cb" in d:
-            out["constant_buffers"] = {k: {"hash": v["hash"], "first_constant": v["first_constant"], "num_constants": v["num_constants"],
-                                            "contents_captured": v["snap"] >= 0, "resource": _res_desc(cap.resource(v["res"]))}
-                                       for k, v in d["cb"].items()}
+            out["constant_buffers"] = {}
+            for k, v in d["cb"].items():
+                entry = {"hash": v["hash"], "first_constant": v["first_constant"], "num_constants": v["num_constants"],
+                         "contents_captured": cap.snap_bytes(v["snap"]) is not None or v.get("content") is not None,
+                         "resource": _res_desc(cap.resource(v["res"]))}
+                if v["snap"] >= 0 and cap.snap_bytes(v["snap"]) is None and v.get("content") is None:
+                    # Asked for (cb_data) and not delivered: the probe's copy space was full or the read-back failed.
+                    entry["contents_missing"] = ("the probe could not keep this window"
+                                                 + (" (its copy space was full)" if cap.stats.get("arena_full") else ""))
+                out["constant_buffers"][k] = entry
         def view_note(v):
             # Only where the view shows a part of its resource, or reads it in another format.
             view = v.get("view")
@@ -643,25 +650,29 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         return "\n".join(lines)
 
     # ================================================================ buffers
-    def _read(cap: Capture, res: int, off: int, size: int) -> tuple[dict, bytes]:
-        return s.call(lambda c: c.read_buffer(cap.frame, res, off, size))
+    def _slot(cap: Capture, d: dict, slot: str) -> dict:
+        try:
+            return slot_data.buffer_binding(cap, d, slot)
+        except slot_data.SlotError as exc:
+            raise ToolError(str(exc))
 
     def _index_data(cap: Capture, d: dict) -> tuple[list[int], dict]:
-        ib = d.get("ib")
-        if not ib:
-            raise ToolError("this draw has no index buffer bound")
-        a = d["args"]
-        off, size = index_region(ib["format"], ib["offset"], a.get("first_index", 0), a.get("index_count", 0))
-        if not size:
+        b = _slot(cap, d, "ib")
+        if not b["exact_range"]:
+            raise ToolError("the index count of this indirect draw is not known (its arguments were not recorded)")
+        if not b["size"]:
             raise ToolError("this draw is not indexed")
-        meta, data = _read(cap, ib["res"], off, size)
-        meta["hash_now"] = hex32(crc32c(data))
-        meta["hash_at_capture"] = ib["hash"]
+        data, info = slot_data.read_slot(s, cap, b)
+        ib = d["ib"]
+        meta = {**info, "hash_now": hex32(crc32c(data)), "hash_at_capture": ib["hash"]}
+        # The region hash of the capture is the stronger witness where there is one.
+        meta["unchanged"] = meta["hash_now"] == ib["hash"] if ib["hash"] else info["exact"]
         return decode.decode_indices(data, ib["format"]), meta
 
     def _vertex_range(cap: Capture, d: dict, slot: int, per_instance: bool) -> tuple[int, int]:
         """(first element, count) of the vertices (or instances) this draw reads from a slot."""
-        a = d["args"]
+        a = dict(d["args"])
+        a.update((d.get("indirect") or {}).get("args") or {})
         if per_instance:
             return a.get("first_instance", 0), max(a.get("instance_count", 1), 1)
         if a.get("index_count"):
@@ -670,47 +681,71 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             return min(idx) + base, max(idx) - min(idx) + 1
         return a.get("first_vertex", 0), a.get("vertex_count", 0)
 
+    def _words(chunk: bytes, view: str):
+        """One element or register as numbers; bytes that do not fill a 32-bit word are shown in hex."""
+        if view == "hex" or len(chunk) < 4:
+            return chunk.hex()
+        n = len(chunk) // 4
+        values = list(struct.unpack_from(f"<{n}{'I' if view == 'uint' else 'f'}", chunk))
+        if view != "uint":
+            values = [round(v, 6) for v in values]
+        return values + [chunk[n * 4:].hex()] if len(chunk) % 4 else values
+
     @srv.tool("efmi_read_buffer",
-              "Reads the data a draw uses from one of its buffers and decodes it. slot: 'ib' (indices), 'vb0'.. (vertices, decoded "
-              "with the input layout), or a constant buffer such as 'vs-cb0' / 'ps-cb1' (rows of four floats). `first`/`count` page "
-              "through the decoded elements. Index and vertex data are read at the time of the call and checked against the hash "
-              "from the capture; constant buffers come from the capture itself when it was taken with cb_data=true.",
+              "Reads the data a draw or dispatch uses from one of its buffers and decodes it. slot: 'ib' (indices), 'vb0'.. "
+              "(vertices, decoded with the input layout), a constant buffer such as 'vs-cb0' / 'ps-cb1' (rows of four "
+              "floats), a buffer bound as a shader resource such as 'vs-t0' (a bone or instance pool: one row per "
+              "element of the view) or an unordered access view 'u0'.. (what a compute shader or a draw writes). "
+              "`first`/`count` page through the decoded elements. By default the part the binding exposes is read: the "
+              "indices and vertices the draw uses, the bound window of a constant buffer, the elements of a view; "
+              "whole=true reads the whole buffer (indices and vertices are then not decoded: use save). `source` and "
+              "`exact` say where the bytes come from: the capture's own contents (a capture taken with contents, or a "
+              "constant buffer window with cb_data=true) are those of the call; otherwise the buffer is read now and "
+              "`exact` is true only when nothing wrote to those bytes since the capture.",
               {**CAPTURE_PROP, "draw": {"type": "integer"}, "slot": {"type": "string"},
                "first": {"type": "integer", "default": 0}, "count": {"type": "integer", "default": 16},
                "view": {"type": "string", "enum": ["float", "uint", "hex"], "default": "float",
-                        "description": "how to show constant buffer registers"},
+                        "description": "how to show constant buffer registers and the elements of resource views"},
+               "whole": {"type": "boolean", "default": False,
+                         "description": "the whole buffer instead of the part the binding exposes"},
                "save": {"type": "boolean", "default": False, "description": "also write the raw bytes to a .buf file"}},
               ["draw", "slot"])
-    def efmi_read_buffer(draw: int, slot: str, capture="latest", first: int = 0, count: int = 16, view: str = "float", save: bool = False):
+    def efmi_read_buffer(draw: int, slot: str, capture="latest", first: int = 0, count: int = 16, view: str = "float",
+                         save: bool = False, whole: bool = False):
         cap = s.capture(capture)
         if not 0 <= draw < len(cap):
             raise ToolError(f"draw must be 0..{len(cap) - 1}")
         d = cap.draw(draw)
-        slot = slot.strip().lower()
+        b = _slot(cap, d, slot)
+        slot, role = b["slot"], b["role"]
+        first = max(0, int(first))
         count = max(1, min(int(count), 256))
         out: dict = {"capture": cap.frame, "draw": draw, "slot": slot}
         raw = b""
 
-        if slot == "ib":
+        if whole and role in ("ib", "vb"):
+            raw, info = slot_data.read_slot(s, cap, b, whole=True)
+            out.update(bytes=len(raw), crc32c=hex32(crc32c(raw)), source=info["note"], exact=info["exact"],
+                       bind_offset=b["binding"]["offset"],
+                       note="the whole buffer, not decoded: the part this draw uses starts at bind_offset")
+        elif role == "ib":
             idx, meta = _index_data(cap, d)
             out.update(format=decode.format_name(d["ib"]["format"]), index_count=len(idx), min=min(idx), max=max(idx),
-                       hash=meta["hash_at_capture"], unchanged_since_capture=meta["hash_now"] == meta["hash_at_capture"],
-                       first=first, indices=idx[first:first + count * 3])
+                       hash=meta["hash_at_capture"], unchanged_since_capture=meta["unchanged"], source=meta["note"],
+                       exact=meta["exact"] or meta["unchanged"], first=first, indices=idx[first:first + count * 3])
             raw = struct.pack(f"<{len(idx)}{'I' if d['ib']['format'] == 42 else 'H'}", *idx)
-        elif slot.startswith("vb"):
-            n = int(slot[2:])
-            vb = d.get("vb", {}).get(n)
-            if not vb:
-                raise ToolError(f"nothing bound to {slot}; bound: {['vb%d' % k for k in d.get('vb', {})]}")
+        elif role == "vb":
+            vb, n = b["binding"], int(slot[2:])
             lay = cap.layout(d.get("layout", -1)) or []
             elems = [e for e in lay if e["slot"] == n]
             per_instance = bool(elems) and all(e["per_instance"] for e in elems)
             start, total = _vertex_range(cap, d, n, per_instance)
-            meta, raw = _read(cap, vb["res"], vb["offset"] + vb["stride"] * start, vb["stride"] * total)
+            raw, info = slot_data.read_slot(s, cap, b, vb["offset"] + vb["stride"] * start, vb["stride"] * total)
             out.update(stride=vb["stride"], first_element=start, element_count=total,
                        kind="per-instance data" if per_instance else "vertices",
-                       region_hash_at_capture=vb["hash"], read_frame=meta.get("read_frame"),
-                       unchanged_since_capture=meta.get("unchanged_since_capture"))
+                       region_hash_at_capture=vb["hash"], read_frame=info.get("read_frame"),
+                       unchanged_since_capture=True if info["source"] == "contents" else info.get("unchanged_since_capture"),
+                       source=info["note"], exact=info["exact"])
             if elems:
                 out["layout"] = [f"{e['semantic']}{e['index'] or ''}:{decode.format_name(e['format'])}@{e['offset']}" for e in elems]
                 out["first"] = first
@@ -718,34 +753,30 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             else:
                 out["note"] = "no input layout element uses this slot; showing raw bytes"
                 out["hex"] = [raw[i:i + vb["stride"]].hex() for i in range(first * vb["stride"], min(len(raw), (first + count) * vb["stride"]), vb["stride"])]
-        elif "-cb" in slot:
-            cb = d.get("cb", {}).get(slot)
-            if not cb:
-                raise ToolError(f"nothing bound to {slot}; bound: {list(d.get('cb', {}))}")
-            raw = cap.snap_bytes(cb["snap"]) if cb["snap"] >= 0 else None
-            if raw is not None:
-                out["source"] = "contents as bound for this draw (from the capture)"
-            else:
-                meta, raw = _read(cap, cb["res"], cb["first_constant"] * 16, cb["num_constants"] * 16)
-                out["source"] = (f"read at frame {meta.get('read_frame')}, not at the draw; "
-                                 "capture with cb_data=true for the exact contents")
+        elif role == "cb":
+            cb = b["binding"]
+            raw, info = slot_data.read_slot(s, cap, b, whole=whole)
             rows = len(raw) // 16
-            out.update(hash=cb["hash"], first_constant=cb["first_constant"], registers=rows, first=first)
-            regs = {}
-            for i in range(first, min(rows, first + count)):
-                chunk = raw[i * 16:i * 16 + 16]
-                if view == "hex":
-                    regs[f"c{i}"] = chunk.hex()
-                elif view == "uint":
-                    regs[f"c{i}"] = list(struct.unpack("<4I", chunk))
-                else:
-                    regs[f"c{i}"] = [round(v, 6) for v in struct.unpack("<4f", chunk)]
-            out["values"] = regs
+            out.update(hash=cb["hash"], first_constant=0 if whole else cb["first_constant"], registers=rows, first=first,
+                       source=info["note"], exact=info["exact"])
+            if whole:
+                out["bound_window"] = {"first_constant": cb["first_constant"], "num_constants": cb["num_constants"]}
+            out["values"] = {f"c{i}": _words(raw[i * 16:i * 16 + 16], view) for i in range(first, min(rows, first + count))}
         else:
-            raise ToolError("slot must be 'ib', 'vbN' or a constant buffer like 'vs-cb0'")
+            raw, info = slot_data.read_slot(s, cap, b, whole=whole)
+            element = b["element"]
+            total = len(raw) // element
+            out.update(kind="unordered access view" if role == "uav" else "shader resource view",
+                       hash=b["binding"].get("hash"), resource=_res_desc(b["resource"]), element_bytes=element,
+                       first_element_of_buffer=info["offset"] // element, elements=total, first=first,
+                       source=info["note"], exact=info["exact"])
+            if b.get("view"):
+                out["view"] = pipeline.view_text(b["view"])
+            out["values"] = {f"e{i}": _words(raw[i * element:(i + 1) * element], view)
+                             for i in range(first, min(total, first + count))}
 
         if save and raw:
-            path = s.frame_dir(cap) / f"draw{draw}-{slot}.buf"
+            path = s.frame_dir(cap) / f"draw{draw}-{slot}{'-whole' if whole else ''}.buf"
             path.write_bytes(raw)
             out["saved"] = str(path)
         return out
@@ -776,7 +807,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             elems = [e for e in lay if e["slot"] == n and not e["per_instance"]]
             if not elems or not vb["stride"]:
                 continue
-            _m, raw = _read(cap, vb["res"], vb["offset"] + vb["stride"] * (lo + base), vb["stride"] * (hi - lo + 1))
+            raw, _info = slot_data.read_slot(s, cap, _slot(cap, d, f"vb{n}"), vb["offset"] + vb["stride"] * (lo + base),
+                                             vb["stride"] * (hi - lo + 1))
             (folder / f"vb{n}.buf").write_bytes(raw)
             slots_info[f"vb{n}"] = {"stride": vb["stride"], "hash": vb["hash"], "resource_hash": vb["resource_hash"],
                                     "elements": [{"semantic": e["semantic"], "index": e["index"],
@@ -789,7 +821,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         nrm = streams.get("NORMAL")
         uv = streams.get("TEXCOORD")
         stats = {"folder": str(folder), "indices": len(idx), "vertices": hi - lo + 1, "topology": d.get("topology"),
-                 "ib_hash": ib["hash"], "index_data_unchanged_since_capture": meta["hash_now"] == meta["hash_at_capture"]}
+                 "ib_hash": ib["hash"], "index_data_unchanged_since_capture": meta["unchanged"]}
         if pos and all(p is not None for p in pos):
             with open(folder / "mesh.obj", "w", encoding="ascii") as f:
                 f.write(f"# capture {cap.frame} draw {draw} ib={ib['hash']}\n")
@@ -1099,10 +1131,19 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         dump = parse_frame_dump(p)
         nums = [n for n in dump.draw_numbers() if dump.draws[n].call]
         lines = [f"{p}: analyse_options {dump.analyse_options}, {len(nums)} draws, {dump.file_count} dumped files"]
+        slots = [slot for d in dump.draws.values() for slot in d.slots.values()]
+        marked = Counter(slot.marks for slot in slots if slot.marks)
+        if marked:
+            # XXMI's own note that a resource was written to after its hash was taken.
+            lines.append("  resources XXMI marked as changed since their hash was taken: "
+                         + ", ".join(f"{n} by {'+'.join(MARKS.get(c, c) for c in marks)}" for marks, n in sorted(marked.items())))
+        nameless = sum(1 for slot in slots if slot.hash is None)
+        if nameless:
+            lines.append(f"  slots XXMI dumped without a hash: {nameless}")
         for n in nums[:max(1, min(int(limit), 200))]:
             d = dump.draws[n]
             ib = d.slots.get("ib")
-            ibs = f" ib={ib.hash}" + (f"({ib.full_hash})" if ib and ib.full_hash else "") if ib else ""
+            ibs = f" ib={ib.hash or '-'}" + (f"({ib.full_hash})" if ib and ib.full_hash else "") if ib else ""
             sh = " ".join(f"{k}={v}" for k, v in d.shaders.items())
             ic = d.args.get("IndexCount", d.args.get("IndexCountPerInstance"))
             lines.append(f"  {n:06d} {d.call}{ibs}{' ic=%d' % ic if ic else ''} {sh}" + s.mod_note(ib.hash if ib else None))

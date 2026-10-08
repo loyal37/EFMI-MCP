@@ -693,7 +693,8 @@ def export_merged_workspace(archive_dir: str | Path, workspace_dir: str | Path,
         "missing_texture_resources": missing_textures,
         "timing": "CBs are draw-time snapshots; IB/VB/SRV and DDS are later readbacks. See archive readback.json.",
         "binding_scope": "Capture stores complete bindings, not the original explicit Set* command history.",
-        "srv_view_scope": "Probe stores underlying SRV resources; FirstElement is not captured. Bone offsets use the full vs-t0 buffer.",
+        "srv_view_scope": "Bone offsets are applied to the whole vs-t0 buffer, from its first element. What the capture "
+                          "recorded about the views is in readback_metadata.srv_view.",
         "readback_metadata": readback,
         "validation": validation,
     }
