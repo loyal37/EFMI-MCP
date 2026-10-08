@@ -77,7 +77,7 @@ static void status_json(JsonW& w)
 	w.ku("protocol", PROBE_PROTOCOL);
 	// Optional abilities, so the server need not compare version strings.
 	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
-	w.str("region_hash_per_object"); w.end_arr();
+	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("rt_snapshots"); w.end_arr();
 	bool elevated = false;
 	uint32_t integrity = 0;
 	reload_process_info(&elevated, &integrity);
@@ -167,6 +167,47 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		c.hold = rq.bool_or("hold", true);
 		c.max_draws = (uint32_t)rq.num_or("max_draws", 0);
 		c.timeout_ms = timeout;
+		if (const JVal* rt = rq.get("rt")) {
+			// Copies of the render target around the draws that match; see DrawMatch.
+			if (rt->type != JVal::Obj)
+				return send_error(pipe, id, "rt must be an object");
+			double n = rt->num_or("max", 8);
+			c.rt_max = n < 1 ? 1 : n > 64 ? 64 : (uint32_t)n;
+			n = rt->num_or("budget_mb", 512);
+			c.rt_budget_mb = n < 16 ? 16 : n > 4096 ? 4096 : (uint32_t)n;
+			c.rt_before = rt->bool_or("before", true);
+			c.rt_all = rt->bool_or("all", false);
+			c.rt_depth = rt->bool_or("depth", false);
+			const JVal* box = rt->get("box");
+			if (box && box->type == JVal::Arr && box->arr.size() == 4) {
+				for (int i = 0; i < 4; i++)
+					c.rt_box[i] = box->arr[i].type == JVal::Num && box->arr[i].num > 0 ? (uint32_t)box->arr[i].num : 0;
+				c.rt_has_box = c.rt_box[2] > c.rt_box[0] && c.rt_box[3] > c.rt_box[1];
+			}
+			const JVal* list = rt->get("match");
+			if (list && list->type == JVal::Arr) {
+				for (const JVal& m : list->arr) {
+					if (m.type != JVal::Obj || c.rt_match.size() >= 256)
+						continue;
+					DrawMatch dm;
+					dm.draw = (int32_t)m.num_or("draw", -1);
+					dm.ib = (void*)(uintptr_t)_strtoui64(m.str_or("ib", "0").c_str(), nullptr, 16);
+					dm.ib_serial = (uint64_t)m.num_or("sn", 0);
+					dm.index_count = (uint32_t)m.num_or("ic", 0);
+					dm.first_index = (int64_t)m.num_or("fi", -1);
+					dm.vs = _strtoui64(m.str_or("vs", "0").c_str(), nullptr, 16);
+					dm.ps = _strtoui64(m.str_or("ps", "0").c_str(), nullptr, 16);
+					dm.shader = _strtoui64(m.str_or("sh", "0").c_str(), nullptr, 16);
+					std::string origin = m.str_or("o", "");
+					dm.origin = origin == "game" ? ORIGIN_GAME : origin == "xxmi" ? ORIGIN_XXMI : -1;
+					if (dm.any())
+						c.rt_match.push_back(dm);
+				}
+			}
+			if (c.rt_match.empty())
+				return send_error(pipe, id, "rt.match selects no draw: give draw, ib, ic, fi, vs, ps, sh or o");
+			c.detail = 1;       // the copies belong to a full record
+		}
 		std::string err;
 		std::shared_ptr<Capture> cap = cap_request(c, &err);
 		if (!cap)
@@ -189,12 +230,14 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		return send_msg(pipe, w.s, payload.data(), payload.size());
 	}
 
-	if (cmd == "read_buffer" || cmd == "read_texture") {
+	if (cmd == "read_buffer" || cmd == "read_texture" || cmd == "read_rt") {
 		ReadResult r;
 		uint32_t frame = (uint32_t)rq.num_or("capture", 0);
 		uint32_t res = (uint32_t)rq.num_or("res", 0);
 		if (cmd == "read_buffer")
 			cap_read_buffer(frame, res, (uint64_t)rq.num_or("offset", 0), (uint64_t)rq.num_or("size", 0), timeout, &r);
+		else if (cmd == "read_rt")
+			cap_read_rt(frame, (uint32_t)rq.num_or("snap", 0), timeout, &r);
 		else
 			cap_read_texture(frame, res, (uint32_t)rq.num_or("mip", 0), (uint32_t)rq.num_or("slice", 0), timeout, &r);
 		if (!r.ok)
@@ -255,6 +298,16 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		w.ku("frame", (uint32_t)g_frame_no);
 		w.end_obj();
 		return send_msg(pipe, w.s, frames.data(), frames.size());
+	}
+
+	if (cmd == "release_rt") {
+		cap_release_rt((uint32_t)rq.num_or("capture", 0), timeout);
+		JsonW w;
+		w.begin_obj();
+		w.kd("id", id);
+		w.kb("ok", true);
+		w.end_obj();
+		return send_msg(pipe, w.s, nullptr, 0);
 	}
 
 	if (cmd == "release") {

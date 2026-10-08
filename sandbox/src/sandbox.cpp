@@ -199,6 +199,8 @@ static bool g_rewrite_mesh1 = false;        // --rewrite-mesh1: re-upload mesh 1
 static int g_recreate_mesh3 = 0;            // --recreate-mesh3 N: every N frames destroy mesh 3's buffers and
                                             // create new ones of the same sizes holding other bytes
 static int g_repeat = 1;                    // --repeat: issue the mesh draws this many times per frame
+static bool g_state_pass = false;           // --state-pass: one more draw, indirect, with all fixed-function
+                                            // state set and views that show a part of their resource
 static int g_vsync = 1;                     // --novsync sets this to 0
 static unsigned g_skip = 0;                 // --skip bit mask, for bisecting a scene
 static uint32_t g_lcg = 0x12345678;
@@ -236,7 +238,17 @@ struct Scene {
 	ID3D11RenderTargetView* back_rtv = nullptr;
 	ID3D11DepthStencilState* dss = nullptr;
 	ID3D11RasterizerState* rs = nullptr;
+
+	// --state-pass
+	ID3D11BlendState* x_blend = nullptr;
+	ID3D11DepthStencilState* x_dss = nullptr;
+	ID3D11RasterizerState* x_rs = nullptr;
+	ID3D11SamplerState* x_cmp = nullptr, *x_aniso = nullptr;
+	ID3D11ShaderResourceView* x_tex_part = nullptr, *x_buf_part = nullptr;
+	ID3D11RenderTargetView* x_rtv_mip1 = nullptr;
+	ID3D11Buffer* x_args = nullptr;
 };
+static bool build_state_pass(Scene& s);
 
 // Mesh 3 in its own immutable buffers (hash includes the data), 32-bit indices.
 // A variant other than 0 keeps every size and changes the bytes: the vertices
@@ -500,6 +512,8 @@ static bool build_scene(Scene& s)
 	rd.CullMode = D3D11_CULL_NONE;
 	rd.DepthClipEnable = FALSE;
 	hr = s.dev->CreateRasterizerState(&rd, &s.rs); CHECK(hr, "rs");
+	if (g_state_pass && !build_state_pass(s))
+		return false;
 	return true;
 }
 
@@ -516,6 +530,165 @@ static void bind_object(Scene& s, UINT object)
 		s.ctx->VSSetConstantBuffers(0, 1, &s.cb_heap);
 		s.ctx->PSSetConstantBuffers(0, 1, &s.cb_heap);
 	}
+}
+
+// ------------------------------------------------------------------ --state-pass
+// Values that differ from every default and from each other, so that a field
+// read from the wrong place shows up in the self-test.
+static bool build_state_pass(Scene& s)
+{
+	HRESULT hr;
+	D3D11_BLEND_DESC bd = {};
+	bd.RenderTarget[0].BlendEnable = TRUE;
+	bd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+	bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+	bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+	bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+	bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_BLEND_FACTOR;
+	bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_MAX;
+	bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN |
+	                                           D3D11_COLOR_WRITE_ENABLE_BLUE;
+	hr = s.dev->CreateBlendState(&bd, &s.x_blend); CHECK(hr, "x blend");
+
+	D3D11_DEPTH_STENCIL_DESC dd = {};
+	dd.DepthEnable = TRUE;
+	dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+	dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+	dd.StencilEnable = TRUE;
+	dd.StencilReadMask = 0x3f;
+	dd.StencilWriteMask = 0x0f;
+	dd.FrontFace = { D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_INCR_SAT, D3D11_STENCIL_OP_REPLACE, D3D11_COMPARISON_NOT_EQUAL };
+	dd.BackFace = { D3D11_STENCIL_OP_ZERO, D3D11_STENCIL_OP_DECR, D3D11_STENCIL_OP_INVERT, D3D11_COMPARISON_GREATER };
+	hr = s.dev->CreateDepthStencilState(&dd, &s.x_dss); CHECK(hr, "x dss");
+
+	D3D11_RASTERIZER_DESC rd = {};
+	rd.FillMode = D3D11_FILL_SOLID;
+	rd.CullMode = D3D11_CULL_FRONT;
+	rd.FrontCounterClockwise = TRUE;
+	rd.DepthBias = 3;
+	rd.DepthBiasClamp = 0.5f;
+	rd.SlopeScaledDepthBias = 1.5f;
+	rd.DepthClipEnable = TRUE;
+	rd.ScissorEnable = TRUE;
+	hr = s.dev->CreateRasterizerState(&rd, &s.x_rs); CHECK(hr, "x rs");
+
+	D3D11_SAMPLER_DESC sd = {};
+	sd.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+	sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+	sd.AddressV = D3D11_TEXTURE_ADDRESS_BORDER;
+	sd.AddressW = D3D11_TEXTURE_ADDRESS_MIRROR;
+	sd.MipLODBias = 0.5f;
+	sd.MaxAnisotropy = 4;
+	sd.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
+	sd.BorderColor[0] = 1.0f; sd.BorderColor[1] = 0.5f; sd.BorderColor[2] = 0.25f; sd.BorderColor[3] = 0.0f;
+	sd.MinLOD = 1.0f;
+	sd.MaxLOD = 7.0f;
+	hr = s.dev->CreateSamplerState(&sd, &s.x_cmp); CHECK(hr, "x cmp sampler");
+	sd = {};
+	sd.Filter = D3D11_FILTER_ANISOTROPIC;
+	sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+	sd.MaxAnisotropy = 4;
+	sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+	sd.MaxLOD = 3.0f;
+	hr = s.dev->CreateSamplerState(&sd, &s.x_aniso); CHECK(hr, "x anisotropic sampler");
+
+	{   // a view of mips 1-2 and slices 1-2 of a texture array with four mips and three slices
+		D3D11_TEXTURE2D_DESC d = {};
+		d.Width = d.Height = 32; d.MipLevels = 4; d.ArraySize = 3;
+		d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1;
+		d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		ID3D11Texture2D* t = nullptr;
+		hr = s.dev->CreateTexture2D(&d, nullptr, &t); CHECK(hr, "x tex");
+		D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+		vd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+		vd.Texture2DArray.MostDetailedMip = 1; vd.Texture2DArray.MipLevels = 2;
+		vd.Texture2DArray.FirstArraySlice = 1; vd.Texture2DArray.ArraySize = 2;
+		hr = s.dev->CreateShaderResourceView(t, &vd, &s.x_tex_part); t->Release(); CHECK(hr, "x tex srv");
+	}
+	{   // elements 8..31 of a structured buffer of 64
+		D3D11_BUFFER_DESC d = {};
+		d.ByteWidth = 64 * 16; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = 16;
+		ID3D11Buffer* b = nullptr;
+		hr = s.dev->CreateBuffer(&d, nullptr, &b); CHECK(hr, "x buf");
+		D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+		vd.Format = DXGI_FORMAT_UNKNOWN;
+		vd.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+		vd.Buffer.FirstElement = 8; vd.Buffer.NumElements = 24;
+		hr = s.dev->CreateShaderResourceView(b, &vd, &s.x_buf_part); b->Release(); CHECK(hr, "x buf srv");
+	}
+	{   // a render target that is the second mip of its texture
+		D3D11_TEXTURE2D_DESC d = {};
+		d.Width = 256; d.Height = 128; d.MipLevels = 2; d.ArraySize = 1;
+		d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1;
+		d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		ID3D11Texture2D* t = nullptr;
+		hr = s.dev->CreateTexture2D(&d, nullptr, &t); CHECK(hr, "x rt");
+		D3D11_RENDER_TARGET_VIEW_DESC vd = {};
+		vd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		vd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+		vd.Texture2D.MipSlice = 1;
+		hr = s.dev->CreateRenderTargetView(t, &vd, &s.x_rtv_mip1); t->Release(); CHECK(hr, "x rtv");
+	}
+	{   // indirect arguments at an offset: mesh 3, two instances
+		const UINT args[10] = { 0xdead, 0xbeef, 7, 7, 7, (UINT)s.m3.idx.size(), 2, 0, 0, 0 };
+		D3D11_BUFFER_DESC d = {};
+		d.ByteWidth = sizeof(args); d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+		d.MiscFlags = D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS;
+		D3D11_SUBRESOURCE_DATA init = { args, 0, 0 };
+		hr = s.dev->CreateBuffer(&d, &init, &s.x_args); CHECK(hr, "x args");
+	}
+	return true;
+}
+
+static void bind_object(Scene& s, UINT object);
+
+static void render_state_pass(Scene& s)
+{
+	const float factor[4] = { 0.1f, 0.2f, 0.3f, 0.4f };
+	s.ctx->OMSetBlendState(s.x_blend, factor, 0x0000ffff);
+	s.ctx->OMSetDepthStencilState(s.x_dss, 5);
+	s.ctx->RSSetState(s.x_rs);
+	const D3D11_RECT rects[2] = { { 10, 20, 120, 60 }, { 5, 6, 7, 8 } };
+	s.ctx->RSSetScissorRects(2, rects);
+	const D3D11_VIEWPORT vps[2] = { { 0, 0, 128, 64, 0.25f, 0.75f }, { 8, 16, 64, 32, 0, 1 } };
+	s.ctx->RSSetViewports(2, vps);
+	s.ctx->OMSetRenderTargets(1, &s.x_rtv_mip1, nullptr);
+	const float x_clear[4] = { 0.2f, 0.1f, 0.0f, 1.0f };
+	s.ctx->ClearRenderTargetView(s.x_rtv_mip1, x_clear);
+	s.ctx->PSSetSamplers(3, 1, &s.x_cmp);
+	s.ctx->VSSetSamplers(1, 1, &s.x_aniso);
+	s.ctx->PSSetShaderResources(8, 1, &s.x_tex_part);
+	s.ctx->VSSetShaderResources(9, 1, &s.x_buf_part);
+
+	ID3D11Buffer* vbs[2] = { s.vb3a, s.vb3b };
+	UINT strides[2] = { sizeof(V0), sizeof(V1) };
+	UINT offs[2] = { 0, 0 };
+	s.ctx->IASetVertexBuffers(0, 2, vbs, strides, offs);
+	s.ctx->IASetIndexBuffer(s.ib3, DXGI_FORMAT_R32_UINT, 0);
+	bind_object(s, 2);
+	s.ctx->DrawIndexedInstancedIndirect(s.x_args, 20);
+
+	// the same mesh into the depth target alone, as a shadow or depth pass draws it
+	s.ctx->OMSetDepthStencilState(nullptr, 0);
+	s.ctx->RSSetState(s.rs);
+	s.ctx->OMSetRenderTargets(0, nullptr, s.dsv);
+	s.ctx->DrawIndexed((UINT)s.m3.idx.size(), 0, 0);
+
+	// back to what the rest of the frame expects
+	ID3D11ShaderResourceView* no_srv = nullptr;
+	ID3D11SamplerState* no_sampler = nullptr;
+	s.ctx->PSSetShaderResources(8, 1, &no_srv);
+	s.ctx->VSSetShaderResources(9, 1, &no_srv);
+	s.ctx->PSSetSamplers(3, 1, &no_sampler);
+	s.ctx->VSSetSamplers(1, 1, &no_sampler);
+	s.ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+	s.ctx->OMSetDepthStencilState(s.dss, 0);
+	s.ctx->RSSetState(s.rs);
+	s.ctx->RSSetScissorRects(0, nullptr);
+	D3D11_VIEWPORT vp = { 0, 0, (float)s.width, (float)s.height, 0, 1 };
+	s.ctx->RSSetViewports(1, &vp);
 }
 
 static void render(Scene& s, float time)
@@ -631,6 +804,9 @@ static void render(Scene& s, float time)
 		bind_object(s, 4);
 		s.ctx->DrawIndexed((UINT)s.m2.idx.size(), 0, 0);
 	}
+
+	if (g_state_pass)
+		render_state_pass(s);
 
 	// present pass
 	ID3D11ShaderResourceView* none[7] = {};
@@ -789,6 +965,7 @@ int wmain(int argc, wchar_t** argv)
 		else if (a == L"--aux-device-after") aux_device_after = _wtoi(next().c_str());
 		else if (a == L"--frames") max_frames = _wtoi(next().c_str());
 		else if (a == L"--plain-draw") g_plain_draw = true;
+		else if (a == L"--state-pass") g_state_pass = true;
 		else if (a == L"--repeat") g_repeat = _wtoi(next().c_str());
 		else if (a == L"--novsync") g_vsync = 0;
 		else if (a == L"--stream") g_stream = true;

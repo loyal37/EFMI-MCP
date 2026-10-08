@@ -10,6 +10,7 @@
 
 volatile LONG g_recording = 0;
 volatile LONG g_tracking = 0;
+volatile LONG g_rt_after = 0;
 
 // ================================================================ data model
 enum { ST_VS = 0, ST_HS, ST_DS, ST_GS, ST_PS, ST_CS, ST_COUNT };
@@ -43,7 +44,42 @@ struct CapSnap   { int32_t res; uint32_t off, size; uint64_t blob_off; uint8_t s
 
 struct VbBind   { uint8_t slot; int32_t res; uint32_t stride, off; int32_t region; };
 struct CbBind   { uint8_t stage, slot; int32_t res; uint32_t first, num; int32_t snap; };
-struct ViewBind { uint8_t stage, slot; int32_t res; };
+struct ViewBind { uint8_t stage, slot; int32_t res; int32_t view = -1; };
+
+// Fixed-function state objects and view parameters, recorded for full captures.
+enum { SK_BLEND = 0, SK_DEPTH = 1, SK_RASTER = 2, SK_SAMPLER = 3 };
+struct CapState {
+	void*   ptr;
+	uint8_t kind;
+	union {
+		D3D11_BLEND_DESC         blend;
+		D3D11_DEPTH_STENCIL_DESC depth;
+		D3D11_RASTERIZER_DESC    raster;
+		D3D11_SAMPLER_DESC       sampler;
+	} d;
+};
+enum { VK_SRV = 0, VK_RTV = 1, VK_DSV = 2, VK_UAV = 3 };
+// p: first mip (or element), mip (or element) count, first slice, slice count, as far as the view has them.
+struct CapView { void* ptr; int32_t res; uint8_t kind; uint32_t format, dim, p[4], flags; };
+struct SamplerBind { uint8_t stage, slot; int32_t state; };
+
+// A copy of a render target taken just before or just after one draw.
+enum { RT_OK = 0, RT_NOT_2D = 1, RT_MULTISAMPLED = 2, RT_BUDGET = 3, RT_FAILED = 4 };
+struct RtSnap {
+	uint32_t draw;
+	uint8_t  when;               // 0 before the draw, 1 after it
+	uint8_t  kind, slot;         // OUT_RTV / OUT_DSV and its slot
+	uint8_t  state;
+	int32_t  res;
+	uint32_t mip, slice, w, h;
+	bool     boxed;
+	uint32_t box[4];
+	DXGI_FORMAT format;          // the view's when it names one, else the texture's
+	D3D11_TEXTURE2D_DESC desc;
+	ID3D11Texture2D* staging;
+	uint64_t bytes;
+};
+struct RtAfter { uint8_t kind, slot; ID3D11View* view; };
 
 struct DrawRec {
 	uint32_t index = 0;
@@ -65,6 +101,17 @@ struct DrawRec {
 	uint32_t out_begin = 0, out_count = 0;
 	float    vp[4] = {};
 	bool     has_vp = false;
+
+	// full captures only
+	bool     has_state = false;
+	int32_t  blend = -1, depth = -1, raster = -1;
+	float    blend_factor[4] = {};
+	uint32_t sample_mask = 0, stencil_ref = 0;
+	uint32_t smp_begin = 0, smp_count = 0;
+	uint32_t sc_begin = 0, sc_count = 0;
+	uint32_t vp_count = 0;
+	float    vp_z[2] = { 0, 1 };
+	int32_t  indirect_snap = -1;
 };
 
 struct RKey {
@@ -114,6 +161,22 @@ struct Capture {
 	std::vector<CbBind> cbs;
 	std::vector<ViewBind> views;
 	std::vector<uint8_t> blob;
+
+	std::vector<CapState> states;
+	std::unordered_map<void*, int32_t> state_ids;
+	std::vector<CapView> view_descs;
+	std::unordered_map<void*, int32_t> view_ids;
+	std::vector<SamplerBind> samplers;
+	std::vector<D3D11_RECT> rects;
+
+	std::vector<RtSnap> rts;
+	std::vector<RtAfter> rt_after;   // targets of the draw that is being issued right now
+	uint32_t rt_after_draw = 0;
+	uint32_t rt_matched = 0;         // draws the request selects
+	uint32_t rt_draws = 0;           // of those, the ones whose targets were copied
+	uint32_t rt_depth_only = 0;      // selected draws without a colour target while depth was not asked for
+	uint32_t rt_skipped = 0;         // copies left out, over the pixel budget
+	uint64_t rt_bytes = 0;
 
 	std::vector<IUnknown*> held;
 	std::vector<uint32_t> chunks;    // staging chunks owned until the readback is done
@@ -505,6 +568,127 @@ static int32_t layout_id(Capture* c, void* il)
 	return id;
 }
 
+// The description is read at every use and compared with the one on record. The
+// address only finds the candidate: an object that is destroyed while the frame
+// is recorded can have a successor that says something else at the same address.
+static int32_t state_id(Capture* c, void* obj, uint8_t kind)
+{
+	CapState s;
+	memset(&s, 0, sizeof(s));
+	s.ptr = obj;
+	s.kind = kind;
+	switch (kind) {
+	case SK_BLEND:   ID3D11BlendState_GetDesc((ID3D11BlendState*)obj, &s.d.blend); break;
+	case SK_DEPTH:   ID3D11DepthStencilState_GetDesc((ID3D11DepthStencilState*)obj, &s.d.depth); break;
+	case SK_RASTER:  ID3D11RasterizerState_GetDesc((ID3D11RasterizerState*)obj, &s.d.raster); break;
+	case SK_SAMPLER: ID3D11SamplerState_GetDesc((ID3D11SamplerState*)obj, &s.d.sampler); break;
+	}
+	auto it = c->state_ids.find(obj);
+	if (it != c->state_ids.end()) {
+		const CapState& known = c->states[it->second];
+		if (known.kind == kind && !memcmp(&known.d, &s.d, sizeof(s.d)))
+			return it->second;
+	}
+	int32_t id = (int32_t)c->states.size();
+	c->states.push_back(s);
+	c->state_ids[obj] = id;
+	return id;
+}
+
+static bool same_view(const CapView& a, const CapView& b)
+{
+	return a.res == b.res && a.kind == b.kind && a.format == b.format && a.dim == b.dim && a.flags == b.flags
+		&& !memcmp(a.p, b.p, sizeof(a.p));
+}
+
+// What part of its resource a view shows, and in which format. Compared by
+// content like the state objects, for the same reason.
+static int32_t view_desc_id(Capture* c, ID3D11View* v, uint8_t kind, int32_t rid)
+{
+	if (!v) return -1;
+	CapView cv;
+	memset(&cv, 0, sizeof(cv));
+	cv.ptr = v;
+	cv.res = rid;
+	cv.kind = kind;
+	switch (kind) {
+	case VK_SRV: {
+		D3D11_SHADER_RESOURCE_VIEW_DESC d;
+		ID3D11ShaderResourceView_GetDesc((ID3D11ShaderResourceView*)v, &d);
+		cv.format = d.Format; cv.dim = d.ViewDimension;
+		switch (d.ViewDimension) {
+		case D3D11_SRV_DIMENSION_BUFFER:           cv.p[0] = d.Buffer.FirstElement; cv.p[1] = d.Buffer.NumElements; break;
+		case D3D11_SRV_DIMENSION_BUFFEREX:         cv.p[0] = d.BufferEx.FirstElement; cv.p[1] = d.BufferEx.NumElements; cv.flags = d.BufferEx.Flags; break;
+		case D3D11_SRV_DIMENSION_TEXTURE1D:        cv.p[0] = d.Texture1D.MostDetailedMip; cv.p[1] = d.Texture1D.MipLevels; break;
+		case D3D11_SRV_DIMENSION_TEXTURE1DARRAY:   cv.p[0] = d.Texture1DArray.MostDetailedMip; cv.p[1] = d.Texture1DArray.MipLevels;
+		                                           cv.p[2] = d.Texture1DArray.FirstArraySlice; cv.p[3] = d.Texture1DArray.ArraySize; break;
+		case D3D11_SRV_DIMENSION_TEXTURE2D:        cv.p[0] = d.Texture2D.MostDetailedMip; cv.p[1] = d.Texture2D.MipLevels; break;
+		case D3D11_SRV_DIMENSION_TEXTURE2DARRAY:   cv.p[0] = d.Texture2DArray.MostDetailedMip; cv.p[1] = d.Texture2DArray.MipLevels;
+		                                           cv.p[2] = d.Texture2DArray.FirstArraySlice; cv.p[3] = d.Texture2DArray.ArraySize; break;
+		case D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY: cv.p[2] = d.Texture2DMSArray.FirstArraySlice; cv.p[3] = d.Texture2DMSArray.ArraySize; break;
+		case D3D11_SRV_DIMENSION_TEXTURE3D:        cv.p[0] = d.Texture3D.MostDetailedMip; cv.p[1] = d.Texture3D.MipLevels; break;
+		case D3D11_SRV_DIMENSION_TEXTURECUBE:      cv.p[0] = d.TextureCube.MostDetailedMip; cv.p[1] = d.TextureCube.MipLevels; break;
+		case D3D11_SRV_DIMENSION_TEXTURECUBEARRAY: cv.p[0] = d.TextureCubeArray.MostDetailedMip; cv.p[1] = d.TextureCubeArray.MipLevels;
+		                                           cv.p[2] = d.TextureCubeArray.First2DArrayFace; cv.p[3] = d.TextureCubeArray.NumCubes; break;
+		default: break;
+		}
+		break;
+	}
+	case VK_RTV: {
+		D3D11_RENDER_TARGET_VIEW_DESC d;
+		ID3D11RenderTargetView_GetDesc((ID3D11RenderTargetView*)v, &d);
+		cv.format = d.Format; cv.dim = d.ViewDimension;
+		switch (d.ViewDimension) {
+		case D3D11_RTV_DIMENSION_BUFFER:           cv.p[0] = d.Buffer.FirstElement; cv.p[1] = d.Buffer.NumElements; break;
+		case D3D11_RTV_DIMENSION_TEXTURE1D:        cv.p[0] = d.Texture1D.MipSlice; break;
+		case D3D11_RTV_DIMENSION_TEXTURE1DARRAY:   cv.p[0] = d.Texture1DArray.MipSlice; cv.p[2] = d.Texture1DArray.FirstArraySlice; cv.p[3] = d.Texture1DArray.ArraySize; break;
+		case D3D11_RTV_DIMENSION_TEXTURE2D:        cv.p[0] = d.Texture2D.MipSlice; break;
+		case D3D11_RTV_DIMENSION_TEXTURE2DARRAY:   cv.p[0] = d.Texture2DArray.MipSlice; cv.p[2] = d.Texture2DArray.FirstArraySlice; cv.p[3] = d.Texture2DArray.ArraySize; break;
+		case D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY: cv.p[2] = d.Texture2DMSArray.FirstArraySlice; cv.p[3] = d.Texture2DMSArray.ArraySize; break;
+		case D3D11_RTV_DIMENSION_TEXTURE3D:        cv.p[0] = d.Texture3D.MipSlice; cv.p[2] = d.Texture3D.FirstWSlice; cv.p[3] = d.Texture3D.WSize; break;
+		default: break;
+		}
+		break;
+	}
+	case VK_DSV: {
+		D3D11_DEPTH_STENCIL_VIEW_DESC d;
+		ID3D11DepthStencilView_GetDesc((ID3D11DepthStencilView*)v, &d);
+		cv.format = d.Format; cv.dim = d.ViewDimension; cv.flags = d.Flags;
+		switch (d.ViewDimension) {
+		case D3D11_DSV_DIMENSION_TEXTURE1D:        cv.p[0] = d.Texture1D.MipSlice; break;
+		case D3D11_DSV_DIMENSION_TEXTURE1DARRAY:   cv.p[0] = d.Texture1DArray.MipSlice; cv.p[2] = d.Texture1DArray.FirstArraySlice; cv.p[3] = d.Texture1DArray.ArraySize; break;
+		case D3D11_DSV_DIMENSION_TEXTURE2D:        cv.p[0] = d.Texture2D.MipSlice; break;
+		case D3D11_DSV_DIMENSION_TEXTURE2DARRAY:   cv.p[0] = d.Texture2DArray.MipSlice; cv.p[2] = d.Texture2DArray.FirstArraySlice; cv.p[3] = d.Texture2DArray.ArraySize; break;
+		case D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY: cv.p[2] = d.Texture2DMSArray.FirstArraySlice; cv.p[3] = d.Texture2DMSArray.ArraySize; break;
+		default: break;
+		}
+		break;
+	}
+	case VK_UAV: {
+		D3D11_UNORDERED_ACCESS_VIEW_DESC d;
+		ID3D11UnorderedAccessView_GetDesc((ID3D11UnorderedAccessView*)v, &d);
+		cv.format = d.Format; cv.dim = d.ViewDimension;
+		switch (d.ViewDimension) {
+		case D3D11_UAV_DIMENSION_BUFFER:           cv.p[0] = d.Buffer.FirstElement; cv.p[1] = d.Buffer.NumElements; cv.flags = d.Buffer.Flags; break;
+		case D3D11_UAV_DIMENSION_TEXTURE1D:        cv.p[0] = d.Texture1D.MipSlice; break;
+		case D3D11_UAV_DIMENSION_TEXTURE1DARRAY:   cv.p[0] = d.Texture1DArray.MipSlice; cv.p[2] = d.Texture1DArray.FirstArraySlice; cv.p[3] = d.Texture1DArray.ArraySize; break;
+		case D3D11_UAV_DIMENSION_TEXTURE2D:        cv.p[0] = d.Texture2D.MipSlice; break;
+		case D3D11_UAV_DIMENSION_TEXTURE2DARRAY:   cv.p[0] = d.Texture2DArray.MipSlice; cv.p[2] = d.Texture2DArray.FirstArraySlice; cv.p[3] = d.Texture2DArray.ArraySize; break;
+		case D3D11_UAV_DIMENSION_TEXTURE3D:        cv.p[0] = d.Texture3D.MipSlice; cv.p[2] = d.Texture3D.FirstWSlice; cv.p[3] = d.Texture3D.WSize; break;
+		default: break;
+		}
+		break;
+	}
+	}
+	auto it = c->view_ids.find(v);
+	if (it != c->view_ids.end() && same_view(c->view_descs[it->second], cv))
+		return it->second;
+	int32_t id = (int32_t)c->view_descs.size();
+	c->view_descs.push_back(cv);
+	c->view_ids[v] = id;
+	return id;
+}
+
 // ================================================================ regions
 // Hash of the bytes a draw reads from a buffer: crc32c over [off, off+size),
 // clamped to the buffer, exactly like XXMI's GetRegionHash().
@@ -657,6 +841,20 @@ static void get_srvs(int stage, ID3D11ShaderResourceView** srvs)
 	}
 }
 
+static void get_samplers(int stage, ID3D11SamplerState** smp)
+{
+	const UINT N = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;
+	ID3D11DeviceContext* c = rctx();
+	switch (stage) {
+	case ST_VS: OCTX(VSGetSamplers)(c, 0, N, smp); break;
+	case ST_HS: OCTX(HSGetSamplers)(c, 0, N, smp); break;
+	case ST_DS: OCTX(DSGetSamplers)(c, 0, N, smp); break;
+	case ST_GS: OCTX(GSGetSamplers)(c, 0, N, smp); break;
+	case ST_PS: OCTX(PSGetSamplers)(c, 0, N, smp); break;
+	case ST_CS: OCTX(CSGetSamplers)(c, 0, N, smp); break;
+	}
+}
+
 static void record_stage(Capture* c, DrawRec* d, int stage, bool full)
 {
 	if (!full)
@@ -693,10 +891,214 @@ static void record_stage(Capture* c, DrawRec* d, int stage, bool full)
 		v.stage = (uint8_t)stage;
 		v.slot = (uint8_t)i;
 		v.res = view_res_id(c, (ID3D11View*)srvs[i]);
+		v.view = view_desc_id(c, (ID3D11View*)srvs[i], VK_SRV, v.res);
 		c->views.push_back(v);
 		d->srv_count++;
 		ID3D11ShaderResourceView_Release(srvs[i]);
 	}
+
+	ID3D11SamplerState* smp[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
+	memset(smp, 0, sizeof(smp));
+	get_samplers(stage, smp);
+	for (UINT i = 0; i < _countof(smp); i++) {
+		if (!smp[i]) continue;
+		c->samplers.push_back({ (uint8_t)stage, (uint8_t)i, state_id(c, smp[i], SK_SAMPLER) });
+		d->smp_count++;
+		ID3D11SamplerState_Release(smp[i]);
+	}
+}
+
+// ================================================================ fixed-function state
+static void record_fixed_state(Capture* c, DrawRec* d, ID3D11DeviceContext* ctx)
+{
+	ID3D11BlendState* bs = nullptr;
+	FLOAT factor[4] = {};
+	UINT mask = 0;
+	OCTX(OMGetBlendState)(ctx, &bs, factor, &mask);
+	memcpy(d->blend_factor, factor, sizeof(factor));
+	d->sample_mask = mask;
+	if (bs) { d->blend = state_id(c, bs, SK_BLEND); ID3D11BlendState_Release(bs); }
+
+	ID3D11DepthStencilState* dss = nullptr;
+	UINT ref = 0;
+	OCTX(OMGetDepthStencilState)(ctx, &dss, &ref);
+	d->stencil_ref = ref;
+	if (dss) { d->depth = state_id(c, dss, SK_DEPTH); ID3D11DepthStencilState_Release(dss); }
+
+	ID3D11RasterizerState* rs = nullptr;
+	OCTX(RSGetState)(ctx, &rs);
+	if (rs) { d->raster = state_id(c, rs, SK_RASTER); ID3D11RasterizerState_Release(rs); }
+
+	D3D11_RECT rects[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+	UINT nrect = _countof(rects);
+	memset(rects, 0, sizeof(rects));
+	OCTX(RSGetScissorRects)(ctx, &nrect, rects);
+	if (nrect > _countof(rects)) nrect = _countof(rects);
+	d->sc_begin = (uint32_t)c->rects.size();
+	d->sc_count = nrect;
+	for (UINT i = 0; i < nrect; i++)
+		c->rects.push_back(rects[i]);
+
+	D3D11_VIEWPORT vps[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+	UINT nvp = _countof(vps);
+	memset(vps, 0, sizeof(vps));
+	OCTX(RSGetViewports)(ctx, &nvp, vps);
+	if (nvp > _countof(vps)) nvp = _countof(vps);
+	d->vp_count = nvp;
+	if (nvp) {
+		d->vp[0] = vps[0].TopLeftX; d->vp[1] = vps[0].TopLeftY; d->vp[2] = vps[0].Width; d->vp[3] = vps[0].Height;
+		d->vp_z[0] = vps[0].MinDepth; d->vp_z[1] = vps[0].MaxDepth;
+		d->has_vp = true;
+	}
+	d->has_state = true;
+}
+
+// ================================================================ render target copies
+static bool rt_matches(Capture* c, const DrawRec& d)
+{
+	if (c->rq.rt_match.empty())
+		return false;
+	uint64_t vs = 0, ps = 0;
+	if (d.shaders[ST_VS] >= 0 && c->shaders[d.shaders[ST_VS]].known) vs = c->shaders[d.shaders[ST_VS]].info.hash;
+	if (d.shaders[ST_PS] >= 0 && c->shaders[d.shaders[ST_PS]].known) ps = c->shaders[d.shaders[ST_PS]].info.hash;
+	const CapRes* ib = d.ib_res >= 0 ? &c->res[d.ib_res] : nullptr;
+	for (const DrawMatch& m : c->rq.rt_match) {
+		if (m.draw >= 0 && (uint32_t)m.draw != d.index) continue;
+		if (m.ib && (!ib || ib->ptr != m.ib)) continue;
+		if (m.ib_serial && (!ib || ib->serial != m.ib_serial)) continue;
+		if (m.index_count && d.a.index_count != m.index_count) continue;
+		if (m.first_index >= 0 && d.a.first_index != (uint32_t)m.first_index) continue;
+		if (m.vs && vs != m.vs) continue;
+		if (m.ps && ps != m.ps) continue;
+		if (m.shader && vs != m.shader && ps != m.shader) continue;
+		if (m.origin >= 0 && d.caller.origin != m.origin) continue;
+		return true;
+	}
+	return false;
+}
+
+// Queues a copy of what the view shows into a staging texture of its own. Like
+// the buffer copies it is only read back once a client asks for it.
+static void rt_copy(Capture* c, uint32_t draw, uint8_t when, uint8_t kind, uint8_t slot, ID3D11View* view)
+{
+	RtSnap s;
+	memset(&s, 0, sizeof(s));
+	s.draw = draw; s.when = when; s.kind = kind; s.slot = slot;
+	s.state = RT_FAILED;
+	s.res = -1;
+	ID3D11Resource* r = nullptr;
+	ID3D11View_GetResource(view, &r);
+	if (!r) { c->rts.push_back(s); return; }
+	s.res = res_id(c, r);
+	D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+	ID3D11Resource_GetType(r, &dim);
+	if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+		s.state = RT_NOT_2D;
+		ID3D11Resource_Release(r);
+		c->rts.push_back(s);
+		return;
+	}
+	ID3D11Texture2D_GetDesc((ID3D11Texture2D*)r, &s.desc);
+	s.format = s.desc.Format;
+	bool whole = false;          // depth-stencil data can only be copied as a whole subresource
+	if (kind == OUT_RTV) {
+		D3D11_RENDER_TARGET_VIEW_DESC vd;
+		ID3D11RenderTargetView_GetDesc((ID3D11RenderTargetView*)view, &vd);
+		if (vd.Format != DXGI_FORMAT_UNKNOWN) s.format = vd.Format;
+		if (vd.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2D) s.mip = vd.Texture2D.MipSlice;
+		else if (vd.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2DARRAY) { s.mip = vd.Texture2DArray.MipSlice; s.slice = vd.Texture2DArray.FirstArraySlice; }
+	} else {
+		D3D11_DEPTH_STENCIL_VIEW_DESC vd;
+		ID3D11DepthStencilView_GetDesc((ID3D11DepthStencilView*)view, &vd);
+		if (vd.Format != DXGI_FORMAT_UNKNOWN) s.format = vd.Format;
+		if (vd.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2D) s.mip = vd.Texture2D.MipSlice;
+		else if (vd.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2DARRAY) { s.mip = vd.Texture2DArray.MipSlice; s.slice = vd.Texture2DArray.FirstArraySlice; }
+		whole = true;
+	}
+	ID3D11Texture2D* st = nullptr;
+	if (s.desc.SampleDesc.Count > 1) {
+		s.state = RT_MULTISAMPLED;
+	} else if (s.mip < s.desc.MipLevels && s.slice < s.desc.ArraySize) {
+		UINT mw = std::max(s.desc.Width >> s.mip, (UINT)1), mh = std::max(s.desc.Height >> s.mip, (UINT)1);
+		D3D11_BOX box = { 0, 0, 0, mw, mh, 1 };
+		if (c->rq.rt_has_box && !whole) {
+			D3D11_BOX b = { std::min(c->rq.rt_box[0], mw), std::min(c->rq.rt_box[1], mh), 0,
+			                std::min(c->rq.rt_box[2], mw), std::min(c->rq.rt_box[3], mh), 1 };
+			if (b.right > b.left && b.bottom > b.top) { box = b; s.boxed = true; }
+		}
+		s.w = box.right - box.left; s.h = box.bottom - box.top;
+		s.box[0] = box.left; s.box[1] = box.top; s.box[2] = box.right; s.box[3] = box.bottom;
+		size_t num_bytes = 0, row_bytes = 0, rows = 0;
+		dxgi_surface_info(s.w, s.h, s.desc.Format, &num_bytes, &row_bytes, &rows);
+		s.bytes = num_bytes;
+		// A copy from before the draw is only worth its memory together with the one from after it.
+		const uint64_t needed = when == 0 ? 2 * (uint64_t)num_bytes : num_bytes;
+		if (!num_bytes) {
+			s.state = RT_FAILED;
+		} else if (c->rt_bytes + needed > (uint64_t)c->rq.rt_budget_mb * 1024 * 1024) {
+			s.state = RT_BUDGET;
+			c->rt_skipped++;
+		} else {
+			D3D11_TEXTURE2D_DESC sd;
+			memset(&sd, 0, sizeof(sd));
+			sd.Width = s.w; sd.Height = s.h;
+			sd.MipLevels = 1; sd.ArraySize = 1;
+			sd.Format = s.desc.Format;
+			sd.SampleDesc.Count = 1;
+			sd.Usage = D3D11_USAGE_STAGING;
+			sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			if (SUCCEEDED(ODEV(CreateTexture2D)(rdev(), &sd, nullptr, &st)) && st) {
+				OCTX(CopySubresourceRegion)(rctx(), (ID3D11Resource*)st, 0, 0, 0, 0, r,
+				                            s.mip + s.slice * s.desc.MipLevels, s.boxed ? &box : nullptr);
+				s.staging = st;
+				s.state = RT_OK;
+				c->rt_bytes += num_bytes;
+			}
+		}
+	}
+	ID3D11Resource_Release(r);
+	c->rts.push_back(s);
+}
+
+static void rt_select(Capture* c, uint32_t draw, uint8_t kind, uint8_t slot, ID3D11View* view)
+{
+	if (c->rq.rt_before)
+		rt_copy(c, draw, 0, kind, slot, view);
+	ID3D11View_AddRef(view);
+	c->rt_after.push_back({ kind, slot, view });
+}
+
+static void rt_drop_pending(Capture* c)
+{
+	for (RtAfter& t : c->rt_after)
+		ID3D11View_Release(t.view);
+	c->rt_after.clear();
+}
+
+static bool rt_holds_copies(const Capture* c)
+{
+	for (const RtSnap& s : c->rts)
+		if (s.staging) return true;
+	return false;
+}
+
+static void rt_release_copies(Capture* c)
+{
+	for (RtSnap& s : c->rts) {
+		if (s.staging) ID3D11Texture2D_Release(s.staging);
+		s.staging = nullptr;
+	}
+}
+
+void cap_after_draw()
+{
+	InterlockedExchange(&g_rt_after, 0);
+	Capture* c = g_rec.get();
+	if (!c)
+		return;
+	for (RtAfter& t : c->rt_after)
+		rt_copy(c, c->rt_after_draw, 1, t.kind, t.slot, t.view);
+	rt_drop_pending(c);
 }
 
 void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
@@ -729,10 +1131,15 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 	if (indirect_buffer) {
 		d.indirect_res = res_id(c, (ID3D11Resource*)indirect_buffer);
 		d.indirect_off = indirect_offset;
+		// The arguments the GPU will read: five, four or three 32-bit values.
+		if (full)
+			d.indirect_snap = snapshot(c, (ID3D11Buffer*)indirect_buffer, d.indirect_res, indirect_offset,
+			                           type == DT_DRAW_INDEXED_INSTANCED_INDIRECT ? 20 : type == DT_DRAW_INSTANCED_INDIRECT ? 16 : 12);
 	}
 	d.vb_begin = (uint32_t)c->vbs.size();
 	d.cb_begin = (uint32_t)c->cbs.size();
 	d.srv_begin = (uint32_t)c->views.size();
+	d.smp_begin = (uint32_t)c->samplers.size();
 
 	if (!is_dispatch) {
 		// ---- input assembler
@@ -815,26 +1222,40 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 			ID3D11DepthStencilView* dsv = nullptr;
 			memset(rtvs, 0, sizeof(rtvs));
 			OCTX(OMGetRenderTargets)(ctx, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv);
+			// Render target copies: for the first rt_max selected draws that have a target to copy.
+			const bool matched = rt_matches(c, d);
+			const bool copy_targets = matched && c->rt_draws < c->rq.rt_max;
+			if (matched) c->rt_matched++;
+			rt_drop_pending(c);          // nothing is pending unless a draw never returned to its hook
+			bool colour = false;
 			for (UINT i = 0; i < _countof(rtvs); i++) {
 				if (!rtvs[i]) continue;
-				c->views.push_back({ (uint8_t)OUT_RTV, (uint8_t)i, view_res_id(c, (ID3D11View*)rtvs[i]) });
+				int32_t rid = view_res_id(c, (ID3D11View*)rtvs[i]);
+				c->views.push_back({ (uint8_t)OUT_RTV, (uint8_t)i, rid, view_desc_id(c, (ID3D11View*)rtvs[i], VK_RTV, rid) });
 				d.out_count++;
+				if (copy_targets && (!colour || c->rq.rt_all))
+					rt_select(c, d.index, OUT_RTV, (uint8_t)i, (ID3D11View*)rtvs[i]);
+				colour = true;
 				ID3D11RenderTargetView_Release(rtvs[i]);
 			}
 			if (dsv) {
-				c->views.push_back({ (uint8_t)OUT_DSV, 0, view_res_id(c, (ID3D11View*)dsv) });
+				int32_t rid = view_res_id(c, (ID3D11View*)dsv);
+				c->views.push_back({ (uint8_t)OUT_DSV, 0, rid, view_desc_id(c, (ID3D11View*)dsv, VK_DSV, rid) });
 				d.out_count++;
+				if (copy_targets && c->rq.rt_depth)
+					rt_select(c, d.index, OUT_DSV, 0, (ID3D11View*)dsv);
 				ID3D11DepthStencilView_Release(dsv);
 			}
-
-			UINT nvp = 1;
-			D3D11_VIEWPORT vp;
-			memset(&vp, 0, sizeof(vp));
-			OCTX(RSGetViewports)(ctx, &nvp, &vp);
-			if (nvp) {
-				d.vp[0] = vp.TopLeftX; d.vp[1] = vp.TopLeftY; d.vp[2] = vp.Width; d.vp[3] = vp.Height;
-				d.has_vp = true;
+			if (!c->rt_after.empty()) {
+				// The hook that called us copies them again once the draw has been issued.
+				c->rt_draws++;
+				c->rt_after_draw = d.index;
+				InterlockedExchange(&g_rt_after, 1);
+			} else if (matched && !colour && !c->rq.rt_depth) {
+				c->rt_depth_only++;      // a shadow or depth pass: it does not count towards the limit
 			}
+
+			record_fixed_state(c, &d, ctx);
 		}
 	} else {
 		ID3D11ComputeShader* cs = nullptr;
@@ -848,7 +1269,8 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 			OCTX(CSGetUnorderedAccessViews)(ctx, 0, n, uavs);
 			for (UINT i = 0; i < n; i++) {
 				if (!uavs[i]) continue;
-				c->views.push_back({ (uint8_t)OUT_CS_UAV, (uint8_t)i, view_res_id(c, (ID3D11View*)uavs[i]) });
+				int32_t rid = view_res_id(c, (ID3D11View*)uavs[i]);
+				c->views.push_back({ (uint8_t)OUT_CS_UAV, (uint8_t)i, rid, view_desc_id(c, (ID3D11View*)uavs[i], VK_UAV, rid) });
 				d.out_count++;
 				ID3D11UnorderedAccessView_Release(uavs[i]);
 			}
@@ -997,6 +1419,8 @@ static void release_capture_refs(Capture* c)
 	for (IUnknown* u : c->held)
 		IUnknown_Release(u);
 	c->held.clear();
+	rt_release_copies(c);
+	rt_drop_pending(c);
 }
 
 static std::deque<std::shared_ptr<Capture>> g_finalizing;   // recorded, waiting for the GPU
@@ -1131,7 +1555,9 @@ static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volat
 // Reads requested by the client. Like the frame captures they are split in two:
 // the copy is issued on one frame and collected on a later one.
 struct Job {
-	int      type = 0;           // 1 read buffer, 2 read texture, 3 release
+	// 1 read buffer, 2 read texture, 3 release, 4 read a render target copy,
+	// 5 release the render target copies of a capture
+	int      type = 0;
 	uint32_t frame = 0, res = 0, mip = 0, slice = 0;
 	uint64_t offset = 0, size = 0;
 	std::shared_ptr<ReadResult> out;
@@ -1270,6 +1696,25 @@ static bool start_read_texture(Job* j)
 	return true;
 }
 
+// A render target copy made while the frame was recorded: only the read-back is left to do.
+static bool start_read_rt(Job* j)
+{
+	ReadResult* o = j->out.get();
+	Capture* c = g_last.get();
+	if (!c || c->frame != j->frame) { o->err = "that capture is no longer held by the probe; capture again"; return false; }
+	if (j->res >= c->rts.size()) { o->err = "bad snapshot id"; return false; }
+	const RtSnap& s = c->rts[j->res];
+	if (s.state != RT_OK) { o->err = "that snapshot holds no pixels"; return false; }
+	if (!s.staging) { o->err = "the copies of that capture have been released"; return false; }
+	ID3D11Texture2D_AddRef(s.staging);
+	j->staging = (ID3D11Resource*)s.staging;
+	j->tdesc = s.desc;
+	j->tdesc.Format = s.format;
+	j->mw = s.w; j->mh = s.h;
+	j->mip = s.mip; j->slice = s.slice;
+	return true;
+}
+
 // Returns true when the job is finished (successfully or not).
 static bool finish_read(Job* j, bool block)
 {
@@ -1361,6 +1806,12 @@ static void run_jobs()
 		switch (j->type) {
 		case 1: flying = start_read_buffer(j.get()); break;
 		case 2: flying = start_read_texture(j.get()); break;
+		case 4: flying = start_read_rt(j.get()); break;
+		case 5:
+			// Reads that are under way hold their own reference.
+			if (g_last && g_last->frame == j->frame)
+				rt_release_copies(g_last.get());
+			break;
 		case 3:
 			if (g_last) { release_capture_refs(g_last.get()); g_last.reset(); }
 			arena_free_idle();
@@ -1425,7 +1876,7 @@ void cap_on_frame_boundary()
 		arena_free_idle();
 
 	// Do not pin the game's resources forever if the client went quiet.
-	if (g_last && !g_last->held.empty() && now_ms() - g_last_touch > 180000) {
+	if (g_last && now_ms() - g_last_touch > 180000 && (!g_last->held.empty() || rt_holds_copies(g_last.get()))) {
 		release_capture_refs(g_last.get());
 		plog("capture: released resources of frame %u after inactivity", g_last->frame);
 	}
@@ -1554,6 +2005,26 @@ void cap_read_texture(uint32_t frame, uint32_t res, uint32_t mip, uint32_t slice
 	*out = std::move(*j->out);
 }
 
+void cap_read_rt(uint32_t frame, uint32_t snap, uint32_t timeout_ms, ReadResult* out)
+{
+	auto j = std::make_shared<Job>();
+	j->out = std::make_shared<ReadResult>();
+	j->type = 4; j->frame = frame; j->res = snap;
+	if (!run_job(j, timeout_ms)) {
+		out->err = "timed out waiting for the game to present a frame";
+		return;
+	}
+	*out = std::move(*j->out);
+}
+
+void cap_release_rt(uint32_t frame, uint32_t timeout_ms)
+{
+	auto j = std::make_shared<Job>();
+	j->out = std::make_shared<ReadResult>();
+	j->type = 5; j->frame = frame;
+	run_job(j, timeout_ms);
+}
+
 void cap_release(uint32_t timeout_ms)
 {
 	auto j = std::make_shared<Job>();
@@ -1663,6 +2134,13 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 	w.kd("finalize_ms", c.finalize_ms);
 	w.ku("wall_ms", c.t_end - c.t_start);
 	w.ku("blob_bytes", c.blob.size());
+	if (!c.rq.rt_match.empty()) {
+		w.ku("rt_matched", c.rt_matched);
+		w.ku("rt_draws", c.rt_draws);
+		w.ku("rt_depth_only", c.rt_depth_only);
+		w.ku("rt_bytes", c.rt_bytes);
+		w.ku("rt_over_budget", c.rt_skipped);
+	}
 	w.end_obj();
 
 	w.key("resources"); w.begin_arr();
@@ -1704,6 +2182,122 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 	}
 	w.end_arr();
 
+	// Fixed-function state objects, referred to by index from the draws.
+	if (!c.states.empty()) {
+		w.key("states"); w.begin_arr();
+		for (const CapState& s : c.states) {
+			w.begin_obj();
+			switch (s.kind) {
+			case SK_BLEND: {
+				const D3D11_BLEND_DESC& b = s.d.blend;
+				w.ks("k", "blend");
+				w.kb("a2c", b.AlphaToCoverageEnable != 0);
+				w.kb("ind", b.IndependentBlendEnable != 0);
+				// [enable, src, dst, op, src alpha, dst alpha, op alpha, write mask] per target
+				w.key("rt"); w.begin_arr();
+				for (int i = 0; i < (b.IndependentBlendEnable ? 8 : 1); i++) {
+					const D3D11_RENDER_TARGET_BLEND_DESC& t = b.RenderTarget[i];
+					w.begin_arr();
+					w.u(t.BlendEnable ? 1 : 0); w.u(t.SrcBlend); w.u(t.DestBlend); w.u(t.BlendOp);
+					w.u(t.SrcBlendAlpha); w.u(t.DestBlendAlpha); w.u(t.BlendOpAlpha); w.u(t.RenderTargetWriteMask);
+					w.end_arr();
+				}
+				w.end_arr();
+				break;
+			}
+			case SK_DEPTH: {
+				const D3D11_DEPTH_STENCIL_DESC& t = s.d.depth;
+				w.ks("k", "depth");
+				w.kb("de", t.DepthEnable != 0);
+				w.ku("dw", t.DepthWriteMask);
+				w.ku("df", t.DepthFunc);
+				w.kb("se", t.StencilEnable != 0);
+				w.ku("srm", t.StencilReadMask);
+				w.ku("swm", t.StencilWriteMask);
+				// [fail, depth fail, pass, func]
+				w.key("ff"); w.begin_arr();
+				w.u(t.FrontFace.StencilFailOp); w.u(t.FrontFace.StencilDepthFailOp); w.u(t.FrontFace.StencilPassOp); w.u(t.FrontFace.StencilFunc);
+				w.end_arr();
+				w.key("bf"); w.begin_arr();
+				w.u(t.BackFace.StencilFailOp); w.u(t.BackFace.StencilDepthFailOp); w.u(t.BackFace.StencilPassOp); w.u(t.BackFace.StencilFunc);
+				w.end_arr();
+				break;
+			}
+			case SK_RASTER: {
+				const D3D11_RASTERIZER_DESC& t = s.d.raster;
+				w.ks("k", "raster");
+				w.ku("fill", t.FillMode);
+				w.ku("cull", t.CullMode);
+				w.kb("ccw", t.FrontCounterClockwise != 0);
+				w.ki("db", t.DepthBias);
+				w.kd("dbc", t.DepthBiasClamp);
+				w.kd("ssdb", t.SlopeScaledDepthBias);
+				w.kb("dc", t.DepthClipEnable != 0);
+				w.kb("sc", t.ScissorEnable != 0);
+				w.kb("ms", t.MultisampleEnable != 0);
+				w.kb("aal", t.AntialiasedLineEnable != 0);
+				break;
+			}
+			default: {
+				const D3D11_SAMPLER_DESC& t = s.d.sampler;
+				w.ks("k", "sampler");
+				w.ku("f", t.Filter);
+				w.ku("u", t.AddressU); w.ku("v", t.AddressV); w.ku("w", t.AddressW);
+				w.kd("lb", t.MipLODBias);
+				w.ku("ma", t.MaxAnisotropy);
+				w.ku("cf", t.ComparisonFunc);
+				w.key("bc"); w.begin_arr();
+				for (int i = 0; i < 4; i++) w.d(t.BorderColor[i]);
+				w.end_arr();
+				w.kd("minl", t.MinLOD);
+				w.kd("maxl", t.MaxLOD);
+				break;
+			}
+			}
+			w.end_obj();
+		}
+		w.end_arr();
+	}
+
+	// [resource, kind (0 srv, 1 rtv, 2 dsv, 3 uav), format, view dimension, first mip or element,
+	//  mip or element count, first slice, slice count, flags]
+	if (!c.view_descs.empty()) {
+		w.key("views"); w.begin_arr();
+		for (const CapView& v : c.view_descs) {
+			w.begin_arr();
+			w.i(v.res); w.u(v.kind); w.u(v.format); w.u(v.dim);
+			w.u(v.p[0]); w.u(v.p[1]); w.u(v.p[2]); w.u(v.p[3]); w.u(v.flags);
+			w.end_arr();
+		}
+		w.end_arr();
+	}
+
+	// Copies of render targets around chosen draws; read with read_rt by position.
+	if (!c.rq.rt_match.empty()) {
+		static const char* k_rt_state[] = { "ok", "not_2d", "multisampled", "over_budget", "failed" };
+		w.key("rts"); w.begin_arr();
+		for (const RtSnap& s : c.rts) {
+			w.begin_obj();
+			w.ku("draw", s.draw);
+			w.ku("when", s.when);
+			w.ku("kind", s.kind);
+			w.ku("slot", s.slot);
+			w.ki("res", s.res);
+			w.ks("state", k_rt_state[s.state]);
+			if (s.state == RT_OK || s.state == RT_BUDGET) {
+				w.ku("mip", s.mip); w.ku("slice", s.slice);
+				w.ku("w", s.w); w.ku("h", s.h);
+				w.ku("fmt", (uint32_t)s.format);
+				w.ks("fmt_name", dxgi_format_name(s.format));
+				w.ku("bytes", s.bytes);
+				w.key("box"); w.begin_arr(); w.u(s.box[0]); w.u(s.box[1]); w.u(s.box[2]); w.u(s.box[3]); w.end_arr();
+				w.kb("boxed", s.boxed);
+			}
+			w.end_obj();
+		}
+		w.end_arr();
+	}
+
 	// [resource, offset, size, hash, state]
 	w.key("regions"); w.begin_arr();
 	for (const CapRegion& r : c.regions) {
@@ -1738,6 +2332,7 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 		if (d.a.first_instance) w.ku("finst", d.a.first_instance);
 		if (d.type == DT_DISPATCH) { w.key("tg"); w.begin_arr(); w.u(d.tg[0]); w.u(d.tg[1]); w.u(d.tg[2]); w.end_arr(); }
 		if (d.indirect_res >= 0) { w.key("ind"); w.begin_arr(); w.i(d.indirect_res); w.u(d.indirect_off); w.end_arr(); }
+		if (d.indirect_snap >= 0) w.ki("inds", d.indirect_snap);
 		w.ks("o", origin_name(d.caller.origin));
 		if (d.caller.depth) { w.ku("xd", d.caller.depth); w.ku("ra", d.caller.rva); }
 		if (d.type < DT_DISPATCH) {
@@ -1788,6 +2383,44 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 			w.key("vp"); w.begin_arr();
 			w.d(d.vp[0]); w.d(d.vp[1]); w.d(d.vp[2]); w.d(d.vp[3]);
 			w.end_arr();
+		}
+		// What follows is additional: lists run parallel to "srv" and "out" so that older readers still work.
+		if (d.srv_count && c.rq.detail >= 1) {
+			w.key("srvv"); w.begin_arr();
+			for (uint32_t k = 0; k < d.srv_count; k++) w.i(c.views[d.srv_begin + k].view);
+			w.end_arr();
+		}
+		if (d.out_count) {
+			w.key("outv"); w.begin_arr();
+			for (uint32_t k = 0; k < d.out_count; k++) w.i(c.views[d.out_begin + k].view);
+			w.end_arr();
+		}
+		if (d.smp_count) {
+			w.key("smp"); w.begin_arr();
+			for (uint32_t k = 0; k < d.smp_count; k++) {
+				const SamplerBind& b = c.samplers[d.smp_begin + k];
+				w.begin_arr(); w.u(b.stage); w.u(b.slot); w.i(b.state); w.end_arr();
+			}
+			w.end_arr();
+		}
+		if (d.has_state) {
+			// [state, factor r g b a, sample mask]
+			w.key("bs"); w.begin_arr();
+			w.i(d.blend); w.d(d.blend_factor[0]); w.d(d.blend_factor[1]); w.d(d.blend_factor[2]); w.d(d.blend_factor[3]);
+			w.u(d.sample_mask);
+			w.end_arr();
+			w.key("dss"); w.begin_arr(); w.i(d.depth); w.u(d.stencil_ref); w.end_arr();
+			w.ki("rs", d.raster);
+			if (d.sc_count) {
+				w.key("sc"); w.begin_arr();
+				for (uint32_t k = 0; k < d.sc_count; k++) {
+					const D3D11_RECT& r = c.rects[d.sc_begin + k];
+					w.begin_arr(); w.i(r.left); w.i(r.top); w.i(r.right); w.i(r.bottom); w.end_arr();
+				}
+				w.end_arr();
+			}
+			w.ku("vpn", d.vp_count);
+			w.key("vpz"); w.begin_arr(); w.d(d.vp_z[0]); w.d(d.vp_z[1]); w.end_arr();
 		}
 		w.end_obj();
 	}

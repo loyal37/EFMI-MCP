@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
+from . import pipeline
 from .fa_dump import DRAW_NAMES
 
 STAGES = ["vs", "hs", "ds", "gs", "ps", "cs"]
@@ -36,6 +37,10 @@ class Capture:
         self.regions: list[list] = doc.get("regions", [])
         self.snaps: list[list] = doc.get("snaps", [])
         self.raw_draws: list[dict] = doc.get("draws", [])
+        # Probe 0.1.5: fixed-function state objects, view parameters, render target copies around draws.
+        self.states: list[dict] = doc.get("states", [])
+        self.views: list[list] = doc.get("views", [])
+        self.rts: list[dict] = doc.get("rts", [])
         self.stats: dict = doc.get("stats", {})
         self.resolution = doc.get("resolution", [-1, -1])
         self.held: bool = bool(doc.get("held"))
@@ -71,6 +76,14 @@ class Capture:
             return None
         return self.blob[blob_off:blob_off + size]
 
+    def state(self, idx: int) -> dict | None:
+        """A blend, depth-stencil, rasterizer or sampler state as the probe describes it; None: none bound."""
+        return self.states[idx] if 0 <= idx < len(self.states) else None
+
+    def view(self, idx: int) -> dict | None:
+        """Which part of its resource a bound view shows, and in which format."""
+        return pipeline.view_info(self.views[idx]) if 0 <= idx < len(self.views) else None
+
     def layout(self, lid: int) -> list[dict] | None:
         if not (0 <= lid < len(self.layouts)):
             return None
@@ -99,6 +112,11 @@ class Capture:
             out["args"]["thread_groups"] = d["tg"]
         if "ind" in d:
             out["indirect"] = {"res": d["ind"][0], "offset": d["ind"][1], "hash": self.res_hash(d["ind"][0])}
+            if "inds" in d:
+                # The arguments as the buffer held them when the call was issued.
+                args = pipeline.indirect_args(t, self.snap_bytes(d["inds"]))
+                if args:
+                    out["indirect"]["args"] = args
         if "xd" in d:
             out["xxmi_depth"] = d["xd"]
             out["caller_rva"] = d.get("ra")
@@ -134,19 +152,36 @@ class Capture:
             out["cb"] = cbs
 
         tex = {}
-        for stage, slot, res in d.get("srv", []):
+        views = d.get("srvv") or []
+        for n, (stage, slot, res) in enumerate(d.get("srv", [])):
             tex[f"{STAGES[stage]}-t{slot}"] = {"res": res, "hash": self.res_hash(res)}
+            if n < len(views):
+                tex[f"{STAGES[stage]}-t{slot}"]["view"] = self.view(views[n])
         if tex:
             out["tex"] = tex
 
         outs = {}
-        for kind, slot, res in d.get("out", []):
+        views = d.get("outv") or []
+        for n, (kind, slot, res) in enumerate(d.get("out", [])):
             name = f"o{slot}" if kind == OUT_RTV else "oD" if kind == OUT_DSV else f"u{slot}"
             outs[name] = {"res": res, "hash": self.res_hash(res)}
+            if n < len(views):
+                outs[name]["view"] = self.view(views[n])
         if outs:
             out["out"] = outs
         if "vp" in d:
             out["viewport"] = d["vp"]
+        if "smp" in d:
+            out["samplers"] = {f"{STAGES[stage]}-s{slot}": self.state(idx) for stage, slot, idx in d["smp"]}
+        if "bs" in d:
+            # Recorded by probe 0.1.5 for full captures; a state of None is D3D11's default.
+            idx, *factor, mask = d["bs"]
+            out["blend"] = {"state": self.state(idx), "factor": factor, "sample_mask": mask}
+            out["depth_stencil"] = {"state": self.state(d["dss"][0]), "stencil_ref": d["dss"][1]}
+            out["rasterizer"] = self.state(d.get("rs", -1))
+            out["scissors"] = d.get("sc", [])
+            out["viewport_count"] = d.get("vpn", 0)
+            out["depth_range"] = d.get("vpz")
         return out
 
     def draws(self) -> Iterator[dict]:

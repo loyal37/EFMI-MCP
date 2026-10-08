@@ -8,8 +8,9 @@ import time
 from collections import Counter, OrderedDict
 from pathlib import Path
 
-from . import __version__, decode, model_tools
+from . import __version__, decode, model_tools, pipeline
 from .capture_model import Capture
+from .draw_outputs import capture_draw_outputs
 from .fa_dump import DRAW_NAMES, find_frame_dumps, parse_frame_dump
 from .hashes import crc32c, hex32, index_region
 from . import blender_runner, loyal_bridge
@@ -63,6 +64,12 @@ efmi_toggle_mods state='off' brings the original draws back for as long as mods 
 - Only the most recent capture keeps its resources readable; capture again if a read says the capture is gone.
 - Buffer and texture reads return the contents at the time of the read. Constant buffers as they were at each \
 draw are available when the frame was captured with cb_data=true.
+- To see what a draw paints, use efmi_capture_draw_outputs: it records a new frame and copies the render target \
+just before and just after the draws you select (by index buffer hash, shader hash or draw numbers of a capture), \
+then reports the pixels each one changed, with pictures. efmi_read_texture on an output only shows the target as \
+it is when you ask. Needs probe 0.1.5.
+- efmi_get_draw of a full capture includes blend, depth-stencil and rasterizer state, scissor rectangles, samplers, \
+the part of each resource a bound view shows, and the resolved arguments of indirect draws (probe 0.1.5).
 - Offline tools (efmi_list_mods, efmi_frame_dump_summary) work without the game.
 
 Model workflow (LoyalTools merged-skeleton projects): efmi_list_models -> efmi_extract_model (three samples, \
@@ -298,6 +305,9 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             else:
                 lines.append(f"mods switch: probe {st['probe']} cannot press F11; efmi_toggle_mods needs 0.1.3+. "
                              f"Restart the game to load {s.probe_dll}")
+            if "pipeline_state" not in st.get("features", ()):
+                lines.append(f"pipeline state and render target copies around draws: need probe 0.1.5 (this is "
+                             f"{st['probe']}). Restart the game to load {s.probe_dll}")
             if "region_hash_per_object" not in st.get("features", ()):
                 lines.append(f"hashes: probe {st['probe']} can record a destroyed buffer's region hash for a new buffer "
                              "at the same address (mod buffers after a reload); read the buffer to be sure. "
@@ -508,7 +518,10 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
     # ================================================================ one draw
     @srv.tool("efmi_get_draw", "Everything bound for one draw call of a capture: arguments, index and vertex buffers with their "
                                "hashes, offsets and strides, the input layout, all shader stages, constant buffers (with the "
-                               "bound window), textures per slot, render targets and viewport.",
+                               "bound window), textures per slot, render targets and viewport. For a full capture also the "
+                               "blend, depth-stencil and rasterizer state, scissor rectangles, samplers, the part of a "
+                               "resource a view shows when it is not all of it, and the arguments an indirect draw read "
+                               "from its buffer (probe 0.1.5).",
               {**CAPTURE_PROP, "draw": {"type": "integer", "description": "draw index as listed"}}, ["draw"])
     def efmi_get_draw(draw: int, capture="latest"):
         cap = s.capture(capture)
@@ -519,6 +532,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         if "xxmi_depth" in d:
             out["called_through_xxmi_frames"] = d["xxmi_depth"]
         if "indirect" in d:
+            # "args" are the values the call read from its buffer (probe 0.1.5).
             out["indirect_args"] = d["indirect"]
         if "topology" in d:
             out["topology"] = d["topology"]
@@ -540,16 +554,38 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             out["constant_buffers"] = {k: {"hash": v["hash"], "first_constant": v["first_constant"], "num_constants": v["num_constants"],
                                             "contents_captured": v["snap"] >= 0, "resource": _res_desc(cap.resource(v["res"]))}
                                        for k, v in d["cb"].items()}
+        def view_note(v):
+            # Only where the view shows a part of its resource, or reads it in another format.
+            view = v.get("view")
+            if not view or pipeline.view_is_plain(view, cap.resource(v["res"])):
+                return ""
+            return f" | view: {pipeline.view_text(view)}"
+
         if "tex" in d:
             out["textures"] = {}
             for k, v in d["tex"].items():
                 r = cap.resource(v["res"])
-                out["textures"][k] = f"{v['hash'] or 'unknown'} {_res_desc(r)}" + (" (xxmi)" if r and r.get("origin") == "xxmi" else "") + s.mod_note(v["hash"])
+                out["textures"][k] = (f"{v['hash'] or 'unknown'} {_res_desc(r)}" + (" (xxmi)" if r and r.get("origin") == "xxmi" else "")
+                                      + view_note(v) + s.mod_note(v["hash"]))
         if "out" in d:
             out["outputs"] = {k: f"{v['hash'] or 'not created by the game (back buffer?)'} {_res_desc(cap.resource(v['res']))}"
-                              for k, v in d["out"].items()}
+                                 + view_note(v) for k, v in d["out"].items()}
         if "viewport" in d:
             out["viewport"] = d["viewport"]
+        if "blend" in d:
+            if d.get("viewport_count", 1) != 1:
+                out["viewport_count"] = d["viewport_count"]
+            out["viewport_depth_range"] = d["depth_range"]
+            out["blend"] = pipeline.describe_blend(d["blend"])
+            out["depth_stencil"] = pipeline.describe_depth(d["depth_stencil"])
+            out["rasterizer"] = pipeline.describe_raster(d["rasterizer"])
+            if d["scissors"] and out["rasterizer"].get("scissor"):
+                out["scissor_rects"] = d["scissors"]      # [left, top, right, bottom], one per viewport
+        elif cap.detail == "full" and d["type"] < 8:
+            out["pipeline_state"] = ("not recorded: the game runs a probe older than 0.1.5 "
+                                     "(restart the game to load the updated efmi_probe.dll)")
+        if "samplers" in d:
+            out["samplers"] = {k: pipeline.describe_sampler(v) for k, v in d["samplers"].items()}
         return out
 
     # ================================================================ find
@@ -828,6 +864,40 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         else:
             text.append("no PNG: this format is not converted here (the .dds holds the exact data)")
         return ["\n".join(text)] + result
+
+    # ================================================================ what a draw paints
+    @srv.tool("efmi_capture_draw_outputs",
+              "Shows what chosen draws paint. Records a new frame and has the probe copy the render target just before "
+              "and just after each selected draw; reports per draw how many pixels it changed and where, saves the "
+              "pictures and returns previews of the changed areas. Select with `hash` (an index buffer hash as listed "
+              "by efmi_list_draws: every pass that draws that mesh; or a 16-digit vs/ps hash) or with `draws` (draw "
+              "numbers of an existing capture: exactly those meshes with those shaders). The draws are found again in "
+              "the new frame by index buffer object, range and shaders, so the mesh has to be on screen still. At most "
+              "max_draws draws are copied, in frame order; a mesh is usually drawn in several passes (shadow, depth, "
+              "colour, outline), each into its own target. Passes without a colour target are only counted, unless "
+              "depth=true. An indirect draw has no index buffer hash: select it by draw number or shader. `box` limits "
+              "the copy to a part of the target, which keeps large targets cheap. The new frame becomes 'latest'. "
+              "Multisampled targets are not copied. Needs probe 0.1.5.",
+              {**CAPTURE_PROP,
+               "hash": {"type": "string", "default": "", "description": "Index buffer hash (8 hex digits) or shader hash (16)."},
+               "draws": {"type": "array", "items": {"type": "integer"}, "default": [],
+                         "description": "Draw numbers in `capture` to find again."},
+               "max_draws": {"type": "integer", "minimum": 1, "maximum": 32, "default": 8},
+               "before": {"type": "boolean", "default": True,
+                          "description": "Also copy the target before the draw, which is what shows the changed pixels."},
+               "targets": {"type": "string", "enum": ["first", "all"], "default": "first",
+                           "description": "first: the first bound colour target; all: every colour target (G-buffer passes)."},
+               "depth": {"type": "boolean", "default": False,
+                         "description": "Copy the depth-stencil target as well; shadow and depth passes have nothing else."},
+               "box": {"type": "array", "items": {"type": "integer"}, "default": [],
+                       "description": "[left, top, right, bottom] in target pixels; empty: the whole target."},
+               "preview": {"type": "boolean", "default": True}},
+              read_only=False)
+    def efmi_capture_draw_outputs(hash="", draws=None, capture="latest", max_draws=8, before=True, targets="first",
+                                  depth=False, box=None, preview=True):
+        return capture_draw_outputs(s, hash=hash, draws=list(draws or []), capture=capture, max_draws=max_draws,
+                                    before=before, targets=targets, depth=depth, box=list(box) if box else None,
+                                    preview=preview)
 
     # ================================================================ shaders
     @srv.tool("efmi_get_shader", "Disassembly of a shader the game (or a mod) created, by hash. The full listing is saved to a file; "

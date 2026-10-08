@@ -131,11 +131,18 @@ class ProbeClient:
 
     def capture(self, detail: str = "full", hash_ib: bool = True, hash_vb: bool = True,
                 cb_data: bool = False, hold: bool = True, max_draws: int = 0,
-                timeout_ms: int = 5000) -> tuple[dict, bytes]:
-        """Records the next frame. Returns (capture document, binary blob)."""
+                timeout_ms: int = 5000, rt: dict | None = None) -> tuple[dict, bytes]:
+        """Records the next frame. Returns (capture document, binary blob).
+
+        ``rt`` (probe 0.1.5) has the render target copied around the draws that
+        match: {"match": [{draw, ib, sn, ic, fi, vs, ps, sh, o}, ...], "max", "before",
+        "all", "depth", "box", "budget_mb"}. The copies are listed in the
+        document's "rts" and read with read_rt.
+        """
+        fields = {"rt": rt} if rt else {}
         reply, payload = self.request(
             "capture", detail=detail, hash_ib=hash_ib, hash_vb=hash_vb, cb_data=cb_data,
-            hold=hold, max_draws=max_draws, timeout_ms=timeout_ms,
+            hold=hold, max_draws=max_draws, timeout_ms=timeout_ms, **fields,
         )
         jlen = reply["json_len"]
         doc = json.loads(payload[:jlen].decode("utf-8"))
@@ -152,6 +159,15 @@ class ProbeClient:
         reply, payload = self.request("read_texture", capture=capture_frame, res=res, mip=mip,
                                       slice=slice, timeout_ms=timeout_ms)
         return reply.get("meta", {}), payload
+
+    def read_rt(self, capture_frame: int, snap: int, timeout_ms: int = 5000) -> tuple[dict, bytes]:
+        """One render target copy of a capture taken with ``rt``, by its position in "rts"."""
+        reply, payload = self.request("read_rt", capture=capture_frame, snap=snap, timeout_ms=timeout_ms)
+        return reply.get("meta", {}), payload
+
+    def release_rt(self, capture_frame: int) -> None:
+        """Frees the render target copies of a capture in the game; the rest of it stays readable."""
+        self.request("release_rt", capture=capture_frame)
 
     def shader(self, hash_hex: str) -> tuple[dict, bytes]:
         reply, payload = self.request("shader", hash=hash_hex)

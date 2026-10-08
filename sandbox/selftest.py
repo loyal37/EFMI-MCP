@@ -11,6 +11,11 @@ the sandbox is known to have created:
   * a second client can connect after the first one leaves
   * a buffer that is destroyed and created again, at the same address or not,
     is recorded with the hash of its own bytes
+  * blend, depth-stencil and rasterizer state, scissor rectangles, samplers, the
+    part of a resource a view shows and the arguments of an indirect draw are
+    recorded as the sandbox set them
+  * the render target copied before and after a chosen draw differs exactly
+    where that draw's mesh is
 """
 from __future__ import annotations
 
@@ -26,7 +31,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "server"))
 
+from efmi_mcp import pipeline  # noqa: E402
 from efmi_mcp.capture_model import Capture  # noqa: E402
+from efmi_mcp.draw_outputs import changed_region, matcher_of  # noqa: E402
 from efmi_mcp.hashes import crc32c, fnv64, hex32, hex64  # noqa: E402
 from efmi_mcp.probe_client import ProbeClient, ProbeError, find_probes  # noqa: E402
 from parity_test import signal  # noqa: E402
@@ -280,6 +287,291 @@ def test_recreated_buffers() -> None:
         sb.quit()
 
 
+def near(a, b, tolerance: float = 1e-6) -> bool:
+    return len(a) == len(b) and all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+
+def test_pipeline_state() -> None:
+    """What the sandbox sets for its --state-pass draw, and the defaults of its ordinary draws."""
+    print("\n== fixed-function state, view parameters and indirect arguments")
+    sb = Sandbox(["--state-pass"])
+    try:
+        if not sb.ready.wait(30):
+            check("sandbox starts", False)
+            return
+        client = connect(sb.pid)
+        features = client.status().get("features", [])
+        check("the probe announces both abilities", {"pipeline_state", "rt_snapshots"} <= set(features), str(features))
+        time.sleep(0.4)
+        doc, blob = client.capture(detail="full")
+        cap = Capture(doc, blob)
+        gd = game_draws(cap)
+        calls = [d["call"] for d in gd]
+        check("the indirect draw is in the frame",
+              calls == ["Dispatch", "DrawIndexedInstanced", "DrawIndexedInstanced", "DrawIndexed", "DrawInstanced",
+                        "DrawIndexed", "DrawIndexedInstancedIndirect", "DrawIndexed", "DrawInstanced"], str(calls))
+        if "DrawIndexedInstancedIndirect" not in calls:
+            return
+        mesh3 = next(d for d in gd if d["call"] == "DrawIndexed")
+        x = next(d for d in gd if d["call"] == "DrawIndexedInstancedIndirect")
+
+        check("indirect arguments are read from the buffer at the call's offset",
+              x["indirect"]["offset"] == 20 and x["indirect"].get("args") == {
+                  "index_count": mesh3["args"]["index_count"], "instance_count": 2, "first_index": 0,
+                  "first_vertex": 0, "first_instance": 0}, str(x["indirect"]))
+
+        blend = pipeline.describe_blend(x["blend"])
+        check("blend state", blend["alpha_to_coverage"] is False and blend.get("all_targets") == {
+            "enabled": True, "write_mask": "rgb", "src": "src_alpha", "dst": "inv_src_alpha", "op": "add",
+            "src_alpha": "one", "dst_alpha": "blend_factor", "op_alpha": "max"}, str(blend))
+        check("blend factor and sample mask", near(blend["blend_factor"], [0.1, 0.2, 0.3, 0.4])
+              and blend["sample_mask"] == "0x0000ffff", str(blend))
+        depth = pipeline.describe_depth(x["depth_stencil"])
+        check("depth-stencil state and reference", depth == {
+            "depth_test": True, "depth_write": False, "depth_func": "less_equal",
+            "stencil": {"ref": 5, "read_mask": "0x3f", "write_mask": "0x0f",
+                        "front": {"func": "not_equal", "pass": "replace", "fail": "keep", "depth_fail": "incr_sat"},
+                        "back": {"func": "greater", "pass": "invert", "fail": "zero", "depth_fail": "decr"}}}, str(depth))
+        raster = pipeline.describe_raster(x["rasterizer"])
+        check("rasterizer state", raster == {
+            "fill": "solid", "cull": "front", "front_ccw": True, "depth_bias": 3, "depth_bias_clamp": 0.5,
+            "slope_scaled_depth_bias": 1.5, "depth_clip": True, "scissor": True, "multisample": False,
+            "antialiased_line": False}, str(raster))
+        check("scissor rectangles", x["scissors"] == [[10, 20, 120, 60], [5, 6, 7, 8]], str(x["scissors"]))
+        check("viewports: the first one, their number and its depth range",
+              x["viewport"] == [0, 0, 128, 64] and x["viewport_count"] == 2 and near(x["depth_range"], [0.25, 0.75]),
+              f"{x.get('viewport')} {x.get('viewport_count')} {x.get('depth_range')}")
+
+        samplers = {slot: pipeline.describe_sampler(state) for slot, state in x.get("samplers", {}).items()}
+        check("samplers are listed per stage and slot", sorted(samplers) == ["ps-s0", "ps-s3", "vs-s1"], str(sorted(samplers)))
+        # The anisotropy asked for with this one (4) is not part of it: the filter does not use it.
+        check("comparison sampler", samplers.get("ps-s3") == {
+            "filter": "comparison_min_mag_linear_mip_point", "address": "clamp/border/mirror", "lod": [1.0, 7.0],
+            "lod_bias": 0.5, "comparison": "less_equal", "border_color": [1.0, 0.5, 0.25, 0.0]}, str(samplers.get("ps-s3")))
+        check("anisotropic sampler of the vertex stage", samplers.get("vs-s1") == {
+            "filter": "anisotropic", "address": "clamp/clamp/clamp", "lod": [0.0, 3.0], "lod_bias": 0.0,
+            "max_anisotropy": 4}, str(samplers.get("vs-s1")))
+        linear = samplers.get("ps-s0") or {}
+        check("the scene's linear sampler", linear.get("filter") == "min_mag_mip_linear" and linear.get("address") == "wrap/wrap/wrap",
+              str(linear))
+
+        check("a view of some mips and slices of a texture array", x["tex"]["ps-t8"].get("view") == {
+            "kind": "srv", "format": "R8G8B8A8_UNORM", "dimension": "tex2d_array", "most_detailed_mip": 1,
+            "mip_levels": 2, "first_slice": 1, "array_size": 2}, str(x["tex"]["ps-t8"]))
+        check("a view of a range of buffer elements", x["tex"]["vs-t9"].get("view") == {
+            "kind": "srv", "format": "UNKNOWN", "dimension": "buffer", "first_element": 8, "num_elements": 24},
+            str(x["tex"]["vs-t9"]))
+        check("a render target that is one mip of its texture", x["out"]["o0"].get("view") == {
+            "kind": "rtv", "format": "R8G8B8A8_UNORM", "dimension": "tex2d", "mip_slice": 1} and "oD" not in x["out"],
+            str(x["out"]))
+        check("the view texts name what is special",
+              pipeline.view_text(x["tex"]["ps-t8"]["view"]) == "R8G8B8A8_UNORM tex2d_array mips 1..+2 slices 1..+2"
+              and pipeline.view_text(x["tex"]["vs-t9"]["view"]) == "UNKNOWN buffer elements 8..+24"
+              and pipeline.view_text(x["out"]["o0"]["view"]) == "R8G8B8A8_UNORM tex2d mip 1")
+
+        # the ordinary draws: no blend state object, the scene's own depth and rasterizer state
+        m1 = gd[1]
+        check("without a blend state object the defaults are reported",
+              m1["blend"]["state"] is None and pipeline.describe_blend(m1["blend"])["all_targets"] == {
+                  "enabled": False, "write_mask": "rgba"} and pipeline.describe_blend(m1["blend"])["sample_mask"] == "0xffffffff",
+              str(m1["blend"]))
+        # The scene asks for "always" with the test off; a function that is not used is not reported.
+        depth = pipeline.describe_depth(m1["depth_stencil"])
+        check("the scene's depth state: test off", depth == {"depth_test": False, "stencil": False}, str(depth))
+        raster = pipeline.describe_raster(m1["rasterizer"])
+        check("the scene's rasterizer state", raster["cull"] == "none" and raster["depth_clip"] is False
+              and raster["scissor"] is False and raster["front_ccw"] is False, str(raster))
+        check("no scissor rectangle, one viewport over the whole target",
+              m1["scissors"] == [] and m1["viewport_count"] == 1 and near(m1["depth_range"], [0.0, 1.0])
+              and m1["viewport"][2:] == cap.resolution, f"{m1['scissors']} {m1['viewport_count']} {m1['viewport']}")
+        check("whole-resource views of the colour and the depth target",
+              m1["out"]["o0"]["view"] == {"kind": "rtv", "format": "R8G8B8A8_UNORM", "dimension": "tex2d", "mip_slice": 0}
+              and m1["out"]["oD"]["view"] == {"kind": "dsv", "format": "D32_FLOAT", "dimension": "tex2d", "mip_slice": 0},
+              str(m1["out"]))
+        view = m1["tex"]["ps-t0"].get("view") or {}
+        check("a view made without a description reports the whole texture",
+              view.get("kind") == "srv" and view.get("dimension") == "tex2d" and view.get("most_detailed_mip") == 0, str(view))
+        uav = gd[0]["out"]["u0"].get("view") or {}
+        check("the compute shader's raw buffer view", uav.get("kind") == "uav" and uav.get("dimension") == "buffer"
+              and uav.get("format") == "R32_TYPELESS" and uav.get("flags") == ["raw"] and uav.get("first_element") == 0, str(uav))
+
+        # ---- copies around these draws: a target that is one mip of its texture, a pass without a colour target
+        everything = Capture(*client.capture(detail="full", rt={"match": [{"o": "game"}], "max": 64}))
+        stats = everything.stats
+        check("a draw without a colour target is counted apart and does not use up the limit",
+              (stats.get("rt_matched"), stats.get("rt_draws"), stats.get("rt_depth_only")) == (8, 7, 1), str(stats))
+        indirect = next(d["index"] for d in game_draws(everything) if d["call"] == "DrawIndexedInstancedIndirect")
+        mip = [(n, r) for n, r in enumerate(everything.rts) if r["draw"] == indirect]
+        check("a target that is one mip of its texture is copied at the size of that mip",
+              [(r["when"], r["state"], r.get("mip"), r.get("w"), r.get("h")) for _, r in mip]
+              == [(0, "ok", 1, 128, 64), (1, "ok", 1, 128, 64)], str(mip))
+        if len(mip) == 2 and all(r["state"] == "ok" for _, r in mip):
+            meta, after = client.read_rt(everything.frame, mip[1][0])
+            before = client.read_rt(everything.frame, mip[0][0])[1]
+            count, box, _ = changed_region(before, after, meta["width"], meta["height"], meta["row_bytes"])
+            # Mesh 3 covers x 3.2..38.4, y 41.6..59.2 of the 128x64 viewport and its second instance
+            # is 0.18 higher in clip space (up to y 35.8); the scissor rectangle starts at x 10.
+            check("the draw changed what its scissor rectangle and its viewport leave of the mesh",
+                  bool(box) and all(abs(got - want) <= 1 for got, want in zip(box, [10, 36, 38, 59])) and count > 600,
+                  f"{count} {box}")
+        with_depth = Capture(*client.capture(detail="full", rt={"match": [{"o": "game"}], "max": 64, "depth": True}))
+        depth_pass = [d["index"] for d in game_draws(with_depth) if d["call"] == "DrawIndexed"][-1]
+        copies = [(n, r) for n, r in enumerate(with_depth.rts) if r["draw"] == depth_pass]
+        check("with depth asked for, that draw counts and its depth target is copied",
+              (with_depth.stats.get("rt_draws"), with_depth.stats.get("rt_depth_only")) == (8, 0)
+              and [(r["when"], r["kind"], r["state"]) for _, r in copies] == [(0, 11, "ok"), (1, 11, "ok")],
+              f"{with_depth.stats} {copies}")
+        if len(copies) == 2 and all(r["state"] == "ok" for _, r in copies):
+            meta, after = client.read_rt(with_depth.frame, copies[1][0])
+            before = client.read_rt(with_depth.frame, copies[0][0])[1]
+            count, box, _ = changed_region(before, after, meta["width"], meta["height"], meta["row_bytes"])
+            check("the depth it wrote is where the mesh is in that viewport",
+                  bool(box) and all(abs(got - want) <= 1 for got, want in zip(box, [3, 42, 38, 59])) and count > 500,
+                  f"{count} {box}")
+
+        light = Capture(*client.capture(detail="light"))
+        check("a light capture carries none of this", all("blend" not in d and "samplers" not in d for d in light.draws())
+              and not light.states and not light.views)
+        client.close()
+    finally:
+        sb.quit()
+
+
+def test_render_target_copies() -> None:
+    """The render target around one draw: what was there before, what is there after."""
+    print("\n== render target copies around chosen draws")
+    sb = Sandbox([])
+    try:
+        if not sb.ready.wait(30):
+            check("sandbox starts", False)
+            return
+        client = connect(sb.pid)
+        time.sleep(0.4)
+        cap = Capture(*client.capture(detail="full"))
+        width, height = cap.resolution
+        mesh3 = next(d for d in game_draws(cap) if d["call"] == "DrawIndexed")
+        match = matcher_of(cap, mesh3)
+        check("a draw is recognised by its index buffer object, range and shaders",
+              set(match) == {"ib", "sn", "ic", "fi", "vs", "ps", "o"} and match["o"] == "game", str(match))
+
+        watched = Capture(*client.capture(detail="full", rt={"match": [match]}))
+        rts = watched.rts
+        check("one draw matched and was copied before and after",
+              watched.stats.get("rt_draws") == 1 and watched.stats.get("rt_matched") == 1
+              and [(r["when"], r["state"], r["kind"], r["slot"]) for r in rts]
+              == [(0, "ok", 10, 0), (1, "ok", 10, 0)], f"{watched.stats} {rts}")
+        if len(rts) != 2 or any(r["state"] != "ok" for r in rts):
+            return
+        found = watched.draw(rts[0]["draw"])
+        check("it is the draw that was asked for", found["call"] == "DrawIndexed"
+              and found["ib"]["hash"] == mesh3["ib"]["hash"] and rts[1]["draw"] == rts[0]["draw"], str(found["ib"]))
+        meta_before, before = client.read_rt(watched.frame, 0)
+        meta_after, after = client.read_rt(watched.frame, 1)
+        check("the copies are the whole target", (meta_after["width"], meta_after["height"]) == (width, height)
+              and rts[1]["box"] == [0, 0, width, height] and rts[1]["boxed"] is False and len(after) == width * height * 4,
+              f"{meta_after} {rts[1]}")
+        count, box, _ = changed_region(before, after, width, height, meta_after["row_bytes"])
+        # mesh 3 is a grid from (-0.95, -0.85) to (-0.40, -0.30) in clip space
+        expected = [0.025 * width, 0.65 * height, 0.30 * width, 0.925 * height]
+        check("the pixels that changed are where that mesh is",
+              bool(box) and all(abs(got - want) <= 2 for got, want in zip(box, expected)), f"{box} vs {expected}")
+        check("and they are most of that rectangle", bool(count) and count > 0.9 * (expected[2] - expected[0]) * (expected[3] - expected[1]),
+              str(count))
+
+        def pixel(data, x, y):
+            at = (y * width + x) * 4
+            return tuple(data[at:at + 4])
+
+        centre = (int(0.16 * width), int(0.79 * height))
+        clear = (13, 15, 23, 255)
+        check("before the draw the place still holds the clear colour", pixel(before, *centre) == clear, str(pixel(before, *centre)))
+        check("after it the mesh is there", pixel(after, *centre) != clear and pixel(after, *centre)[3] == 255, str(pixel(after, *centre)))
+        other = (int(0.16 * width), int(0.2 * height))      # mesh 1, drawn earlier in the frame
+        check("what was drawn earlier is in both copies", pixel(before, *other) == pixel(after, *other) != clear,
+              f"{pixel(before, *other)} {pixel(after, *other)}")
+
+        half = [0, height // 2, width // 2, height]
+        boxed = Capture(*client.capture(detail="full", rt={"match": [match], "box": half}))
+        meta, data = client.read_rt(boxed.frame, 1)
+        check("a box limits the copy to that part of the target",
+              boxed.rts[1]["box"] == half and boxed.rts[1]["boxed"] is True and (meta["width"], meta["height"]) == (width // 2, height // 2)
+              and len(data) == (width // 2) * (height // 2) * 4, f"{boxed.rts[1]} {meta}")
+        count_boxed, where, _ = changed_region(client.read_rt(boxed.frame, 0)[1], data, meta["width"], meta["height"], meta["row_bytes"])
+        check("the change is found inside the box, at its place relative to the box",
+              bool(where) and abs(where[1] + half[1] - expected[1]) <= 2 and abs(where[0] - expected[0]) <= 2, f"{where}")
+
+        both = Capture(*client.capture(detail="full", rt={"match": [match], "all": True, "depth": True}))
+        kinds = [(r["when"], r["kind"], r["state"], r.get("fmt_name")) for r in both.rts]
+        check("the depth target can be copied along", kinds == [(0, 10, "ok", "R8G8B8A8_UNORM"), (0, 11, "ok", "D32_FLOAT"),
+                                                              (1, 10, "ok", "R8G8B8A8_UNORM"), (1, 11, "ok", "D32_FLOAT")], str(kinds))
+        meta, data = client.read_rt(both.frame, 3)
+        check("and read as 32-bit depth", meta.get("format_name") == "D32_FLOAT" and len(data) == width * height * 4, str(meta))
+
+        first = Capture(*client.capture(detail="full", rt={"match": [{"o": "game"}], "max": 1}))
+        check("the limit counts draws, in frame order; how many matched is reported as well",
+              first.stats["rt_draws"] == 1 and first.stats["rt_matched"] == 6 and len(first.rts) == 2
+              and first.draw(first.rts[0]["draw"])["call"] == "DrawIndexedInstanced",
+              f"{first.stats} {[r['draw'] for r in first.rts]}")
+        after_only = Capture(*client.capture(detail="full", rt={"match": [match], "before": False}))
+        check("without 'before' only the copy after the draw is made", [r["when"] for r in after_only.rts] == [1])
+
+        blit = next(d for d in reversed(game_draws(cap)) if d["call"] == "DrawInstanced")
+        by_shader = Capture(*client.capture(detail="full", rt={"match": [{"sh": blit["shaders"]["ps"]}]}))
+        check("a draw without an index buffer is chosen by its shader, into the back buffer",
+              [r["state"] for r in by_shader.rts] == ["ok", "ok"] and by_shader.draw(by_shader.rts[0]["draw"])["call"] == "DrawInstanced"
+              and by_shader.draw(by_shader.rts[0]["draw"])["shaders"]["ps"] == blit["shaders"]["ps"], str(by_shader.rts))
+
+        kept = Capture(*client.capture(detail="full", rt={"match": [match]}))
+        client.read_rt(kept.frame, 1)
+        client.release_rt(kept.frame + 1)       # not this capture: nothing happens
+        check("a copy can be read more than once", len(client.read_rt(kept.frame, 1)[1]) == width * height * 4)
+        client.release_rt(kept.frame)
+        try:
+            client.read_rt(kept.frame, 1)
+            check("released copies cannot be read any more", False)
+        except ProbeError as exc:
+            check("released copies cannot be read any more", "released" in str(exc), str(exc))
+        ib = kept.draw(kept.rts[0]["draw"])["ib"]
+        _, index_data = client.read_buffer(kept.frame, ib["res"], 0, 64)
+        check("the rest of that capture stays readable", len(index_data) == 64, str(len(index_data)))
+
+        tight = Capture(*client.capture(detail="full", rt={"match": [{"o": "game"}], "max": 64, "budget_mb": 16}))
+        states = [(r["when"], r["state"]) for r in tight.rts]
+        left_out = [n for n, (_, state) in enumerate(states) if state == "over_budget"]
+        check("copies beyond the pixel budget are listed as left out",
+              bool(left_out) and tight.stats["rt_over_budget"] == len(left_out)
+              and tight.stats["rt_bytes"] <= 16 * 2 ** 20, f"{states} {tight.stats}")
+        # 16 MiB hold four copies of this target: two draws with both of theirs
+        check("a copy from before a draw is only made when the one after it fits too",
+              states[:4] == [(0, "ok"), (1, "ok"), (0, "ok"), (1, "ok")] and all(state == "over_budget" for _, state in states[4:]),
+              str(states))
+        states = [state for _, state in states]
+        try:
+            client.read_rt(tight.frame, states.index("over_budget"))
+            check("a copy that was left out cannot be read", False)
+        except ProbeError as exc:
+            check("a copy that was left out cannot be read", "no pixels" in str(exc), str(exc))
+
+        plain = Capture(*client.capture(detail="full"))
+        check("an ordinary capture makes no copies", plain.rts == [] and "rt_draws" not in plain.stats)
+        try:
+            client.read_rt(tight.frame, 0)
+            check("copies go with their capture", False)
+        except ProbeError as exc:
+            check("copies go with their capture", "no longer held" in str(exc), str(exc))
+        for bad in ({"match": []}, {"match": [{}]}):
+            try:
+                client.capture(detail="full", rt=bad)
+                check("a request that selects nothing is refused", False, str(bad))
+            except ProbeError as exc:
+                check("a request that selects nothing is refused", "selects no draw" in str(exc), str(exc))
+        gone = Capture(*client.capture(detail="full", rt={"match": [{"draw": 9999}]}))
+        check("a selection that matches no draw gives an empty list", gone.rts == [] and gone.stats["rt_draws"] == 0)
+        client.close()
+    finally:
+        sb.quit()
+
+
 def live_items(frame: dict) -> list[list]:
     return [it for it in frame["items"] if it[1] != "xxmi"]
 
@@ -378,6 +670,8 @@ def main() -> int:
     test_capture_and_reads(xxmi=True)
     test_capture_and_reads(xxmi=False)
     test_recreated_buffers()
+    test_pipeline_state()
+    test_render_target_copies()
 
     r = test_live(["--stream"], "unrelated data streamed into the shared buffer every frame")
     if r:

@@ -629,6 +629,7 @@ static void STDMETHODCALLTYPE H_Draw(ID3D11DeviceContext* This, UINT VertexCount
 		if (g_tracking) cap_gpu_writes_om();
 	}
 	CTX_ORIG(h)->Draw(This, VertexCount, StartVertexLocation);
+	if (g_rt_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawIndexed(ID3D11DeviceContext* This, UINT IndexCount, UINT StartIndexLocation,
@@ -644,6 +645,7 @@ static void STDMETHODCALLTYPE H_DrawIndexed(ID3D11DeviceContext* This, UINT Inde
 		if (g_tracking) cap_gpu_writes_om();
 	}
 	CTX_ORIG(h)->DrawIndexed(This, IndexCount, StartIndexLocation, BaseVertexLocation);
+	if (g_rt_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawInstanced(ID3D11DeviceContext* This, UINT VertexCountPerInstance, UINT InstanceCount,
@@ -659,6 +661,7 @@ static void STDMETHODCALLTYPE H_DrawInstanced(ID3D11DeviceContext* This, UINT Ve
 		if (g_tracking) cap_gpu_writes_om();
 	}
 	CTX_ORIG(h)->DrawInstanced(This, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
+	if (g_rt_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawIndexedInstanced(ID3D11DeviceContext* This, UINT IndexCountPerInstance,
@@ -677,6 +680,7 @@ static void STDMETHODCALLTYPE H_DrawIndexedInstanced(ID3D11DeviceContext* This, 
 	}
 	CTX_ORIG(h)->DrawIndexedInstanced(This, IndexCountPerInstance, InstanceCount, StartIndexLocation,
 	                                  BaseVertexLocation, StartInstanceLocation);
+	if (g_rt_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawAuto(ID3D11DeviceContext* This)
@@ -690,6 +694,7 @@ static void STDMETHODCALLTYPE H_DrawAuto(ID3D11DeviceContext* This)
 		if (g_tracking) cap_gpu_writes_om();
 	}
 	CTX_ORIG(h)->DrawAuto(This);
+	if (g_rt_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawIndexedInstancedIndirect(ID3D11DeviceContext* This, ID3D11Buffer* pArgs, UINT Offset)
@@ -703,6 +708,7 @@ static void STDMETHODCALLTYPE H_DrawIndexedInstancedIndirect(ID3D11DeviceContext
 		if (g_tracking) cap_gpu_writes_om();
 	}
 	CTX_ORIG(h)->DrawIndexedInstancedIndirect(This, pArgs, Offset);
+	if (g_rt_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawInstancedIndirect(ID3D11DeviceContext* This, ID3D11Buffer* pArgs, UINT Offset)
@@ -716,6 +722,7 @@ static void STDMETHODCALLTYPE H_DrawInstancedIndirect(ID3D11DeviceContext* This,
 		if (g_tracking) cap_gpu_writes_om();
 	}
 	CTX_ORIG(h)->DrawInstancedIndirect(This, pArgs, Offset);
+	if (g_rt_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* This, UINT X, UINT Y, UINT Z)

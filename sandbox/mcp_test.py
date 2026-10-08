@@ -206,6 +206,18 @@ def main() -> int:
               and d["constant_buffers"]["vs-cb0"]["num_constants"] == 16 and d["textures"]["ps-t2"].split()[2] == "64x64"
               and d["input_layout"][0].startswith("POSITION R32G32B32_FLOAT") and d["args"]["instance_count"] == 4, text)
 
+        check("get_draw: fixed-function state of an ordinary draw",
+              d.get("blend", {}).get("default") is True and d["blend"]["all_targets"] == {"enabled": False, "write_mask": "rgba"}
+              and d["blend"]["sample_mask"] == "0xffffffff" and d["depth_stencil"] == {"depth_test": False, "stencil": False}
+              and d["rasterizer"]["cull"] == "none" and d["rasterizer"]["scissor"] is False and "scissor_rects" not in d
+              and d["viewport"] == [0, 0, 1280, 720] and d["viewport_depth_range"] == [0, 1] and "viewport_count" not in d
+              and "pipeline_state" not in d, text)
+        check("get_draw: samplers", list(d.get("samplers", {})) == ["ps-s0"] and d["samplers"]["ps-s0"]["filter"] == "min_mag_mip_linear"
+              and d["samplers"]["ps-s0"]["address"] == "wrap/wrap/wrap", str(d.get("samplers")))
+        check("get_draw: views of whole textures are not mentioned",
+              all("| view:" not in line for line in list(d["textures"].values()) + list(d["outputs"].values()))
+              and set(d["outputs"]) == {"o0", "oD"}, f"{d['textures']} {d['outputs']}")
+
         text, err, _ = mcp.call("efmi_read_buffer", draw=draw_idx, slot="ib", count=2)
         b = json.loads(text)
         check("read_buffer ib", b["indices"] == [0, 13, 1, 1, 13, 14] and b["index_count"] == 864 and b["max"] == 168
@@ -275,6 +287,70 @@ def main() -> int:
         text, err, _ = mcp.call("efmi_read_buffer", draw=draw_idx, slot="ib", capture=frame)
         check("reading from a superseded capture is refused clearly", err and "capture again" in text, text)
 
+        print("== what a draw paints")
+        check("the tool is listed with its selection arguments",
+              {"hash", "draws", "max_draws", "depth", "box", "targets"} <= set(tools["efmi_capture_draw_outputs"]["inputSchema"]["properties"]))
+
+        def changed_box(report: str, number: int = 0) -> list[int]:
+            return json.loads(report.split(" within ")[number + 1].split(" (left")[0])
+
+        def saved(report: str) -> list[Path]:
+            return [Path(line.split(": ", 1)[1]) for line in report.splitlines()
+                    if line.strip().startswith(("before: ", "after: ", "what it touched: "))]
+
+        # The latest capture is a light one: enough to find the mesh again.
+        text, err, content = mcp.call("efmi_capture_draw_outputs", hash=ib_hash)
+        if verbose: print(text)
+        images = [c for c in content if c["type"] == "image"]
+        check("capture_draw_outputs by index buffer hash", not err and "draws that matched: 1; targets copied for 1 of them" in text
+              and f"ib={ib_hash} ic=864 [mod: SandboxTestMod]" in text and "o0: " in text and "1280x720 R8G8B8A8_UNORM" in text
+              and "preview image: 1" in text and len(images) == 1 and images[0]["mimeType"] == "image/png", text)
+        if not err and " within " in text:
+            # Mesh 1 is a grid from (-0.95, -0.05) of size 0.55, drawn four times, each 0.18 higher: it reaches the top edge.
+            box = changed_box(text)
+            check("the changed area is where the four instances of that mesh are",
+                  all(abs(got - want) <= 2 for got, want in zip(box, [32, 0, 384, 378])), str(box))
+            files = saved(text)
+            check("before, after and the marked picture are saved", len(files) == 3 and all(f.stat().st_size > 2000 for f in files)
+                  and {f.name.split("-")[-1] for f in files} == {"before.png", "after.png", "changed.png"}, str(files))
+        outputs_frame = int(text.split()[1].rstrip(":"))
+        new_idx = int(next(l for l in text.splitlines() if l.startswith("#")).split()[0][1:])
+        text, err, _ = mcp.call("efmi_read_buffer", draw=new_idx, slot="ib", count=2)
+        check("the frame it recorded is the latest capture and stays readable after the copies are released",
+              not err and json.loads(text)["indices"] == [0, 13, 1, 1, 13, 14] and json.loads(text)["capture"] == outputs_frame, text)
+        text, err, _ = mcp.call("efmi_status")
+        check("status has no warning about an old probe", not err and "need probe 0.1.5" not in text, text)
+
+        text, err, content = mcp.call("efmi_capture_draw_outputs", draws=[draw_idx], capture=frame, box=[0, 360, 640, 720],
+                                      preview=False)
+        if verbose: print(text)
+        check("capture_draw_outputs by draw number of an older capture, limited to a box",
+              not err and f"draws [{draw_idx}] of capture {frame}" in text and "targets copied for 1 of them" in text
+              and not [c for c in content if c["type"] == "image"], text)
+        if not err and " within " in text:
+            box = changed_box(text)
+            check("the changed area is given in pixels of the whole target", all(abs(got - want) <= 2 for got, want in
+                                                                               zip(box, [32, 360, 384, 378])), str(box))
+
+        ps_hash = ib_line.split("ps=")[1].split()[0]
+        text, err, content = mcp.call("efmi_capture_draw_outputs", hash=ps_hash, max_draws=2, depth=True, targets="all")
+        if verbose: print(text)
+        shown = [l for l in text.splitlines() if l.startswith("#")]
+        check("capture_draw_outputs by shader hash: the limit, and the depth target along",
+              not err and "draws that matched: 5; targets copied for 2 of them (the first 2 in frame order" in text
+              and len(shown) == 4 and text.count("    oD: ") == 2 and text.count("D32_FLOAT") == 2
+              and text.count("changed nothing in this target (depth writes are off") == 2
+              and "Depth pictures are scaled" in text, text)
+        check("previews are returned for the colour targets that changed", len([c for c in content if c["type"] == "image"]) == 2,
+              str(len(content)))
+
+        text, err, _ = mcp.call("efmi_capture_draw_outputs", hash="deadbeef")
+        check("an index buffer hash that is not in the capture is a clear error", err and "no draw of capture" in text, text)
+        text, err, _ = mcp.call("efmi_capture_draw_outputs")
+        check("a call without a selection is a clear error", err and "give draws" in text, text)
+        text, err, _ = mcp.call("efmi_capture_draw_outputs", hash=ib_hash, box=[10, 10, 5, 20])
+        check("a box that is not one is a clear error", err and "box must be" in text, text)
+
         print("== after the game exits")
         sb.quit()
         sb = None
@@ -283,6 +359,70 @@ def main() -> int:
         check("capture after exit is a clear error", err, text)
         text, err, _ = mcp.call("efmi_list_draws", capture=frame, limit=2)
         check("captures in memory stay usable", not err and "#" in text, text)
+
+        print("== a second game session, with every kind of fixed-function state in use")
+        sb = Sandbox(["--state-pass"])
+        if not sb.ready.wait(30):
+            check("second sandbox starts", False)
+            return 1
+        time.sleep(1.0)
+        text, err, _ = mcp.call("efmi_capture_frame", detail="full")
+        check("the server finds the new game process", not err and "9 from the game" in text, text)
+        text, err, _ = mcp.call("efmi_list_draws", origin="game")
+        lines = [l for l in text.splitlines() if l.startswith("#")]
+        x_line = next((l for l in lines if "DrawIndexedInstancedIndirect" in l), "")
+        check("the indirect draw is listed", bool(x_line), text)
+        if x_line:
+            text, err, _ = mcp.call("efmi_get_draw", draw=int(x_line.split()[0][1:]))
+            if verbose: print(text)
+            d = json.loads(text)
+            check("get_draw: the arguments an indirect draw read from its buffer",
+                  d["indirect_args"]["offset"] == 20 and d["indirect_args"].get("args") == {
+                      "index_count": 294, "instance_count": 2, "first_index": 0, "first_vertex": 0, "first_instance": 0}, text)
+            check("get_draw: blend state", d["blend"]["all_targets"] == {
+                "enabled": True, "write_mask": "rgb", "src": "src_alpha", "dst": "inv_src_alpha", "op": "add",
+                "src_alpha": "one", "dst_alpha": "blend_factor", "op_alpha": "max"}
+                and d["blend"]["sample_mask"] == "0x0000ffff" and "default" not in d["blend"]
+                and [round(v, 3) for v in d["blend"]["blend_factor"]] == [0.1, 0.2, 0.3, 0.4], str(d["blend"]))
+            check("get_draw: depth-stencil state", d["depth_stencil"]["depth_func"] == "less_equal"
+                  and d["depth_stencil"]["depth_write"] is False and d["depth_stencil"]["stencil"]["ref"] == 5
+                  and d["depth_stencil"]["stencil"]["front"] == {"func": "not_equal", "pass": "replace", "fail": "keep",
+                                                                 "depth_fail": "incr_sat"}, str(d["depth_stencil"]))
+            check("get_draw: rasterizer state with its scissor rectangles", d["rasterizer"]["cull"] == "front"
+                  and d["rasterizer"]["front_ccw"] is True and d["rasterizer"]["depth_bias"] == 3
+                  and d["scissor_rects"] == [[10, 20, 120, 60], [5, 6, 7, 8]], f"{d['rasterizer']} {d.get('scissor_rects')}")
+            check("get_draw: viewports", d["viewport"] == [0, 0, 128, 64] and d["viewport_count"] == 2
+                  and d["viewport_depth_range"] == [0.25, 0.75], f"{d['viewport']} {d.get('viewport_count')} {d['viewport_depth_range']}")
+            check("get_draw: samplers per stage", d["samplers"]["ps-s3"]["comparison"] == "less_equal"
+                  and d["samplers"]["ps-s3"]["address"] == "clamp/border/mirror" and d["samplers"]["vs-s1"]["max_anisotropy"] == 4,
+                  str(d["samplers"]))
+            check("get_draw: views that show a part of their resource say so",
+                  d["textures"]["ps-t8"].endswith("| view: R8G8B8A8_UNORM tex2d_array mips 1..+2 slices 1..+2")
+                  and d["textures"]["vs-t9"].endswith("| view: UNKNOWN buffer elements 8..+24")
+                  and d["outputs"]["o0"].endswith("| view: R8G8B8A8_UNORM tex2d mip 1")
+                  and "| view:" not in d["textures"]["ps-t0"], f"{d['textures']} {d['outputs']}")
+
+        mesh3 = next((l for l in lines if l.split()[1] == "DrawIndexed" and "ic=294" in l), "")
+        if mesh3:
+            ib3 = mesh3.split("ib=")[1].split()[0]
+            text, err, _ = mcp.call("efmi_capture_draw_outputs", hash=ib3, preview=False)
+            if verbose: print(text)
+            # The indirect draw of the same buffer has no region hash (its index count is not known when it
+            # is issued), so the hash selects the two DrawIndexed calls: the scene's and the depth pass.
+            check("a pass without a colour target is named and not counted",
+                  not err and "1 matching draw has no colour target" in text and "depth=true" in text and "    oD: " not in text
+                  and "draws that matched: 2; targets copied for 1 of them;" in text, text)
+            text, err, content = mcp.call("efmi_capture_draw_outputs", hash=ib3, depth=True)
+            if verbose: print(text)
+            depth_only = text.split("\n#")[-1]
+            check("with depth=true its depth target is copied and the written area found",
+                  not err and "no colour target" not in text and "draws that matched: 2; targets copied for 2 of them;" in text
+                  and "    oD: " in depth_only and "    o0: " not in depth_only and " within [3, 42, 38, 59]" in depth_only
+                  and len([c for c in content if c["type"] == "image"]) == 2, text)
+        else:
+            check("mesh 3 is listed", False, text)
+        sb.quit()
+        sb = None
     finally:
         if sb:
             sb.quit()

@@ -8,6 +8,7 @@
   6. reload workflow/input unit tests (fake input; real F10 test is opt-in)
   7. model workflow unit tests (no game, Blender or LoyalTools; model_offline_integration.py is opt-in)
   8. mods switch unit tests (fake probe; the real F11 test mods_toggle_integration_test.py is opt-in)
+  9. draw output and pipeline state unit tests (fake probe)
 """
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ def main() -> int:
         ("reload workflow MCP contract (fake probe/input)", ["sandbox/reload_workflow_test.py"]),
         ("model workflow logic (export checks, deployment, draw comparison, jobs)", ["sandbox/model_workflow_test.py"]),
         ("mods switch MCP contract (fake probe)", ["sandbox/mods_toggle_test.py"]),
+        ("draw outputs and pipeline state (fake probe)", ["sandbox/draw_outputs_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")
