@@ -6,10 +6,11 @@
 
 T-001 至 T-007 已完成。T-007 的原因是 UIPI；探针 0.1.2 / 服务 0.1.4 改为进程内按键，沙盒与实机（游戏在前台、在后台各一次）均已验证。每次改完并完成相关验证后提交并推送指定仓库（见 `AGENTS.md` / D-007）。
 
-### T-012：把 RabbitFX 形式的 mod 改成槽位形式（TangTang 已按用户要求改完，主着色遍实机核对通过；画面对比和 LOD 待补，2026-10-08）
+### T-012：把 RabbitFX 形式的 mod 改成槽位形式（TangTang 已按用户要求改完并实机核对；只剩 LOD 距离没看，2026-10-08）
 
 - **TangTang 已改**（CURRENT_STATE 首节）：原 INI 备份在 mod 目录的 `tangtang.ini.rabbitfx-backup-20261008`。取槽位的办法比下面设想的更直接——读 RabbitFX 改写后的着色器里的回退槽位，不需要关 mod、不需要提取。
-- **待补（需要游戏开着、TangTang 在画面里）**：① `efmi_capture_draw_outputs hash=c1e10078 targets=all`（组件 0）和组件 2 的某个子网格，与 `captures/frame-125326/draw-outputs/` 里改前的画面对比，说清 G-buffer 遍和组件 2 描边换回游戏贴图后看得出多少差别；② 角色放到 LOD 距离，看 LOD 绘制绑定的着色器是否仍是近景那几个，槽位是否一样。都不需要按键。
+- 画面对比和“留在槽位上的 mod 贴图是否影响别的绘制”已补做（CURRENT_STATE 首节）：主着色结果看不出差别，没有发现别的绘制采到 TangTang 的贴图。
+- **待补（需要用户把 TangTang 放到 LOD 距离，不按键）**：看 LOD 绘制绑定的像素着色器是否仍是近景那几个（`47868ca9…`、`2d0b12a7…` 等），不是的话用 `efmi_get_shader` 读它的回退槽位，槽位不同就得给槽位行加 `$lod_level` 条件。
 - 用户若觉得组件 2 的描边或 G-buffer 有差别要补：得按遍加条件（例如给描边遍的顶点着色器 `1041f0408b0e4fc3` 一个 `ShaderOverride` 的 `filter_index`，在绘制段里 `if vs == …` 再写 `ps-t13`），不能无条件写。
 
 - 两种写法（只读查看所得）。槽位形式：组件的绘制段里直接写 `ps-t16 = Resource…DiffuseMap` 这类行（`Xaihi Venomous Vows 2.0`、`arcane fes 1.2`，LoyalTools 的导出也是这种）。RabbitFX 形式：写 `Resource\RabbitFx\Diffuse／LightMap／NormalMap = ref …` 再 `run = CommandList\RabbitFx\SetTextures`（`Yvonne Ensnared Heart 1.6`、`TangTang Seaside Breeze 1.4`、`perlica Ravenb 2.1`、`laevatain lune fluer 1.4`、`Liino Honmei Knit 1.6`）。
