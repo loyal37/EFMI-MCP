@@ -530,51 +530,107 @@ class ProbePressedReloadTests(unittest.TestCase):
     def captures(self):
         return [(event[2]["detail"], event[2]["cb_data"]) for event in self.probe.events if event[0] == "capture"]
 
-    def xxmi_draws_from(self, second):
-        """Nothing of XXMI's is drawn until ``second`` on the test clock, as after a reload that stalled the game."""
+    def xxmi_draws(self, *steps):
+        """How many buffers that XXMI created after the key press are drawn, from which second of the test clock on:
+        ``(2.6, 1), (2.8, 3)`` is none of them, one from 2.6 s, three from 2.8 s. The settle time ends at 2.0 s."""
         def edit(doc):
-            if self.clock.now >= second:
-                doc["resources"].append(xxmi_buffer(150))
-                doc["draws"][0]["vb"] = [[0, len(doc["resources"]) - 1, 16, 0, -1]]
+            count = 0
+            for second, amount in steps:
+                if self.clock.now >= second:
+                    count = amount
+            first = len(doc["resources"])
+            for n in range(count):
+                doc["resources"].append(dict(xxmi_buffer(150), sn=40 + n, hash=f"0bad{n:04x}"))
+            doc["draws"][0]["vb"] = [[slot, first + slot, 16, 0, -1] for slot in range(count)]
         self.probe.edit_document = edit
 
-    def test_frames_are_looked_at_until_xxmi_draws_what_it_created_anew(self):
-        self.xxmi_draws_from(2.0 + 0.6)                  # 0.6 s after the settle time
+    def test_frames_are_looked_at_until_what_xxmi_draws_stops_growing(self):
+        self.xxmi_draws((2.6, 1), (2.8, 3))             # nothing at first, then one mod, then all of them
         result, error = self.call(confirm_wait_ms=3000)
         self.assertFalse(error, result)
         self.assertIs(result["reload_confirmed"], True)
-        self.assertEqual(self.captures(), [("full", True), ("light", False), ("light", False), ("light", False), ("full", True)])
-        self.assertEqual(result["frames_looked_at"], 5)
-        self.assertEqual(result["waited_for_xxmi_ms"], 1000.0)
+        # looks at 2.0, 2.25, 2.5 (nothing), 2.75 (one), 3.0 (three: still growing), 3.25 (three: settled)
+        self.assertEqual(self.captures(), [("light", False)] * 6 + [("full", True)])
+        self.assertEqual((result["frames_looked_at"], result["waited_for_xxmi_ms"], result["mods_settled"]), (7, 1250.0, True))
+        self.assertEqual(result["reload_evidence"]["resources_created_after_key"], 3)
+        self.assertNotIn("still coming back", result["confirmation_note"])
         self.assertEqual(len(self.probe.presses), 1)
-        # Only the frame that was returned is kept: the probe can no longer read the first one.
+        # Only the frame that was returned is kept, and it is the one the probe can still read.
         self.assertEqual(list(self.session.captures), [result["capture"]["frame"]])
         self.assertEqual(self.session.latest, result["capture"]["frame"])
         self.assertEqual(self.session.capture("latest").detail, "full")
 
-    def test_waiting_for_xxmi_is_bounded_and_says_so(self):
+    def test_a_first_frame_with_some_mods_back_is_not_returned(self):
+        # What the game did on 2026-10-08: three frames after the key about half of the mod draws were back.
+        self.xxmi_draws((0.0, 2), (2.2, 4))
+        result, error = self.call(confirm_wait_ms=3000)
+        self.assertFalse(error, result)
+        self.assertEqual(self.captures(), [("light", False)] * 3 + [("full", True)])
+        self.assertEqual((result["reload_confirmed"], result["mods_settled"], result["frames_looked_at"]), (True, True, 4))
+        self.assertEqual(result["reload_evidence"]["resources_created_after_key"], 4)
+
+    def test_two_looks_are_enough_when_the_mods_are_back_already(self):
+        self.xxmi_draws((0.0, 2))
+        result, error = self.call(confirm_wait_ms=3000)
+        self.assertFalse(error, result)
+        self.assertEqual(self.captures(), [("light", False), ("light", False), ("full", True)])
+        self.assertEqual((result["reload_confirmed"], result["frames_looked_at"], result["waited_for_xxmi_ms"],
+                          result["mods_settled"]), (True, 3, 250.0, True))
+
+    def test_fewer_mods_in_view_than_a_moment_ago_counts_as_settled(self):
+        self.xxmi_draws((0.0, 3), (2.2, 1))             # the camera turned away from one of them
+        result, error = self.call(confirm_wait_ms=3000)
+        self.assertFalse(error, result)
+        self.assertEqual((result["reload_confirmed"], result["mods_settled"], result["frames_looked_at"]), (True, True, 3))
+
+    def test_waiting_is_bounded_when_nothing_of_xxmi_appears(self):
         result, error = self.call(confirm_wait_ms=1000)
         self.assertFalse(error, result)
         self.assertIs(result["reload_confirmed"], False)
-        self.assertEqual(self.captures(), [("full", True)] + [("light", False)] * 4 + [("full", True)])
-        self.assertEqual(result["waited_for_xxmi_ms"], 1250.0)
-        self.assertIn("nor by the 5 later frame(s)", result["confirmation_note"])
+        self.assertEqual(self.captures(), [("light", False)] * 5 + [("full", True)])
+        self.assertEqual((result["frames_looked_at"], result["waited_for_xxmi_ms"], result["mods_settled"]), (6, 1000.0, None))
+        self.assertIn("nor by the 5 frame(s) looked at before it", result["confirmation_note"])
         self.assertEqual(len(self.probe.presses), 1)
 
-    def test_no_waiting_when_the_first_frame_settles_it(self):
-        self.bind_to_game_draw(xxmi_buffer(150))
-        result, error = self.call(confirm_wait_ms=3000)
+    def test_mods_still_coming_back_when_the_wait_ends_is_said(self):
+        self.xxmi_draws((0.0, 1), (2.2, 2), (2.4, 3), (2.7, 4))
+        result, error = self.call(confirm_wait_ms=500)
         self.assertFalse(error, result)
-        self.assertEqual((result["reload_confirmed"], result["frames_looked_at"], result["waited_for_xxmi_ms"]), (True, 1, None))
+        # looks at 2.0 (one), 2.25 (two), 2.5 (three) and the time is up
+        self.assertEqual(self.captures(), [("light", False)] * 3 + [("full", True)])
+        self.assertEqual((result["reload_confirmed"], result["mods_settled"], result["waited_for_xxmi_ms"]), (True, False, 500.0))
+        self.assertIn("Mods were still coming back when the wait ended", result["confirmation_note"])
+        self.assertIn("without another F10", result["confirmation_note"])
+        self.assertEqual(len(self.probe.presses), 1)
+
+    def test_one_frame_when_no_wait_is_asked_for(self):
+        self.xxmi_draws((0.0, 2), (2.2, 4))
+        result, error = self.call(confirm_wait_ms=0)
+        self.assertFalse(error, result)
         self.assertEqual(self.captures(), [("full", True)])
-        # XXMI creating resources on its own before the key press cannot be told apart by waiting either.
-        self.probe.events.clear()
-        self.probe.edit_document = None
+        self.assertEqual((result["reload_confirmed"], result["frames_looked_at"], result["waited_for_xxmi_ms"],
+                          result["mods_settled"]), (True, 1, None, None))
+        self.assertEqual(result["reload_evidence"]["resources_created_after_key"], 2)
+
+    def test_looking_longer_cannot_settle_what_xxmi_created_on_its_own(self):
+        # XXMI was creating resources before the key press: new ones say nothing about a reload.
+        self.xxmi_draws((0.0, 2))
         self.probe.receipt = {"xxmi_creates_before_press": 3}
         result, error = self.call(confirm_wait_ms=3000)
         self.assertFalse(error, result)
-        self.assertEqual((result["reload_confirmed"], result["frames_looked_at"]), (False, 1))
-        self.assertEqual(self.captures(), [("full", True)])
+        self.assertEqual(self.captures(), [("light", False), ("full", True)])
+        self.assertEqual((result["reload_confirmed"], result["frames_looked_at"], result["mods_settled"]), (False, 2, None))
+
+    def test_an_empty_frame_while_looking_is_an_error_and_the_key_is_not_pressed_again(self):
+        self.probe.capture_empty = True
+        text, error = mcp_call(self.server, "efmi_reload_and_capture", confirm_wait_ms=3000)
+        self.assertTrue(error, text)
+        failure = json.loads(text)
+        self.assertEqual((failure["phase"], failure["reload_requested"]), ("capture", True))
+        self.assertIn("contains no draws", failure["reason"])
+        self.assertEqual(len(self.probe.presses), 1)
+        self.assertEqual(self.captures(), [("light", False)])
+        self.assertEqual(list(self.session.captures), [])
 
     def test_confirm_wait_out_of_range_is_refused_before_anything_happens(self):
         for bad in (-1, 15001, 2.5, "3000"):

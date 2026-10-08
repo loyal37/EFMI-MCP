@@ -34,7 +34,7 @@
 - 项目：`F:\EFMI MCP`；服务入口：`server/run_server.py`。
 - README 配置的 Python：`D:\Python312\python.exe`。
 - 服务默认 EFMI 目录：`D:\XXMI-Launcher-Portable-v2.1.6\EFMI`，支持 `--efmi-root` / `EFMI_ROOT` 覆盖，工具不直接写入其文件。
-- 探针日志：`dist/efmi_probe.log`。服务版本为 `0.1.9`，磁盘上的探针为 `0.1.5`、协议号 `1`（2026-10-08 装入，同日重启的游戏 PID `9736` 加载的就是它）；版本以 `efmi_status` 的输出为准。历史：真实游戏 PID `38252` 曾确认报告 `0.1.1`，此前 `0.1.0` 的空捕获仅是历史故障证据。
+- 探针日志：`dist/efmi_probe.log`。服务版本为 `0.1.10`，磁盘上的探针为 `0.1.5`、协议号 `1`（2026-10-08 装入，同日重启的游戏 PID `9736` 加载的就是它）；版本以 `efmi_status` 的输出为准。历史：真实游戏 PID `38252` 曾确认报告 `0.1.1`，此前 `0.1.0` 的空捕获仅是历史故障证据。
 - 源码仓库：`https://github.com/loyal37/EFMI-MCP`。用户 2026-10-06 要求此后验证完成后提交并推送，详见 `AGENTS.md` / D-007。
 
 ## 长期约束

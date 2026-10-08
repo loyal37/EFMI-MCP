@@ -16,7 +16,7 @@ from .mcp_stdio import ToolError
 from .reload_input import ReloadInputError, send_reload_f10, send_reload_via_probe
 
 RESUME_TIMEOUT_S = 10.0    # how long a reload may keep the game from presenting a frame
-CONFIRM_PAUSE_S = 0.25     # between looks at later frames while nothing of XXMI's is drawn yet
+CONFIRM_PAUSE_S = 0.25     # between looks at the frames after a reload, while mods are still coming back
 
 # Probes before 0.1.4 kept region hashes by buffer address. A reload destroys the mods' buffers and
 # creates new ones, some of them at addresses earlier buffers had: such a probe can record an old
@@ -139,7 +139,7 @@ def reload_evidence(cap: Capture, receipt: dict | None) -> dict | None:
     }
 
 
-def _note(in_process: bool, receipt: dict, evidence: dict | None, looks: int = 1) -> str:
+def _note(in_process: bool, receipt: dict, evidence: dict | None, looks: int = 1, settled: bool | None = None) -> str:
     if not in_process:
         return ("F10 events were accepted, the sender observed the pressed key state, "
                 "and a later nonempty frame was captured. "
@@ -148,13 +148,18 @@ def _note(in_process: bool, receipt: dict, evidence: dict | None, looks: int = 1
     pressed = (f"F10 was pressed inside the game process and seen there "
                f"(held across {receipt.get('frames_while_held')} frame(s), released on {receipt.get('released_on')}). ")
     if evidence and evidence["confirmed"]:
-        return (pressed + f"XXMI then created {evidence['resources_created_after_key']} resource(s) and "
+        text = (pressed + f"XXMI then created {evidence['resources_created_after_key']} resource(s) and "
                 f"{evidence['shaders_created_after_key']} shader(s) that this frame uses. A reload destroys mod "
                 "resources and they are created again on first use, so the reload took place. "
                 "This does not prove that every INI parsed without errors: check the draws you edited.")
+        if settled is False:
+            text += (" Mods were still coming back when the wait ended (what XXMI draws of its new objects was "
+                     "still growing): this frame may show only some of them. Capture again with efmi_capture_frame, "
+                     "without another F10.")
+        return text
     text = pressed + "Nothing that XXMI created after the key press is used by the captured frame"
     if looks > 1:
-        text += f" (nor by the {looks - 1} later frame(s) looked at before it)"
+        text += f" (nor by the {looks - 1} frame(s) looked at before it)"
     if evidence and evidence["xxmi_creations_just_before_key"]:
         text += (" in a way that can be told apart: XXMI was already creating resources on its own before the "
                  "key press. Verify the edit by its content.")
@@ -193,11 +198,12 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
     all previous session captures and mod-index data are invalidated, even on error.
     Continuous mode is stopped and left off; restarting it is a separate decision.
 
-    Right after a reload no mod may draw for a few frames: buffers and shaders
-    are created on first use, and a big reload stalls the game first. When the
-    first frame uses nothing XXMI created since the key press, later frames are
-    looked at for up to ``confirm_wait_ms`` and the frame that is returned is
-    taken after that. The key is pressed once in any case.
+    After a reload mods come back over several frames: buffers and shaders are
+    created on first use, so at first no mod draws, then some of them, then
+    all. Light frames are looked at until what XXMI draws of the objects it
+    created since the key press has stopped growing, for up to
+    ``confirm_wait_ms``, and the frame that is returned is taken after that.
+    The key is pressed once in any case.
     """
     phase = "preflight"
     started = time.monotonic()
@@ -268,46 +274,49 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
             raise ValueError("Process or selected rendering device changed after the reload request")
 
         phase = "capture"
+        stale = max(before["frame"], barrier["frame"])
+
+        def fresh(frame: Capture) -> Capture:
+            if frame.frame <= stale:
+                raise ValueError("Probe returned a stale frame rather than a frame after the reload wait")
+            if not len(frame):
+                raise ValueError("Post-request frame contains no draws; fresh rendering is not verified")
+            return frame
+
+        looks, waited_ms, settled = 0, None, None
+        if in_process and confirm_wait_ms:
+            # Mods come back over several frames (seen in the game: three frames after the
+            # key 272 of 508 mod draws were back, and the reload already counted as
+            # confirmed). Light frames are enough to watch what XXMI draws of its new
+            # objects grow; the frame to return is recorded once that has stopped. It is
+            # recorded last because only the probe's most recent capture can be read.
+            waiting = time.monotonic()
+            amount = None
+            while True:
+                doc, _ = client.capture(detail="light", cb_data=False, timeout_ms=timeout_ms)
+                seen = reload_evidence(fresh(Capture(doc)), receipt)
+                looks += 1
+                if seen is None or seen["xxmi_creations_just_before_key"]:
+                    break                   # nothing that looking longer could tell apart
+                if seen["confirmed"]:
+                    now = seen["resources_created_after_key"] + seen["shaders_created_after_key"]
+                    if amount is not None and now <= amount:
+                        settled = True
+                        break
+                    amount = now
+                if time.monotonic() - waiting >= confirm_wait_ms / 1000:
+                    settled = None if amount is None else False
+                    break
+                time.sleep(CONFIRM_PAUSE_S)
+            waited_ms = round((time.monotonic() - waiting) * 1000, 1)
         doc, blob = client.capture(detail=detail, cb_data=cb_data, timeout_ms=timeout_ms)
-        cap = Capture(doc, blob)
-        if cap.frame <= max(before["frame"], barrier["frame"]):
-            raise ValueError("Probe returned a stale frame rather than a frame after the reload wait")
-        if not len(cap):
-            raise ValueError("Post-request frame contains no draws; fresh rendering is not verified")
+        cap = fresh(Capture(doc, blob))
+        looks += 1
         after = client.status()
         if _identity(after, session.efmi_root) != identity:
             raise ValueError("Process or selected rendering device changed during the fresh capture")
         session.add_capture(cap)
         evidence = reload_evidence(cap, receipt) if in_process else None
-        looks, waited_ms = 1, None
-
-        def undecided(seen):
-            return seen is not None and not seen["confirmed"] and not seen["xxmi_creations_just_before_key"]
-
-        if confirm_wait_ms and undecided(evidence):
-            # Light frames are enough to see XXMI start using what it created. The frame
-            # that is returned is taken anew afterwards: only the probe's most recent
-            # capture can be read, so the first one cannot stay 'latest'.
-            waiting = time.monotonic()
-            while time.monotonic() - waiting < confirm_wait_ms / 1000:
-                time.sleep(CONFIRM_PAUSE_S)
-                light, _ = client.capture(detail="light", cb_data=False, timeout_ms=timeout_ms)
-                looks += 1
-                if not undecided(reload_evidence(Capture(light), receipt)):
-                    break
-            time.sleep(CONFIRM_PAUSE_S)     # mods that start a frame or two after the first one
-            doc, blob = client.capture(detail=detail, cb_data=cb_data, timeout_ms=timeout_ms)
-            later = Capture(doc, blob)
-            looks += 1
-            if later.frame <= cap.frame or not len(later):
-                raise ValueError("Probe returned no later nonempty frame while waiting for XXMI to draw")
-            if _identity(client.status(), session.efmi_root) != identity:
-                raise ValueError("Process or selected rendering device changed during the fresh capture")
-            session.captures.pop(cap.frame, None)
-            session.add_capture(later)
-            cap = later
-            evidence = reload_evidence(cap, receipt)
-            waited_ms = round((time.monotonic() - waiting) * 1000, 1)
         counts = {}
         for draw in cap.draws():
             origin = draw["origin"]
@@ -318,9 +327,11 @@ def reload_and_capture(session, *, detail="full", cb_data=True, settle_ms=2000,
             **({"hash_caution": caution} if caution else {}),
             "status": "captured_after_reload_request", "pid": identity[0],
             "reload_requested": True, "reload_confirmed": bool(evidence and evidence["confirmed"]),
-            "confirmation_note": _note(in_process, receipt, evidence, looks),
+            "confirmation_note": _note(in_process, receipt, evidence, looks, settled),
             "reload_evidence": evidence,
-            "frames_looked_at": looks, "waited_for_xxmi_ms": waited_ms,
+            # mods_settled: true once what XXMI draws of its new objects stopped growing between two looks,
+            # false when it was still growing as the wait ended, null when nothing of it appeared or nobody looked.
+            "frames_looked_at": looks, "waited_for_xxmi_ms": waited_ms, "mods_settled": settled,
             "sender": "probe" if in_process else "server",
             "input": receipt, "bindings": bindings,
             "before_frame": before["frame"], "barrier_frame": barrier["frame"],
