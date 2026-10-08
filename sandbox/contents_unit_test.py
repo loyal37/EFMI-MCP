@@ -194,6 +194,13 @@ class CaptureOption(ContentsCase):
         request = self.probe.requests[-1]["contents"]
         self.assertEqual(request["match"], [{"ib": "0x1000", "sn": 1, "ic": 6, "fi": 0, "o": "game", "first": 1}])
 
+    def test_buffers_only(self):
+        text = self.capture(contents="buffers")
+        request = self.probe.requests[-1]["contents"]
+        self.assertEqual(request["inputs"], ["ib", "vb", "cb", "buf"])
+        self.assertNotIn("outputs", request)
+        self.assertIn("contents: the probe keeps what each call saw", text)
+
     def test_no_contents_by_default(self):
         self.capture()
         self.assertIsNone(self.probe.requests[-1].get("contents"))
@@ -345,6 +352,57 @@ class Tools(ContentsCase):
         self.assertTrue(error)
         self.assertIn("contents='inputs'", text)
 
+    def rebind_second_draw(self):
+        """The second draw binds its vertices at another offset and no longer has the texture."""
+        cap = self.session.capture("latest")
+        cap.raw_draws[1]["vb"] = [[0, 1, 32, 32, 1]]
+        cap.raw_draws[1]["srv"] = [[0, 9, 2]]
+        cap.raw_draws[1]["srvv"] = [0]
+        if "csrv" in cap.raw_draws[1]:
+            cap.raw_draws[1]["csrv"] = [3]
+
+    def test_what_a_call_has_bound_differently(self):
+        self.capture(contents="inputs")
+        self.rebind_second_draw()
+        cap = self.session.capture("latest")
+        first, second = (contents.bindings_of(cap, cap.draw(n)) for n in (0, 1))
+        self.assertEqual(first["vs"], VS)
+        self.assertEqual(first["ib"], "aaaaaaaa at 0 R16_UINT")
+        self.assertEqual(first["ps-cb2"], "dddddddd registers 0..+2")
+        self.assertEqual(first["vs-t9"], "cccccccc (UNKNOWN buffer elements 8..+24)")
+        self.assertEqual(first["ps-t0"], "eeeeeeee")
+        self.assertEqual(first["o0"], "res6")                      # a target without a hash is named by its number
+        self.assertEqual(contents.binding_changes(first, second),
+                         ["bind vb0: bbbbbbbb at 32 stride 32 (was bbbbbbbb at 0 stride 32)", "bind ps-t0: nothing (was eeeeeeee)"])
+        self.assertEqual(contents.binding_changes(None, second), [])
+        self.assertEqual(contents.binding_changes(first, first), [])
+        # A dispatch is compared with the dispatch before it, not with the draw in between.
+        self.assertIsNone(contents.previous_bindings(cap, 2, True))
+        self.assertEqual(contents.previous_bindings(cap, 2, False), second)
+
+    def test_list_writes_with_bindings(self):
+        self.capture(contents="inputs")
+        self.rebind_second_draw()
+        text, error = call(self.server, "efmi_list_writes", bindings=True)
+        self.assertFalse(error, text)
+        lines = text.splitlines()
+        self.assertIn("2 binding changes", lines[1])
+        at_one = [line for line in lines if line.startswith("before #1 ")]
+        # the writes before a call first, then what it has bound differently
+        self.assertEqual([line.split(maxsplit=3)[2] for line in at_one], ["Map", "ClearRenderTargetView", "UpdateSubresource", "bind", "bind"])
+        self.assertIn("bind vb0: bbbbbbbb at 32 stride 32 (was bbbbbbbb at 0 stride 32)", at_one[3])
+        text, error = call(self.server, "efmi_list_writes", bindings=True, hash="eeeeeeee")
+        self.assertIn("1 binding changes", text)
+        self.assertIn("bind ps-t0: nothing (was eeeeeeee)", text)
+
+    def test_bindings_do_not_need_contents(self):
+        self.capture()
+        self.rebind_second_draw()
+        text, error = call(self.server, "efmi_list_writes", bindings=True)
+        self.assertFalse(error, text)
+        self.assertIn("no writes were listed", text)
+        self.assertIn("2 binding changes", text)
+
 
 class Dump(ContentsCase):
     def test_a_frame_written_out_reads_back_like_a_frame_analysis_dump(self):
@@ -393,6 +451,18 @@ class Dump(ContentsCase):
         self.assertEqual(log[-1], "000002 Dispatch(ThreadGroupCountX:1, ThreadGroupCountY:1, ThreadGroupCountZ:1)")
         self.assertLess(log.index("000001 Map res1 bbbbbbbb buffer 64 bytes subresource 0 write-discard"),
                         log.index("000001 DrawIndexed(IndexCount:6, StartIndexLocation:0, BaseVertexLocation:0)"))
+        self.assertFalse([line for line in log if " bind " in line])        # both draws have the same things bound
+
+    def test_the_log_says_what_a_call_has_bound_differently(self):
+        self.capture(contents="outputs")
+        cap = self.session.capture("latest")
+        cap.raw_draws[1]["vb"] = [[0, 1, 32, 32, 1]]
+        answer = json.loads(call(self.server, "efmi_dump_frame", first=1, last=1, kinds=["ib"])[0])
+        log = (Path(answer["folder"]) / "log.txt").read_text(encoding="utf-8").splitlines()
+        # also for the first call that is written: against the call before it
+        bind = "000001 bind vb0: bbbbbbbb at 32 stride 32 (was bbbbbbbb at 0 stride 32)"
+        self.assertIn(bind, log)
+        self.assertLess(log.index(bind), log.index("000001 DrawIndexed(IndexCount:6, StartIndexLocation:0, BaseVertexLocation:0)"))
 
     def test_a_capture_without_contents_only_writes_what_has_not_changed(self):
         self.capture()

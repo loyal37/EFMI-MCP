@@ -105,6 +105,8 @@
 
 **探针 0.1.6 / MCP 服务 0.1.12**（2026-10-08，T-013 的主体；**要重启游戏加载新探针**，沙盒验证通过、实机还没有验证）：抓取可以保留“每次调用当时的内容”。`efmi_capture_frame contents=inputs` 让探针记住每次绘制／计算读到的索引、顶点、常量缓冲和绑成着色器资源的缓冲与贴图，`contents=outputs` 再加上调用写出的渲染目标和无序访问视图。之后 `efmi_read_buffer`、`efmi_read_texture` 返回的就是那次调用看到的字节，而不是读取时的内容；`efmi_list_writes` 列出调用之间的 Map／Update／Copy／Clear；`efmi_dump_frame` 把一帧按帧分析目录的格式写到文件夹。另外补上了：图形绘制的 UAV 绑定（`u1` 等）、全部视口、三维贴图和多重采样颜色贴图的读回。做法和边界见下面“调用当时的内容”。
 
+**MCP 服务 0.1.13**（2026-10-09，只需让服务用上新代码）：`efmi_capture_frame` 多一档 `contents=buffers`，只保留缓冲（索引、顶点、常量、绑成着色器资源的缓冲），不含贴图，是最省的一档，几何和蒙皮数据够用。`efmi_list_writes bindings=true` 另外列出每次调用相对于上一次同类调用改绑了什么（着色器、缓冲、常量缓冲窗口、贴图、目标、状态），`efmi_dump_frame` 的 `log.txt` 里也有这些 `bind` 行：这就是帧分析日志里那些 Set* 调用给出的信息，只不过是由各次调用的绑定比较出来的，不是逐条记录的调用。任何完整抓取都能用，不需要带内容。
+
 卸载：在启动器里取消"注入库"即可；探针不会在别处留下东西。
 
 ## 工具
@@ -112,7 +114,7 @@
 | 工具 | 作用 |
 |---|---|
 | `efmi_status` | 游戏和探针是否就绪、分辨率、已见到的资源数、已安装 mod |
-| `efmi_capture_frame` | 记录下一帧（`full` 含全部绑定；`cb_data=true` 连同每个 draw 当时的常量缓冲窗口；`contents=inputs`／`outputs` 让探针保留每次调用当时读到／写出的内容，探针 0.1.6） |
+| `efmi_capture_frame` | 记录下一帧（`full` 含全部绑定；`cb_data=true` 连同每个 draw 当时的常量缓冲窗口；`contents=buffers`／`inputs`／`outputs` 让探针保留每次调用当时读到／写出的内容，探针 0.1.6） |
 | `efmi_reload_and_capture` | 改完 mod 后让 XXMI 重载并记录新帧：探针在游戏内按一次无修饰键 F10（必要时先把游戏切到前台，按完把焦点还回去），并返回重载是否发生的证据；会停止 live 并清除旧捕获 |
 | `efmi_toggle_mods` | 用 EFMI 自带的 F11 关掉或打开全部 mod 并记录新帧，用来对比游戏的原始绘制和 mod 的绘制；返回 EFMI 自己报告的开／关状态 |
 | `efmi_list_draws` | 按哈希、调用类型、来源等过滤列出绘制调用 |
@@ -121,7 +123,7 @@
 | `efmi_read_buffer` | 读索引、顶点（按输入布局解码）、常量缓冲、绑成着色器资源的缓冲（`vs-t0` 等）或无序访问视图（`u0`）；`whole=true` 读整块；结果说明字节的来源和是否确切（`source`、`exact`） |
 | `efmi_read_texture` | 读贴图、渲染目标或贴图 UAV，存 DDS/PNG 并返回预览图；抓取保留了内容时给出的是调用当时的贴图；支持三维贴图和多重采样颜色贴图（解析后） |
 | `efmi_capture_draw_outputs` | 某个绘制画了什么：记录新的一帧，在选中的绘制前后各拷贝一次渲染目标，报告改动的像素数和范围，保存前、后、改动三张图并返回预览（探针 0.1.5） |
-| `efmi_list_writes` | 调用之间的写入：Map、UpdateSubresource、Copy、Clear、GenerateMips、Resolve，按顺序列出改了哪个资源的哪一段（需要带内容的抓取） |
+| `efmi_list_writes` | 调用之间的写入：Map、UpdateSubresource、Copy、Clear、GenerateMips、Resolve，按顺序列出改了哪个资源的哪一段（需要带内容的抓取）；`bindings=true` 再列出每次调用改绑了什么（任何完整抓取） |
 | `efmi_dump_frame` | 把抓取的若干次调用写成与 XXMI 帧分析目录同样布局的文件夹：BUF／TXT／DDS、`deduped` 去重、`log.txt` |
 | `efmi_get_shader` | 着色器反汇编 |
 | `efmi_export_mesh` | 导出某个 draw 的网格（OBJ + 原始缓冲 + 描述） |
@@ -150,14 +152,14 @@
 | `oN` 渲染目标（每次绘制之后） | `contents=outputs`（对选中的调用，或全部调用）；也可用 `efmi_capture_draw_outputs` 看前后差异 | 相同；整帧每次绘制都留一份是几个 GiB，要选调用或给够预算 |
 | `uN`：计算着色器和像素着色器写出的缓冲／贴图 | `contents=outputs` 之后 `efmi_read_buffer`／`efmi_read_texture` | 相同；同一个 `u0` 被连续几次调用改写，各次的内容分别保留 |
 | 管线状态、采样器、视口、裁剪、间接参数 | `efmi_get_draw` | 全部视口都有；Stream Output 和 UAV 计数器的值没有 |
-| `log.txt` 里的 Map／Update／Copy／Clear 等 | `efmi_list_writes`、`efmi_dump_frame` 的 `log.txt` | 是下游看到的写入类调用；Set* 类调用不单独列出（每次调用的最终绑定在 `efmi_get_draw`）；deferred command list 里的调用看不到 |
+| `log.txt` 里的 Map／Update／Copy／Clear 等，以及 Set* 调用 | `efmi_list_writes`（`bindings=true` 时含改绑）、`efmi_dump_frame` 的 `log.txt` | 写入类调用是下游实际看到的；改绑是比较相邻调用的绑定得出的（`bind` 行），不是逐条记录的 Set* 调用，它们在同一次调用之前的先后顺序不知道；deferred command list 里的调用看不到 |
 | `log.txt` 里 XXMI 的命令、变量、分支 | **拿不到** | 探针在 XXMI 下游，XXMI 内部的执行过程不经过 D3D11。能看到的只有它的结果：mod 发出的绘制、绑定的资源，以及着色器可见的 IniParams（`t120` 那张一维贴图，每次调用当时的值可读） |
 
 沙盒里的验收（`sandbox/contents_parity_test.py`）：同一个场景，探针先带内容抓一帧，再让私有副本里的 XXMI 自己导出一帧，然后把 XXMI 为每次调用写出的每个 `.buf` 和 `.dds` 与探针给出的内容逐字节比较。34 次调用的 415 个文件里 404 个可比，全部相同（203 个缓冲、201 个贴图）；另外 11 个是视图显示的不是第 0 个子资源，两边写的本来就不是同一块。探针是在抓取之后约 900 帧才被问的，中间这些资源都被改写过很多次。同一次测试还把这一帧用 `efmi_dump_frame` 写出来，把 XXMI 写的 175 个 `.txt`（索引、顶点、常量）与导出的对应文件逐字比较，全部相同。
 
 ### 调用当时的内容（探针 0.1.6）
 
-**用法。** `efmi_capture_frame contents=inputs` 记录一帧并让探针保留每次调用读到的东西；`contents=outputs` 另外保留调用写出的东西，用 `hash`／`draws`（同 `efmi_capture_draw_outputs`）或 `first`／`last`（新帧里的调用编号）限定是哪些调用，不限定就是全部。之后照常用 `efmi_read_buffer`／`efmi_read_texture`，结果里的 `source`／`exact` 说明这是调用当时的字节。`efmi_get_draw` 的 `contents_kept` 列出这次调用哪些槽位有保留。内容保留到下一次抓取、或三分钟没有请求为止。
+**用法。** `efmi_capture_frame contents=inputs` 记录一帧并让探针保留每次调用读到的东西（`contents=buffers` 只留缓冲、不留贴图，最省）；`contents=outputs` 另外保留调用写出的东西，用 `hash`／`draws`（同 `efmi_capture_draw_outputs`）或 `first`／`last`（新帧里的调用编号）限定是哪些调用，不限定就是全部。之后照常用 `efmi_read_buffer`／`efmi_read_texture`，结果里的 `source`／`exact` 说明这是调用当时的字节。`efmi_get_draw` 的 `contents_kept` 列出这次调用哪些槽位有保留。内容保留到下一次抓取、或三分钟没有请求为止。
 
 **做法。** 记录那一帧时不为此拷贝任何东西，只记下“这次调用看到的是资源的哪个版本”。凡是会改写资源的路径（Map、UpdateSubresource、CopyResource／CopySubresourceRegion、Clear、GenerateMips、Resolve、Discard，以及绘制写它绑定的渲染目标／深度／UAV／流输出、Dispatch 写它的 UAV、Present 换掉后备缓冲）都经过探针的钩子，探针在把调用交给运行时之前，先把“还有调用引用着的旧版本”存下来：缓冲只存将被覆盖的那一段，贴图存那个子资源。没有再被写的资源不拷贝，要读时原地读。所以静态的网格和贴图不花拷贝，会变的东西每个被用到的版本只拷一次；拷贝大多发生在抓取之后的几帧里（游戏下一次改写它们的时候）。
 

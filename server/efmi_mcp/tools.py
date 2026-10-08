@@ -352,7 +352,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
               "(index/vertex buffers, shaders, constant buffers, textures, render targets); 'light' records only geometry and "
               "shaders; cb_data=true additionally keeps the contents of every constant buffer as it was at each draw. "
               "contents='inputs' has the probe keep what every call read (index, vertex and constant buffers, buffers "
-              "and textures bound as shader resources) exactly as it was when the call was issued; 'outputs' also keeps "
+              "and textures bound as shader resources) exactly as it was when the call was issued; 'buffers' the same "
+              "without the textures, which is all that geometry and skinning need and the cheapest; 'outputs' also keeps "
               "what calls left in their render targets and unordered access views: of the calls selected with hash / "
               "draws (as in efmi_capture_draw_outputs) or first / last (call numbers in the new frame), or of every "
               "call when nothing selects (a render target per draw is large: mind budget_mb). Kept contents are read "
@@ -362,7 +363,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
               "0.1.6. The capture stays in memory for the other tools.",
               {"detail": {"type": "string", "enum": ["full", "light"], "default": "full"},
                "cb_data": {"type": "boolean", "default": False},
-               "contents": {"type": "string", "enum": ["none", "inputs", "outputs"], "default": "none"},
+               "contents": {"type": "string", "enum": list(contents.LEVELS), "default": "none"},
                "hash": {"type": "string", "default": "",
                         "description": "contents='outputs': index buffer hash (8 hex digits) or shader hash (16) of the calls whose outputs to keep."},
                "draws": {"type": "array", "items": {"type": "integer"}, "default": [],
@@ -1014,20 +1015,29 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
               "The maps, updates, copies, clears, mip generations and resolves a frame issued between its calls, in "
               "order: what changed which resource before which call. From a capture taken with contents (probe 0.1.6). "
               "Filter by a range of calls, by the hash of the resource written to or read from, or by kind. Draws and "
-              "dispatches also write (their render targets and unordered access views): those are in efmi_get_draw.",
+              "dispatches also write (their render targets and unordered access views): those are in efmi_get_draw. "
+              "bindings=true adds, for every call in the range, what it has bound differently from the call of its "
+              "kind before it (shaders, buffers, constant buffer windows, textures, targets, state): the picture the "
+              "Set* calls of a frame analysis log give. Those lines are worked out from the calls' bindings, so their "
+              "place among the writes before the same call is not known. Works on any full capture.",
               {**CAPTURE_PROP, "first": {"type": "integer", "default": 0, "description": "writes issued before this call or later"},
                "last": {"type": "integer", "default": -1, "description": "writes issued before this call or earlier; -1: to the end"},
                "hash": {"type": "string", "default": "", "description": "only writes to or from the resource with this hash"},
                "kind": {"type": "string", "default": "", "description": "e.g. Map, UpdateSubresource, CopySubresourceRegion, ClearRenderTargetView"},
+               "bindings": {"type": "boolean", "default": False,
+                            "description": "also what each call has bound differently from the call before it"},
                "offset": {"type": "integer", "default": 0}, "limit": {"type": "integer", "default": 60}})
     def efmi_list_writes(capture="latest", first: int = 0, last: int = -1, hash: str = "", kind: str = "",
-                         offset: int = 0, limit: int = 60):
+                         bindings: bool = False, offset: int = 0, limit: int = 60):
         cap = s.capture(capture)
-        if "ev" not in cap.doc:
+        listed = "ev" in cap.doc
+        if not listed and not bindings:
             raise ToolError(f"capture {cap.frame} has no list of writes: take one with efmi_capture_frame contents='inputs' "
-                            "(probe 0.1.6)")
+                            "(probe 0.1.6), or ask for bindings=true, which any full capture can answer")
+        if bindings and cap.detail != "full":
+            raise ToolError("bindings need a full capture")
         wanted = _norm_hash(hash)
-        rows = []
+        events = []
         for event in cap.events():
             if event["before_call"] < first or (last >= 0 and event["before_call"] > last):
                 continue
@@ -1035,15 +1045,40 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                 continue
             if wanted and wanted not in [(cap.resource(event[k]) or {}).get("hash") for k in ("dst", "src")]:
                 continue
-            rows.append(event)
+            events.append(event)
+        rows = [(event["before_call"], contents.event_text(cap, event)) for event in events]
+        changed = 0
+        if bindings:
+            # After the writes before the same call: where among them the game set these is not known.
+            end = len(cap) - 1 if last < 0 else min(last, len(cap) - 1)
+            start = max(0, min(first, end))
+            bound = {False: contents.previous_bindings(cap, start, False), True: contents.previous_bindings(cap, start, True)}
+            merged: list[tuple[int, str]] = []
+            by_call: dict[int, list[str]] = {}
+            for number, text in rows:
+                by_call.setdefault(number, []).append(text)
+            for number in range(start, end + 1):
+                d = cap.draw(number)
+                merged += [(number, text) for text in by_call.pop(number, [])]
+                now = contents.bindings_of(cap, d)
+                for line in contents.binding_changes(bound[d["type"] >= 8], now):
+                    if not wanted or wanted in line:
+                        merged.append((number, line))
+                        changed += 1
+                bound[d["type"] >= 8] = now
+            rows = merged + [(number, text) for number, texts in sorted(by_call.items()) for text in texts]
         limit = max(1, min(int(limit), 300))
         page = rows[offset:offset + limit]
-        kinds = Counter(event["type"] for event in rows)
-        lines = [f"capture {cap.frame}: {len(rows)} writes match of {len(cap.raw_events)} listed"
-                 + (f" ({', '.join(f'{n} {k}' for k, n in kinds.most_common())})" if rows else "")]
+        kinds = Counter(event["type"] for event in events)
+        lines = [(f"capture {cap.frame}: {len(events)} writes match of {len(cap.raw_events)} listed"
+                  + (f" ({', '.join(f'{n} {k}' for k, n in kinds.most_common())})" if events else "")) if listed else
+                 f"capture {cap.frame}: no writes were listed (it was taken without contents)"]
+        if bindings:
+            lines.append(f"{changed} binding changes (each call against the call of its kind before it; derived from the "
+                         "bindings, not observed Set* calls)")
         if cap.stats.get("events_dropped"):
             lines.append(f"WARNING: {cap.stats['events_dropped']} more writes were not listed (the list was full)")
-        lines += [f"before #{event['before_call']:<5} {contents.event_text(cap, event)}" for event in page]
+        lines += [f"before #{number:<5} {text}" for number, text in page]
         if offset + len(page) < len(rows):
             lines.append(f"... {len(rows) - offset - len(page)} more (use offset={offset + len(page)})")
         return "\n".join(lines)

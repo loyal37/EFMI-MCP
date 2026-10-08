@@ -60,7 +60,7 @@
 - 写入列表：`g_events` 置位的那一帧，各写入钩子调 `cap_event`／`cap_event_view`，记下种类、“在第几次调用之前”、目标和来源资源、四个数、清除值；序列化为 `ev`。
 - 状态：渲染线程每帧把保留内容的抓取的拷贝数、字节数、丢失数写进几个原子量（`cont_publish`），管道线程的状态命令只读这些量，不碰抓取对象。
 - 预算与内存：`ct_budget`（字节）；`memory_allows` 在分配大块前看空闲物理内存和提交量，低于 2 GiB 余量就不拷。丢失的项在读取时报原因（`k_cont_why`）。
-- 服务端：`slot_data.py`（槽位露出缓冲的哪一段、字节从哪来）、`contents.py`（抓取选项、写入的文字、`dump_frame` 导出）、`capture_model.py`（`content()`、`events()`、各绑定的 `content`、`viewports`）、`parity.compare_contents`（与 XXMI 导出逐字节比较）。
+- 服务端：`slot_data.py`（槽位露出缓冲的哪一段、字节从哪来）、`contents.py`（抓取选项、写入的文字、相邻调用的绑定差异 `bindings_of`／`binding_changes`、`dump_frame` 导出）、`capture_model.py`（`content()`、`events()`、各绑定的 `content`、`viewports`）、`parity.compare_contents`（与 XXMI 导出逐字节比较）。
 - 线程：与原来一致，钩子、帧边界、读回任务都在使用即时上下文的线程上；序列化只读记录结束后不再变的字段（`cont` 表的资源／版本／子资源），状态类字段只在读回时给。
 
 ### 探针 0.1.5 / 服务 0.1.8：管线状态与绘制前后的渲染目标拷贝

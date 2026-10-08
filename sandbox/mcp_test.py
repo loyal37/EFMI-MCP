@@ -546,6 +546,10 @@ def main() -> int:
             text, err, _ = mcp.call("efmi_list_writes", first=call[4] + 1, last=call[7])
             check("list_writes: updates and a copy with their ranges",
                   not err and "box from 64, 64 wide" in text and "at 256 ([256, 320))" in text and "write-discard" in text, text)
+            text, err, _ = mcp.call("efmi_list_writes", first=call[4], last=call[5], bindings=True)
+            check("list_writes: what a call has bound differently from the one before it",
+                  not err and f"before #{call[4]:<5} bind vs-t9: " in text and "binding changes" in text
+                  and "bind ps-cb2" not in text and f"before #{call[5]:<5} bind" not in text, text)
 
             dump_dir = OUT / "contents-dump"
             shutil.rmtree(dump_dir, ignore_errors=True)
@@ -587,7 +591,8 @@ def main() -> int:
                 log = (dump_dir / "log.txt").read_text(encoding="utf-8")
                 check("dump_frame: the log lists the calls and the writes between them",
                       f"{call[5]:06d} DrawIndexed(IndexCount:294, StartIndexLocation:0, BaseVertexLocation:0)" in log
-                      and f"{call[5]:06d} UpdateSubresource" in log and "box from 64, 64 wide" in log, log[:600])
+                      and f"{call[5]:06d} UpdateSubresource" in log and "box from 64, 64 wide" in log
+                      and f"{call[4]:06d} bind vs-t9: " in log, log[:600])
             text, err, _ = mcp.call("efmi_list_draws", origin="game", call="DrawIndexedInstancedIndirect")
             x_line = next((l for l in text.splitlines() if l.startswith("#")), "")
             text, err, _ = mcp.call("efmi_get_draw", draw=int(x_line.split()[0][1:]) if x_line else 0)

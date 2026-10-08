@@ -7,18 +7,21 @@ The contents stay available while the capture is the latest one.
 """
 from __future__ import annotations
 
+import json
 import os
 import struct
 import time
 from pathlib import Path
 
-from . import decode, slot_data
+from . import decode, pipeline, slot_data
 from .capture_model import STAGES, Capture
 from .hashes import crc32c, hex32
 from .mcp_stdio import ToolError
 
 FEATURE = "contents"
-INPUTS = ["ib", "vb", "cb", "buf", "tex"]
+BUFFERS = ["ib", "vb", "cb", "buf"]
+INPUTS = BUFFERS + ["tex"]
+LEVELS = ("none", "buffers", "inputs", "outputs")
 BUDGET_MB = 1024
 
 # XXMI's names for the arguments of each call, as its log.txt writes them.
@@ -35,12 +38,16 @@ _CALL_ARGS = {
 
 def request(level: str, matchers: list[dict] | None, first: int, last: int, depth: bool, budget_mb: float,
             strict: bool = False) -> dict | None:
-    """The probe's capture option for a level: none, inputs (what every call read), outputs (also what calls wrote)."""
+    """The probe's capture option for a level.
+
+    none; buffers (the index, vertex and constant buffers and the buffers bound as shader resources that
+    every call read); inputs (also the textures); outputs (also what calls wrote).
+    """
     if level in (None, "", "none"):
         return None
-    if level not in ("inputs", "outputs"):
-        raise ToolError("contents must be 'none', 'inputs' or 'outputs'")
-    out: dict = {"inputs": INPUTS, "events": True, "budget_mb": budget_mb}
+    if level not in LEVELS:
+        raise ToolError("contents must be 'none', 'buffers', 'inputs' or 'outputs'")
+    out: dict = {"inputs": BUFFERS if level == "buffers" else INPUTS, "events": True, "budget_mb": budget_mb}
     if strict:
         out["strict"] = True
     if level == "outputs":
@@ -115,6 +122,65 @@ def event_text(cap: Capture, event: dict) -> str:
         what = "+".join(name for bit, name in ((1, "depth"), (2, "stencil")) if a[0] & bit)
         return f"{kind} {dst} {what}: depth {event.get('values', [0])[0]:g}, stencil {a[1]}"
     return f"{kind} {dst}".rstrip()
+
+
+# ---------------------------------------------------------------- what is bound differently from call to call
+def _named(cap: Capture, entry: dict, key: str = "hash") -> str:
+    return entry.get(key) or f"res{entry['res']}"
+
+
+def bindings_of(cap: Capture, d: dict) -> dict[str, str]:
+    """Everything a call has bound, slot by slot, as short texts that can be compared between two calls."""
+    out: dict[str, str] = {stage: h or "unhashed" for stage, h in d["shaders"].items()}
+    if d["type"] < 8:
+        out["topology"] = str(d.get("topology"))
+        out["input layout"] = f"#{d.get('layout')}" if d.get("layout", -1) >= 0 else "none"
+        if "ib" in d:
+            ib = d["ib"]
+            out["ib"] = f"{_named(cap, ib, 'resource_hash')} at {ib['offset']} {decode.format_name(ib['format'])}"
+        for n, vb in d.get("vb", {}).items():
+            out[f"vb{n}"] = f"{_named(cap, vb, 'resource_hash')} at {vb['offset']} stride {vb['stride']}"
+    for name, cb in d.get("cb", {}).items():
+        out[name] = f"{_named(cap, cb)} registers {cb['first_constant']}..+{cb['num_constants']}"
+    for group in ("tex", "out"):
+        for name, entry in d.get(group, {}).items():
+            view = entry.get("view")
+            plain = not view or pipeline.view_is_plain(view, cap.resource(entry["res"]))
+            out[name] = _named(cap, entry) + ("" if plain else f" ({pipeline.view_text(view)})")
+    for name, state in (d.get("samplers") or {}).items():
+        described = pipeline.describe_sampler(state) or {}
+        out[name] = f"{described.get('filter')} {described.get('address')}"
+    if "viewport" in d:
+        out["viewport"] = str(d.get("viewports") or d["viewport"])
+    if "blend" in d:
+        slots = [int(k[1:]) + 1 for k in d.get("out", {}) if k[0] == "o" and k[1:].isdigit()]
+        for name, described in (("blend", pipeline.describe_blend(d["blend"], max(slots, default=0))),
+                                ("depth-stencil", pipeline.describe_depth(d["depth_stencil"])),
+                                ("rasterizer", pipeline.describe_raster(d["rasterizer"]))):
+            out[name] = json.dumps(described, separators=(",", ":"), default=str)
+        if d.get("scissors"):
+            out["scissor rects"] = str(d["scissors"])
+    return out
+
+
+def binding_changes(before: dict[str, str] | None, now: dict[str, str]) -> list[str]:
+    """One line for every slot a call has bound differently from the call before it (derived, not observed calls)."""
+    if before is None:
+        return []
+    lines = []
+    for name, value in now.items():
+        if before.get(name) != value:
+            lines.append(f"bind {name}: {value}" + (f" (was {before[name]})" if name in before else ""))
+    lines += [f"bind {name}: nothing (was {value})" for name, value in before.items() if name not in now]
+    return lines
+
+
+def previous_bindings(cap: Capture, index: int, compute: bool, reach: int = 256) -> dict[str, str] | None:
+    """The bindings of the nearest earlier call of the same kind: graphics state lasts across dispatches and back."""
+    for n in range(index - 1, max(-1, index - 1 - reach), -1):
+        if (cap.raw_draws[n]["t"] >= 8) == compute:
+            return bindings_of(cap, cap.draw(n))
+    return None
 
 
 # ---------------------------------------------------------------- writing a frame out
@@ -266,7 +332,10 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
     problems: list[str] = []
     log_lines: list[str] = [f"analyse_options: efmi-mcp capture {cap.frame}",
                             "written by efmi-mcp from a live capture, laid out like XXMI's frame analysis; calls are numbered "
-                            "as in the capture (from 0), and XXMI's own command list and variable trace is not in here"]
+                            "as in the capture (from 0), and XXMI's own command list and variable trace is not in here",
+                            "'bind' lines say what a call has bound differently from the call of its kind before it; they are "
+                            "worked out from the bindings of the calls, the Set* calls themselves were not recorded"]
+    bound: dict[bool, dict | None] = {False: previous_bindings(cap, first, False), True: previous_bindings(cap, first, True)}
     events = cap.events()
     by_call: dict[int, list[dict]] = {}
     for event in events:
@@ -312,6 +381,9 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
         shaders = "".join(f"-{stage}={d['shaders'][stage]}" for stage in STAGES if d["shaders"].get(stage))
         for event in by_call.get(index, []):
             log_lines.append(f"{prefix} {event_text(cap, event)}")
+        now = bindings_of(cap, d)
+        log_lines += [f"{prefix} {line}" for line in binding_changes(bound[d["type"] >= 8], now)]
+        bound[d["type"] >= 8] = now
         log_lines.append(f"{prefix} {call_line(cap, d)}")
 
         def named(slot: str, hash_text: str | None, resource_hash: str | None = None) -> str:
