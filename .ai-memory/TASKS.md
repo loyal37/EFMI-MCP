@@ -6,7 +6,11 @@
 
 T-001 至 T-007 已完成。T-007 的原因是 UIPI；探针 0.1.2 / 服务 0.1.4 改为进程内按键，沙盒与实机（游戏在前台、在后台各一次）均已验证。每次改完并完成相关验证后提交并推送指定仓库（见 `AGENTS.md` / D-007）。
 
-### T-012：把 RabbitFX 形式的 mod 改成槽位形式（未开始；用户 2026-10-08 只问了可行性，没有要求动手）
+### T-012：把 RabbitFX 形式的 mod 改成槽位形式（TangTang 已按用户要求改完，主着色遍实机核对通过；画面对比和 LOD 待补，2026-10-08）
+
+- **TangTang 已改**（CURRENT_STATE 首节）：原 INI 备份在 mod 目录的 `tangtang.ini.rabbitfx-backup-20261008`。取槽位的办法比下面设想的更直接——读 RabbitFX 改写后的着色器里的回退槽位，不需要关 mod、不需要提取。
+- **待补（需要游戏开着、TangTang 在画面里）**：① `efmi_capture_draw_outputs hash=c1e10078 targets=all`（组件 0）和组件 2 的某个子网格，与 `captures/frame-125326/draw-outputs/` 里改前的画面对比，说清 G-buffer 遍和组件 2 描边换回游戏贴图后看得出多少差别；② 角色放到 LOD 距离，看 LOD 绘制绑定的着色器是否仍是近景那几个，槽位是否一样。都不需要按键。
+- 用户若觉得组件 2 的描边或 G-buffer 有差别要补：得按遍加条件（例如给描边遍的顶点着色器 `1041f0408b0e4fc3` 一个 `ShaderOverride` 的 `filter_index`，在绘制段里 `if vs == …` 再写 `ps-t13`），不能无条件写。
 
 - 两种写法（只读查看所得）。槽位形式：组件的绘制段里直接写 `ps-t16 = Resource…DiffuseMap` 这类行（`Xaihi Venomous Vows 2.0`、`arcane fes 1.2`，LoyalTools 的导出也是这种）。RabbitFX 形式：写 `Resource\RabbitFx\Diffuse／LightMap／NormalMap = ref …` 再 `run = CommandList\RabbitFx\SetTextures`（`Yvonne Ensnared Heart 1.6`、`TangTang Seaside Breeze 1.4`、`perlica Ravenb 2.1`、`laevatain lune fluer 1.4`、`Liino Honmei Knit 1.6`）。
 - RabbitFX（`Mods\RabbitFX -ENDMI-\RabbitFX.ini`，2.7）做的事：用 ShaderRegex 改写游戏的像素着色器，加上 t70–t74（漫射、光照图、法线、裁剪图、雨水图）和 t60／t61（发光、FX），着色器里先看 t70 等是否绑了东西，绑了就采它，否则采原来的槽位。它既改主着色遍（Main），也改 G-buffer 遍的各种变体（它叫 Shadow，特征是 o0–o4 五个输出、贴图在 t0–t2）。另外还包住了游戏原有的 discard（`$censor`）。
@@ -21,7 +25,7 @@ T-001 至 T-007 已完成。T-007 的原因是 UIPI；探针 0.1.2 / 服务 0.1.
 
 - 做了清单里的 1、4、5，结果与验证范围见 CURRENT_STATE 首节。
 - 实机核对已做（CURRENT_STATE 前两节）：管线状态和渲染目标拷贝通过。重载工具：第二次按键发现返回的帧里 mod 只恢复了一半，已把等待标准改成“mod 画的量不再增长”（服务 0.1.10，单元测试和沙盒真实按键通过）。
-- **待实机确认（需要新会话，按一次 F10）**：`efmi_reload_and_capture settle_ms=250`，看 `frames_looked_at`、`mods_settled` 和返回帧的 XXMI 绘制数是否接近稳定值；顺带记下带渲染目标拷贝的那一帧的游戏内耗时（0.1.9 起显示在 `efmi_capture_draw_outputs` 的结果里）。
+- 新标准已在实机跑过一次（2026-10-08 15:36，默认 `settle_ms`）：`frames_looked_at=3`、`waited_for_xxmi_ms=359`、`mods_settled=true`，返回帧的 XXMI 绘制数与重载前相同（271）。“第一帧只恢复一部分”的情形（`settle_ms=250`）没有再专门跑，哪天顺带做一次即可。带渲染目标拷贝的那一帧的游戏内耗时也有了：7.37 毫秒（16 份拷贝，94.6 MiB），与不带拷贝时基本相同。
 - 可以再做的（未要求）：深度目标按 `box` 拷贝（先整块拷到一张同族格式的普通纹理，再取一块到暂存纹理），省掉 `depth=true` 时阴影图的几十 MiB。
 - 清单里没做的（用户未要求，按需再议）：
   - 2：`efmi_status` 提示“运行中的服务比磁盘上的代码旧”（仅服务端，很小）。
