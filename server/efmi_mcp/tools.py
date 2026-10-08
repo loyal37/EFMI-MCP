@@ -390,6 +390,9 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
               "A reload also switches mods back on if efmi_toggle_mods had switched them off. "
               "reload_confirmed is true when the fresh frame uses resources/shaders XXMI created after the key press "
               "(mods on screen are loaded again after a reload); otherwise verify the edited draws/resources. "
+              "Right after a reload no mod may draw for a few frames: when the first frame shows nothing XXMI "
+              "created since the key press, later frames are looked at for up to confirm_wait_ms and the frame "
+              "returned as 'latest' is taken after that (frames_looked_at says how many). "
               "Ordinary frame capture already obtains current data: do not use this just to refresh.",
               {"detail": {"type": "string", "enum": ["full", "light"], "default": "full"},
                "cb_data": {"type": "boolean", "default": True},
@@ -402,12 +405,16 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                                              "False requires it to be already foreground."},
                "restore_focus": {"type": "boolean", "default": True,
                                  "description": "Give the foreground back to the window that had it once F10 is "
-                                                "released. Ignored when the game was already in front."}},
+                                                "released. Ignored when the game was already in front."},
+               "confirm_wait_ms": {"type": "integer", "minimum": 0, "maximum": 15000, "default": 3000,
+                                   "description": "How long to go on looking at later frames while nothing XXMI "
+                                                  "created since the key press is drawn. 0 returns the first frame."}},
               read_only=False, annotations={"destructiveHint": False, "idempotentHint": False})
     def efmi_reload_and_capture(detail="full", cb_data=True, settle_ms=2000, timeout_ms=15000, focus_game=True,
-                                restore_focus=True):
+                                restore_focus=True, confirm_wait_ms=3000):
         return reload_and_capture(s, detail=detail, cb_data=cb_data, settle_ms=settle_ms,
-                                  timeout_ms=timeout_ms, focus_game=focus_game, restore_focus=restore_focus)
+                                  timeout_ms=timeout_ms, focus_game=focus_game, restore_focus=restore_focus,
+                                  confirm_wait_ms=confirm_wait_ms)
 
     # ================================================================ mods on/off
     @srv.tool("efmi_toggle_mods",

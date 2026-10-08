@@ -523,8 +523,65 @@ class ProbePressedReloadTests(unittest.TestCase):
         self.enterContext(patch.object(tools.ProbeClient, "connect", side_effect=ProbeNotFound("test: no probe")))
 
     def call(self, **arguments):
+        arguments.setdefault("confirm_wait_ms", 0)      # one frame, unless a test is about the waiting
         text, error = mcp_call(self.server, "efmi_reload_and_capture", **arguments)
         return json.loads(text), error
+
+    def captures(self):
+        return [(event[2]["detail"], event[2]["cb_data"]) for event in self.probe.events if event[0] == "capture"]
+
+    def xxmi_draws_from(self, second):
+        """Nothing of XXMI's is drawn until ``second`` on the test clock, as after a reload that stalled the game."""
+        def edit(doc):
+            if self.clock.now >= second:
+                doc["resources"].append(xxmi_buffer(150))
+                doc["draws"][0]["vb"] = [[0, len(doc["resources"]) - 1, 16, 0, -1]]
+        self.probe.edit_document = edit
+
+    def test_frames_are_looked_at_until_xxmi_draws_what_it_created_anew(self):
+        self.xxmi_draws_from(2.0 + 0.6)                  # 0.6 s after the settle time
+        result, error = self.call(confirm_wait_ms=3000)
+        self.assertFalse(error, result)
+        self.assertIs(result["reload_confirmed"], True)
+        self.assertEqual(self.captures(), [("full", True), ("light", False), ("light", False), ("light", False), ("full", True)])
+        self.assertEqual(result["frames_looked_at"], 5)
+        self.assertEqual(result["waited_for_xxmi_ms"], 1000.0)
+        self.assertEqual(len(self.probe.presses), 1)
+        # Only the frame that was returned is kept: the probe can no longer read the first one.
+        self.assertEqual(list(self.session.captures), [result["capture"]["frame"]])
+        self.assertEqual(self.session.latest, result["capture"]["frame"])
+        self.assertEqual(self.session.capture("latest").detail, "full")
+
+    def test_waiting_for_xxmi_is_bounded_and_says_so(self):
+        result, error = self.call(confirm_wait_ms=1000)
+        self.assertFalse(error, result)
+        self.assertIs(result["reload_confirmed"], False)
+        self.assertEqual(self.captures(), [("full", True)] + [("light", False)] * 4 + [("full", True)])
+        self.assertEqual(result["waited_for_xxmi_ms"], 1250.0)
+        self.assertIn("nor by the 5 later frame(s)", result["confirmation_note"])
+        self.assertEqual(len(self.probe.presses), 1)
+
+    def test_no_waiting_when_the_first_frame_settles_it(self):
+        self.bind_to_game_draw(xxmi_buffer(150))
+        result, error = self.call(confirm_wait_ms=3000)
+        self.assertFalse(error, result)
+        self.assertEqual((result["reload_confirmed"], result["frames_looked_at"], result["waited_for_xxmi_ms"]), (True, 1, None))
+        self.assertEqual(self.captures(), [("full", True)])
+        # XXMI creating resources on its own before the key press cannot be told apart by waiting either.
+        self.probe.events.clear()
+        self.probe.edit_document = None
+        self.probe.receipt = {"xxmi_creates_before_press": 3}
+        result, error = self.call(confirm_wait_ms=3000)
+        self.assertFalse(error, result)
+        self.assertEqual((result["reload_confirmed"], result["frames_looked_at"]), (False, 1))
+        self.assertEqual(self.captures(), [("full", True)])
+
+    def test_confirm_wait_out_of_range_is_refused_before_anything_happens(self):
+        for bad in (-1, 15001, 2.5, "3000"):
+            with self.subTest(bad=bad):
+                text, error = mcp_call(self.server, "efmi_reload_and_capture", confirm_wait_ms=bad)
+                self.assertTrue(error, text)
+        self.assertEqual(self.probe.presses, [])
 
     def bind_to_game_draw(self, resource):
         def edit(doc):
