@@ -6,6 +6,17 @@
 
 T-001 至 T-007 已完成。T-007 的原因是 UIPI；探针 0.1.2 / 服务 0.1.4 改为进程内按键，沙盒与实机（游戏在前台、在后台各一次）均已验证。每次改完并完成相关验证后提交并推送指定仓库（见 `AGENTS.md` / D-007）。
 
+### T-012：把 RabbitFX 形式的 mod 改成槽位形式（未开始；用户 2026-10-08 只问了可行性，没有要求动手）
+
+- 两种写法（只读查看所得）。槽位形式：组件的绘制段里直接写 `ps-t16 = Resource…DiffuseMap` 这类行（`Xaihi Venomous Vows 2.0`、`arcane fes 1.2`，LoyalTools 的导出也是这种）。RabbitFX 形式：写 `Resource\RabbitFx\Diffuse／LightMap／NormalMap = ref …` 再 `run = CommandList\RabbitFx\SetTextures`（`Yvonne Ensnared Heart 1.6`、`TangTang Seaside Breeze 1.4`、`perlica Ravenb 2.1`、`laevatain lune fluer 1.4`、`Liino Honmei Knit 1.6`）。
+- RabbitFX（`Mods\RabbitFX -ENDMI-\RabbitFX.ini`，2.7）做的事：用 ShaderRegex 改写游戏的像素着色器，加上 t70–t74（漫射、光照图、法线、裁剪图、雨水图）和 t60／t61（发光、FX），着色器里先看 t70 等是否绑了东西，绑了就采它，否则采原来的槽位。它既改主着色遍（Main），也改 G-buffer 遍的各种变体（它叫 Shadow，特征是 o0–o4 五个输出、贴图在 t0–t2）。另外还包住了游戏原有的 discard（`$censor`）。
+- 同一张贴图在不同遍里的槽位不同，同一遍里不同组件也不同。伊冯 `d160fb72`（10-07 提取的工程，`workplace\<组件>\TYPE_GPU-EFMI\TextureSlots.json` 按绘制逐个记录）：漫射在 G-buffer 遍是 `ps-t0`、主着色遍是 `ps-t16`、描边遍是 `ps-t13`；法线在 G-buffer 遍 `ps-t1`、主着色遍 `ps-t18`；光照图在主着色遍 `ps-t17`。槽位形式的 mod 和 LoyalTools 的导出用的都是主着色遍的槽位。
+- 所以槽位表拿得到：`efmi_extract_model` 产出的工程里每个组件都有 `TextureSlots.json`；现场用 `efmi_get_draw` 也能逐遍看。2026-10-08 上午实机上 `arcane` 组件 2 的 INI 写的 `ps-t13`（漫射）／`ps-t14`（法线）与抓到的绑定一致；同一个绘制的 G-buffer 遍里 `ps-t0`／`ps-t1` 仍是游戏自己的贴图，`ps-t12`、`ps-t15–17`、`ps-t21` 是别的组件留下的旧绑定——“绑着”不等于“着色器在用”，要以着色器声明的槽位为准。
+- 伊冯的槽位表已有（主着色遍）：`d160fb72`、`c0bb7cd6`、`06e91fc9` 是 16／17／18（漫射／光照图／法线），`7091ba4f` 是 13／14（漫射／法线）。其余四个角色要各提取一次（角色在画面里、mod 关着）。
+- 改成槽位之后与 RabbitFX 不等价的地方：① G-buffer 遍不再用 mod 的漫射和法线（现有的槽位形式 mod 就是这样；要补就得按遍加条件，不能无条件写 `ps-t0`，主着色遍和描边遍的 t0／t1 是别的资源）；② `Liino` 用了 `Resource\RabbitFX\FXMap` 和 `Commandlist\RabbitFX\Run`（裁剪／发光），槽位形式表达不了，只能留着 RabbitFX 或放弃这个效果；③ 槽位随游戏着色器版本变，游戏更新后可能要重查；LOD 距离下着色器用的槽位还没有专门核对过。
+- 做法（若用户要求）：转换结果写成副本，不改用户原来的 mod（`AGENTS.md`）；按组件把 RabbitFX 的三类行换成对应槽位行，`= null` 的（沿用游戏贴图）不写，去掉 `SetTextures`；部署到专用目录后 F10，逐遍比较绑定，并用 `efmi_capture_draw_outputs` 比较转换前后各遍画出的像素。
+- 用户的 Mods 目录里有反方向的工具 `SlotToRabbitFX.exe` 和它 9 月的转换报告（按资源名猜类型，掩码类贴图判断不了）。
+
 ### T-011：采集数据的三项完善（已完成：探针 0.1.5／服务 0.1.10，2026-10-08 实机核对通过；重载等待的新标准待实机确认）
 
 - 做了清单里的 1、4、5，结果与验证范围见 CURRENT_STATE 首节。
