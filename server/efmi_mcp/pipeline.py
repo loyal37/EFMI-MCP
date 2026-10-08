@@ -49,8 +49,12 @@ def write_mask(mask: int) -> str:
 
 
 # ---------------------------------------------------------------- state objects
-def describe_blend(blend: dict) -> dict:
-    """``blend``: {"state": the probe's description or None, "factor": [r, g, b, a], "sample_mask": int}."""
+def describe_blend(blend: dict, colour_slots: int | None = None) -> dict:
+    """``blend``: {"state": the probe's description or None, "factor": [r, g, b, a], "sample_mask": int}.
+
+    ``colour_slots``: how many render target slots the draw uses; a state with a
+    setting per target is described for those only.
+    """
     state = blend.get("state")
     out: dict = {}
     if state is None:
@@ -69,7 +73,9 @@ def describe_blend(blend: dict) -> dict:
             entry.update(src=_name(BLEND, src), dst=_name(BLEND, dst), op=_name(BLEND_OP, op),
                          src_alpha=_name(BLEND, src_a), dst_alpha=_name(BLEND, dst_a), op_alpha=_name(BLEND_OP, op_a))
         described.append(entry)
-    if independent:
+    if independent and colour_slots:
+        described = described[:colour_slots]
+    if independent and any(entry != described[0] for entry in described):
         out["targets"] = described            # one entry per render target slot
     else:
         out["all_targets"] = described[0]

@@ -576,7 +576,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             if d.get("viewport_count", 1) != 1:
                 out["viewport_count"] = d["viewport_count"]
             out["viewport_depth_range"] = d["depth_range"]
-            out["blend"] = pipeline.describe_blend(d["blend"])
+            slots = [int(k[1:]) + 1 for k in d.get("out", {}) if k[1:].isdigit() and k[0] == "o"]
+            out["blend"] = pipeline.describe_blend(d["blend"], max(slots, default=0))
             out["depth_stencil"] = pipeline.describe_depth(d["depth_stencil"])
             out["rasterizer"] = pipeline.describe_raster(d["rasterizer"])
             if d["scissors"] and out["rasterizer"].get("scissor"):
@@ -876,8 +877,10 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
               "max_draws draws are copied, in frame order; a mesh is usually drawn in several passes (shadow, depth, "
               "colour, outline), each into its own target. Passes without a colour target are only counted, unless "
               "depth=true. An indirect draw has no index buffer hash: select it by draw number or shader. `box` limits "
-              "the copy to a part of the target, which keeps large targets cheap. The new frame becomes 'latest'. "
-              "Multisampled targets are not copied. Needs probe 0.1.5.",
+              "the copy to a part of the target, which keeps large targets cheap; depth targets are always copied "
+              "whole, and shadow maps are large (4096x4096), so depth=true costs tens of MiB per shadow pass. The game "
+              "keeps its off-screen targets upside down relative to the screen: pictures and boxes use the target's "
+              "own rows. The new frame becomes 'latest'. Multisampled targets are not copied. Needs probe 0.1.5.",
               {**CAPTURE_PROP,
                "hash": {"type": "string", "default": "", "description": "Index buffer hash (8 hex digits) or shader hash (16)."},
                "draws": {"type": "array", "items": {"type": "integer"}, "default": [],

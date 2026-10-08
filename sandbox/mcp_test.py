@@ -338,7 +338,8 @@ def main() -> int:
         shown = [l for l in text.splitlines() if l.startswith("#")]
         check("capture_draw_outputs by shader hash: the limit, and the depth target along",
               not err and "draws that matched: 5; targets copied for 2 of them (the first 2 in frame order" in text
-              and len(shown) == 4 and text.count("    oD: ") == 2 and text.count("D32_FLOAT") == 2
+              and len(shown) == 2 and text.count("    oD: ") == 2 and text.count("D32_FLOAT") == 2
+              and text.count("    o0: ") == 2 and "recording cost inside the game: " in text
               and text.count("changed nothing in this target (depth writes are off") == 2
               and "Depth pictures are scaled" in text, text)
         check("previews are returned for the colour targets that changed", len([c for c in content if c["type"] == "image"]) == 2,

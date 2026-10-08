@@ -211,6 +211,14 @@ def _numeric_to_image(width: int, height: int, fmt: int, data: bytes):
         return Image.fromarray(norm(np.frombuffer(data[:n * 2], np.float16).reshape(height, width)), "L")
     if name in ("R32_FLOAT", "D32_FLOAT", "R32_TYPELESS"):
         return Image.fromarray(norm(np.frombuffer(data[:n * 4], np.float32).reshape(height, width)), "L")
+    if name in ("R32G8X24_TYPELESS", "D32_FLOAT_S8X24_UINT", "R32_FLOAT_X8X24_TYPELESS"):
+        # 32-bit float depth, then 8 bits of stencil and 24 unused: the game's main depth buffer. Depth is shown.
+        a = np.frombuffer(data[:n * 8], np.float32).reshape(height, width, 2)
+        return Image.fromarray(norm(a[..., 0]), "L")
+    if name == "X32_TYPELESS_G8X24_UINT":
+        # the stencil plane of the same layout
+        a = np.frombuffer(data[:n * 8], np.uint8).reshape(height, width, 8)
+        return Image.fromarray(norm(a[..., 4]), "L")
     if name in ("R24G8_TYPELESS", "D24_UNORM_S8_UINT", "R24_UNORM_X8_TYPELESS"):
         a = np.frombuffer(data[:n * 4], np.uint32).reshape(height, width) & 0xFFFFFF
         return Image.fromarray(norm(a), "L")

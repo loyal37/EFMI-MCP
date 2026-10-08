@@ -173,6 +173,81 @@ def capture_draw_outputs(session, *, hash: str = "", draws: list[int] | None = N
             pass                # the probe frees them with the capture at the latest
 
 
+def _save(folder: Path, stem: str, meta: dict, data: bytes):
+    """One copy as a picture where its format converts, as a DDS file where it does not. Returns (path, image or None)."""
+    image = decode._texture_to_image(meta["width"], meta["height"], meta["format"], data)
+    if image is None:
+        path = folder / f"{stem}.dds"
+        path.write_bytes(decode.make_dds(meta["width"], meta["height"], meta["format"], data))
+    else:
+        path = folder / f"{stem}.png"
+        path.write_bytes(_png(image))
+    return path, image
+
+
+def _target_lines(session, cap: Capture, folder: Path, draw_index: int, target: str, pair: dict, preview: bool,
+                  images: list) -> list[str]:
+    """What one draw did to one of its targets: `pair` holds the copy from before and the one from after."""
+    described = (pair.get("after") or pair.get("before"))[1]
+    resource = cap.resource(described["res"]) or {}
+    line = (f"    {target}: {(resource.get('hash') if resource.get('known') else None) or 'not created by the game (back buffer?)'} "
+            f"{resource.get('w')}x{resource.get('h')} {described.get('fmt_name') or resource.get('fmt_name', '?')}")
+    if described.get("mip"):
+        line += f" mip {described['mip']}"
+    if described.get("slice"):
+        line += f" slice {described['slice']}"
+
+    files: dict[str, str] = {}
+    read: dict[str, tuple] = {}
+    for when in ("before", "after"):
+        if when not in pair:
+            continue
+        number, snap = pair[when]
+        if snap["state"] != "ok":
+            files[when] = NOT_COPIED.get(snap["state"], snap["state"])
+            continue
+        meta, data = session.call(lambda c, n=number: c.read_rt(cap.frame, n))
+        read[when] = (meta, data, snap)
+    stem = f"draw{draw_index:05d}-{target}"
+    pictures = {}
+    if read:
+        folder.mkdir(parents=True, exist_ok=True)
+    for when, (meta, data, _snap) in read.items():
+        saved, pictures[when] = _save(folder, f"{stem}-{when}", meta, data)
+        files[when] = str(saved)
+
+    lines = [line]
+    marked = where = None
+    if len(read) == 2:
+        meta, data, snap = read["after"]
+        count, where, mask = changed_region(read["before"][1], data, meta["width"], meta["height"], meta["row_bytes"])
+        if count is None:
+            lines.append("        changed pixels: not computed (numpy is needed)")
+        elif count:
+            # In pixels of the whole target, also when only a box of it was copied.
+            box = [where[0] + snap["box"][0], where[1] + snap["box"][1], where[2] + snap["box"][0], where[3] + snap["box"][1]]
+            lines.append(f"        changed {count} pixels ({count / (meta['width'] * meta['height']) * 100:.2f}% of the copied "
+                         f"area) within {box} (left, top, right, bottom)")
+            if pictures["after"] is not None:
+                marked = _highlight(pictures["after"], mask)
+        elif target == "oD":
+            lines.append("        changed nothing in this target (depth writes are off, or nothing passed the depth test)")
+        else:
+            lines.append("        changed nothing in this target (culled, clipped, occluded or masked out, or it wrote "
+                         "the values that were there)")
+    for when in ("before", "after"):
+        if when in files:
+            lines.append(f"        {when}: {files[when]}")
+    if marked is not None:
+        saved = folder / f"{stem}-changed.png"
+        saved.write_bytes(_png(marked))
+        lines.append(f"        what it touched: {saved}")
+        if preview and len(images) < MAX_PREVIEWS:
+            images.append(Image(_png(_preview(marked, where))))
+            lines.append(f"        preview image: {len(images)}")
+    return lines
+
+
 def _report(session, cap: Capture, chosen: str, selected_hashes: set[str], max_draws: int, preview: bool) -> list:
     folder = session.frame_dir(cap) / "draw-outputs"
     stats = cap.stats
@@ -183,7 +258,8 @@ def _report(session, cap: Capture, chosen: str, selected_hashes: set[str], max_d
                 if matched - depth_only > copied else "")
              + f"; {stats.get('rt_bytes', 0) / 2 ** 20:.1f} MiB of pixels"
              + (f"; {stats['rt_over_budget']} cop{'ies' if stats['rt_over_budget'] > 1 else 'y'} left out, "
-                "over the pixel budget (use box)" if stats.get("rt_over_budget") else "")]
+                "over the pixel budget (use box)" if stats.get("rt_over_budget") else "")
+             + (f"; recording cost inside the game: {stats['record_ms']:.2f} ms" if "record_ms" in stats else "")]
     if depth_only:
         lines.append((f"{depth_only} matching draws have no colour target (shadow or depth passes) and were not counted"
                       if depth_only > 1 else
@@ -195,111 +271,34 @@ def _report(session, cap: Capture, chosen: str, selected_hashes: set[str], max_d
                          "replaced its buffers: capture again and select anew).")
         return ["\n".join(lines)]
 
-    # One entry per draw and target: its copy before and its copy after.
-    pairs: dict[tuple, dict] = {}
+    # Per draw and per target of it: the copy from before and the copy from after.
+    by_draw: dict[int, dict[tuple, dict]] = {}
     for number, snap in enumerate(cap.rts):
-        pairs.setdefault((snap["draw"], snap["kind"], snap["slot"]), {})["after" if snap["when"] else "before"] = (number, snap)
+        pair = by_draw.setdefault(snap["draw"], {}).setdefault((snap["kind"], snap["slot"]), {})
+        pair["after" if snap["when"] else "before"] = (number, snap)
     images: list = []
-    results = []
-    for (draw_index, kind, slot), pair in sorted(pairs.items()):
+    depth_shown = False
+    for draw_index in sorted(by_draw):
         draw = cap.draw(draw_index)
-        target = "oD" if kind == OUT_DSV else f"o{slot}"
-        entry: dict = {"draw": draw_index, "call": draw["call"], "origin": draw["origin"], "target": target}
+        ib_hash = (draw.get("ib") or {}).get("hash")
+        head = f"#{draw_index} {draw['call']} {draw['origin']}"
         if draw.get("ib"):
-            entry["ib"] = draw["ib"]["hash"]
-            entry["index_count"] = draw["args"].get("index_count")
-            if selected_hashes and entry["ib"] and entry["ib"] not in selected_hashes:
-                # Found by buffer object and range, but that range holds other bytes now.
-                entry["other_index_data"] = True
-        entry["shaders"] = {stage: draw["shaders"][stage] for stage in ("vs", "ps") if draw["shaders"].get(stage)}
-        read: dict[str, tuple] = {}
-        for when in ("before", "after"):
-            if when not in pair:
-                continue
-            number, snap = pair[when]
-            if snap["state"] != "ok":
-                entry[when] = NOT_COPIED.get(snap["state"], snap["state"])
-                continue
-            meta, data = session.call(lambda c, n=number: c.read_rt(cap.frame, n))
-            read[when] = (meta, data, snap)
-        if "after" in read:
-            meta, data, snap = read["after"]
-            resource = cap.resource(snap["res"]) or {}
-            entry["target_resource"] = {"hash": resource.get("hash") if resource.get("known") else None,
-                                        "size": [resource.get("w"), resource.get("h")], "format": snap["fmt_name"],
-                                        "mip": snap["mip"], "slice": snap["slice"]}
-            entry["copied_area"] = snap["box"]
-            folder.mkdir(parents=True, exist_ok=True)
-            stem = f"draw{draw_index:05d}-{target}"
-            image = decode._texture_to_image(meta["width"], meta["height"], meta["format"], data)
-            if image is None:
-                path = folder / f"{stem}-after.dds"
-                path.write_bytes(decode.make_dds(meta["width"], meta["height"], meta["format"], data))
-            else:
-                path = folder / f"{stem}-after.png"
-                path.write_bytes(_png(image))
-            entry["after"] = str(path)
-            if "before" in read:
-                count, where, mask = changed_region(read["before"][1], data, meta["width"], meta["height"], meta["row_bytes"])
-                if count is None:
-                    entry["changed_pixels"] = "not computed (numpy is needed)"
-                else:
-                    entry["changed_pixels"] = count
-                    entry["changed_share_of_area"] = round(count / (meta["width"] * meta["height"]), 5)
-                    if where:
-                        # In pixels of the whole target, also when only a box of it was copied.
-                        entry["changed_box"] = [where[0] + snap["box"][0], where[1] + snap["box"][1],
-                                                where[2] + snap["box"][0], where[3] + snap["box"][1]]
-                        if image is not None:
-                            marked = _highlight(image, mask)
-                            path = folder / f"{stem}-changed.png"
-                            path.write_bytes(_png(marked))
-                            entry["changed_image"] = str(path)
-                            if preview and len(images) < MAX_PREVIEWS:
-                                images.append(Image(_png(_preview(marked, where))))
-                                entry["preview"] = len(images)
-                before_image = decode._texture_to_image(meta["width"], meta["height"], meta["format"], read["before"][1])
-                if before_image is not None:
-                    path = folder / f"{stem}-before.png"
-                    path.write_bytes(_png(before_image))
-                    entry["before"] = str(path)
-        results.append(entry)
-
-    for entry in results:
-        head = f"#{entry['draw']} {entry['call']} {entry['origin']}"
-        if entry.get("ib"):
-            head += f" ib={entry['ib'] or '-'} ic={entry['index_count']}" + session.mod_note(entry["ib"])
-        head += "".join(f" {stage}={value}" for stage, value in entry["shaders"].items())
+            head += f" ib={ib_hash or '-'} ic={draw['args'].get('index_count')}" + session.mod_note(ib_hash)
+        head += "".join(f" {stage}={draw['shaders'][stage]}" for stage in ("vs", "ps") if draw["shaders"].get(stage))
         lines.append(head)
-        if entry.get("other_index_data"):
+        if selected_hashes and ib_hash and ib_hash not in selected_hashes:
+            # Found by buffer object and range, but that range holds other bytes now.
             lines.append("    NOTE: found by index buffer object and range, but the index data there hashes differently "
                          "than in the capture the selection came from: the game rewrote that buffer, so this may be "
                          "another mesh.")
-        resource = entry.get("target_resource")
-        if resource:
-            lines.append(f"    {entry['target']}: {resource['hash'] or 'not created by the game (back buffer?)'} "
-                         f"{resource['size'][0]}x{resource['size'][1]} {resource['format']}"
-                         + (f" mip {resource['mip']}" if resource["mip"] else "")
-                         + (f" slice {resource['slice']}" if resource["slice"] else ""))
-        if isinstance(entry.get("changed_pixels"), str):
-            lines.append(f"    changed pixels: {entry['changed_pixels']}")
-        elif isinstance(entry.get("changed_pixels"), int):
-            if entry["changed_pixels"]:
-                lines.append(f"    changed {entry['changed_pixels']} pixels ({entry['changed_share_of_area'] * 100:.2f}% of the "
-                             f"copied area) within {entry['changed_box']} (left, top, right, bottom)")
-            elif entry["target"] == "oD":
-                lines.append("    changed nothing in this target (depth writes are off, or nothing passed the depth test)")
-            else:
-                lines.append("    changed nothing in this target (culled, clipped, occluded or masked out, or it wrote "
-                             "the values that were there)")
-        for key, label in (("before", "before"), ("after", "after"), ("changed_image", "what it touched"),
-                           ("preview", "preview image")):
-            value = entry.get(key)
-            if value is not None:
-                lines.append(f"    {label}: {value}")
-    lines.append("The pictures are the target as it was at that moment of the frame, not the finished frame. "
+        for (kind, slot), pair in sorted(by_draw[draw_index].items()):
+            depth_shown = depth_shown or kind == OUT_DSV
+            lines.extend(_target_lines(session, cap, folder, draw_index, "oD" if kind == OUT_DSV else f"o{slot}", pair,
+                                       preview, images))
+    lines.append("The pictures are the target as it was at that moment of the frame, not the finished frame, and in the "
+                 "target's own rows: the game keeps its off-screen targets upside down relative to the screen. "
                  "Pixels a draw wrote with the value they already had do not count as changed.")
-    if any(entry["target"] == "oD" for entry in results):
+    if depth_shown:
         lines.append("Depth pictures are scaled to each picture's own value range: go by the changed area, not by "
                      "brightness.")
     return ["\n".join(lines)] + images

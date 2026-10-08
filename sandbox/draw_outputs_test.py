@@ -19,7 +19,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-from efmi_mcp import draw_outputs, pipeline, tools  # noqa: E402
+from efmi_mcp import decode, draw_outputs, pipeline, tools  # noqa: E402
 from efmi_mcp.capture_model import Capture  # noqa: E402
 from efmi_mcp.mcp_stdio import ToolError  # noqa: E402
 from efmi_mcp.probe_client import ProbeEndpoint, ProbeError, ProbeNotFound  # noqa: E402
@@ -246,16 +246,22 @@ class DrawOutputTests(unittest.TestCase):
         self.assertFalse(error, text)
         lines = text.splitlines()
         self.assertEqual(lines[0].split(";")[0], "capture 102: 1 draws")
-        self.assertEqual(lines[1], "draws that matched: 1; targets copied for 1 of them; 0.0 MiB of pixels")
-        self.assertEqual(lines[2], f"#0 DrawIndexed game ib={MESH} ic=6 vs={VS} ps={PS}")
-        self.assertEqual(lines[3], "    o0: cccccccc 8x4 R8G8B8A8_UNORM")
-        self.assertEqual(lines[4], "    changed 6 pixels (18.75% of the copied area) within [2, 1, 5, 3] (left, top, right, bottom)")
+        self.assertEqual(lines[1], "draws that matched: 1; targets copied for 1 of them; 0.0 MiB of pixels; "
+                                   "recording cost inside the game: 0.01 ms")
         folder = self.root / "out" / "frame-102" / "draw-outputs"
+        # one block per draw, one sub-block per target of it
+        self.assertEqual(lines[2:9], [
+            f"#0 DrawIndexed game ib={MESH} ic=6 vs={VS} ps={PS}",
+            "    o0: cccccccc 8x4 R8G8B8A8_UNORM",
+            "        changed 6 pixels (18.75% of the copied area) within [2, 1, 5, 3] (left, top, right, bottom)",
+            f"        before: {folder / 'draw00000-o0-before.png'}",
+            f"        after: {folder / 'draw00000-o0-after.png'}",
+            f"        what it touched: {folder / 'draw00000-o0-changed.png'}",
+            "        preview image: 1"])
+        self.assertIn("upside down relative to the screen", lines[9])
+        self.assertEqual(len(lines), 10)
         self.assertEqual(sorted(path.name for path in folder.iterdir()),
                          ["draw00000-o0-after.png", "draw00000-o0-before.png", "draw00000-o0-changed.png"])
-        for label, name in (("before", "before"), ("after", "after"), ("what it touched", "changed")):
-            self.assertIn(f"    {label}: {folder / f'draw00000-o0-{name}.png'}", lines)
-        self.assertIn("    preview image: 1", lines)
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0]["mimeType"], "image/png")
         self.assertNotIn("NOTE", text)
@@ -304,8 +310,13 @@ class DrawOutputTests(unittest.TestCase):
         self.probe.copies = {0: (META, pixels(False)), 1: (depth_meta, far), 2: (META, pixels(True)), 3: (depth_meta, near)}
         text, error, images = self.call(hash=MESH, depth=True)
         self.assertFalse(error, text)
-        self.assertIn("    oD: dddddddd 8x4 D32_FLOAT", text)
-        self.assertIn("    changed 32 pixels (100.00% of the copied area) within [0, 0, 8, 4]", text)
+        lines = text.splitlines()
+        # both targets under the one draw that wrote them, colour first
+        self.assertEqual([line for line in lines if not line.startswith("        ")][2:5],
+                         [f"#0 DrawIndexed game ib={MESH} ic=6 vs={VS} ps={PS}", "    o0: cccccccc 8x4 R8G8B8A8_UNORM",
+                          "    oD: dddddddd 8x4 D32_FLOAT"])
+        self.assertIn("        changed 32 pixels (100.00% of the copied area) within [0, 0, 8, 4] (left, top, right, bottom)",
+                      lines[lines.index("    oD: dddddddd 8x4 D32_FLOAT") + 1])
         self.assertIn("Depth pictures are scaled to each picture's own value range", text)
         self.assertEqual(len(images), 2)
         self.probe.copies[3] = (depth_meta, far)
@@ -323,8 +334,10 @@ class DrawOutputTests(unittest.TestCase):
                 self.probe.reads.clear()
                 text, error, images = self.call(hash=MESH)
                 self.assertFalse(error, text)
-                self.assertIn(f"    before: {reason}", text)
-                self.assertIn(f"    after: {reason}", text)
+                lines = text.splitlines()
+                # the target is named although nothing of it could be copied
+                self.assertEqual(lines[3:6], ["    o0: cccccccc 8x4 R8G8B8A8_UNORM", f"        before: {reason}",
+                                              f"        after: {reason}"])
                 self.assertNotIn("changed", text.split("\n", 2)[2].split("The pictures")[0])
                 self.assertEqual((self.probe.reads, images), ([], []))
                 self.assertEqual("2 copies left out, over the pixel budget (use box)" in text, state == "over_budget")
@@ -339,6 +352,22 @@ class DrawOutputTests(unittest.TestCase):
         self.assertIn("draw00000-o0-after.png", text)
         self.assertNotIn("changed", text.split("\n", 2)[2].split("The pictures")[0])
         self.assertEqual(self.probe.reads, [1])
+
+    def test_a_format_without_a_picture_is_saved_as_dds_and_still_compared(self):
+        meta = {"width": WIDTH, "height": HEIGHT, "format": 6, "row_bytes": WIDTH * 12}      # R32G32B32_FLOAT
+        before = bytes(WIDTH * HEIGHT * 12)
+        after = bytearray(before)
+        after[(2 * WIDTH + 3) * 12:(2 * WIDTH + 5) * 12] = b"\x01" * 24                     # two pixels of row 2
+        self.probe.copies = {0: (meta, before), 1: (meta, bytes(after))}
+        text, error, images = self.call(hash=MESH)
+        self.assertFalse(error, text)
+        folder = self.root / "out" / "frame-102" / "draw-outputs"
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["draw00000-o0-after.dds", "draw00000-o0-before.dds"])
+        self.assertIn("        changed 2 pixels (6.25% of the copied area) within [3, 2, 5, 3]", text)
+        self.assertIn(f"        before: {folder / 'draw00000-o0-before.dds'}", text)
+        self.assertNotIn("what it touched", text)
+        self.assertEqual(images, [])
+        self.assertEqual((folder / "draw00000-o0-after.dds").read_bytes()[-len(after):], bytes(after))
 
     def test_index_data_that_is_not_the_selected_mesh_any_more_is_pointed_out(self):
         self.probe.ib_hash = "99999999"
@@ -425,6 +454,26 @@ class DrawOutputTests(unittest.TestCase):
                                            "oD": "dddddddd tex2d 8x4 D32_FLOAT mips=1 | view: D32_FLOAT tex2d mip 0 "
                                                  "read-only depth"})
 
+    def test_get_draw_describes_blend_for_the_targets_that_are_bound(self):
+        off, on = [0, 2, 1, 1, 2, 1, 1, 15], [1, 5, 6, 1, 2, 1, 1, 7]
+        for per_target, expected in (([off] * 8, {"all_targets": {"enabled": False, "write_mask": "rgba"}}),
+                                     ([off, off, on] + [off] * 5, {"all_targets": {"enabled": False, "write_mask": "rgba"}}),
+                                     ([on, off] + [off] * 6, {"targets": 2})):
+            with self.subTest(per_target=per_target[:3]):
+                doc = frame_doc(400)
+                doc["states"] = [dict(STATES[0], ind=True, rt=per_target)] + STATES[1:]
+                doc["draws"][0]["out"] = [[10, 0, 1], [10, 1, 1], [11, 0, 2]]            # two colour targets
+                doc["draws"][0]["outv"] = [1, 1, 2]
+                self.session.add_capture(Capture(doc))
+                blend = json.loads(self.call("efmi_get_draw", draw=0)[0])["blend"]
+                if "targets" in expected:
+                    self.assertEqual(len(blend["targets"]), expected["targets"])
+                    self.assertTrue(blend["targets"][0]["enabled"])
+                    self.assertNotIn("all_targets", blend)
+                else:
+                    self.assertEqual(blend["all_targets"], expected["all_targets"])
+                    self.assertNotIn("targets", blend)
+
     def test_get_draw_shows_scissor_rectangles_when_the_rasterizer_uses_them(self):
         doc = frame_doc(300)
         doc["states"] = STATES[:2] + [dict(STATES[2], sc=True)] + STATES[3:]
@@ -471,6 +520,13 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(blend["targets"][1], {"enabled": False, "write_mask": "a"})
         self.assertEqual(blend["targets"][7], {"enabled": False, "write_mask": "none"})
         self.assertEqual(blend["sample_mask"], "0x00000001")
+        # only the slots a draw uses; one entry when they are set alike
+        self.assertEqual(len(pipeline.describe_blend({"state": state, "factor": [0] * 4, "sample_mask": 1}, 2)["targets"]), 2)
+        alike = dict(state, rt=[state["rt"][1]] * 8)
+        self.assertEqual(pipeline.describe_blend({"state": alike, "factor": [0] * 4, "sample_mask": 1})["all_targets"],
+                         {"enabled": False, "write_mask": "a"})
+        self.assertEqual(pipeline.describe_blend({"state": state, "factor": [0] * 4, "sample_mask": 1}, 1)["all_targets"],
+                         blend["targets"][0])
 
     def test_what_a_state_does_not_use_is_left_out(self):
         # D3D11 reports these as defaults or zero whatever the game asked for; they would only mislead.
@@ -560,6 +616,16 @@ class PipelineTests(unittest.TestCase):
         # a state or view number the document does not hold is "none", not an error
         self.assertIsNone(old.state(0))
         self.assertIsNone(Capture(frame_doc(3)).view(99))
+
+
+class DepthPictureTests(unittest.TestCase):
+    def test_the_64_bit_depth_stencil_layout_shows_its_depth(self):
+        data = struct.pack("<fIfIfI", 0.25, 36, 0.5, 0, 0.75, 36)          # depth, then stencil in the low byte
+        for fmt in (19, 20, 21):                                           # typeless, D32_FLOAT_S8X24_UINT, depth view
+            image = decode._texture_to_image(3, 1, fmt, data)
+            self.assertEqual((image.mode, image.size, list(image.tobytes())), ("L", (3, 1), [0, 127, 255]), fmt)
+        stencil = decode._texture_to_image(3, 1, 22, data)                 # X32_TYPELESS_G8X24_UINT
+        self.assertEqual(list(stencil.tobytes()), [255, 0, 255])
 
 
 class ChangedRegionTests(unittest.TestCase):
