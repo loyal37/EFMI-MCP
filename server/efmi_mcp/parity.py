@@ -9,9 +9,15 @@ compare_ordered   draw N of the dump against the N-th draw of the game in the
 compare_sets      frame-independent: identities that appear in both are
                   compared wherever the same draw parameters show up. Works for
                   a dump and a capture taken moments apart in the game.
+
+compare_contents  byte for byte: the buffers and textures XXMI wrote for call N
+                  against what the probe kept of the N-th call of the game
+                  (a capture taken with contents). Like compare_ordered it needs
+                  two recordings of the same frame content.
 """
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 
 from .capture_model import Capture
@@ -171,3 +177,93 @@ def compare_sets(cap: Capture, dump: FrameDump) -> ParityResult:
     res.messages.append(f"textures: {len(common_tex)} of the dump's {len(theirs_tex)} hashes also seen by the probe")
     res.checks += len(common_sh) + len(common_tex)
     return res
+
+
+def dds_payload(data: bytes) -> tuple[bytes, dict] | None:
+    """The pixel data of a DDS file and what its header says, or None when it is not one."""
+    if len(data) < 128 or data[:4] != b"DDS ":
+        return None
+    height, width, _pitch, _depth, mips = struct.unpack_from("<5I", data, 12)
+    start = 128
+    info = {"width": width, "height": height, "mips": max(mips, 1), "array": 1, "format": None}
+    if data[84:88] == b"DX10":
+        fmt, _dim, _misc, array, _misc2 = struct.unpack_from("<5I", data, 128)
+        info.update(format=fmt, array=array)
+        start = 148
+    return data[start:], info
+
+
+def _content_of(draw: dict, name: str) -> int | None:
+    """Where the probe keeps what a slot of a call held, named the way XXMI names its files."""
+    if name == "ib":
+        return (draw.get("ib") or {}).get("content")
+    if name.startswith("vb") and name[2:].isdigit():
+        return (draw.get("vb", {}).get(int(name[2:])) or {}).get("content")
+    for group in ("cb", "tex", "out"):
+        entry = draw.get(group, {}).get(name)
+        if entry is not None:
+            return entry.get("content")
+    return None
+
+
+def compare_contents(cap: Capture, dump: FrameDump, read, verbose: bool = False) -> ParityResult:
+    """Every .buf and .dds XXMI wrote for a call against the bytes the probe kept of that call.
+
+    `read(content id)` returns (meta, bytes) of one entry of the capture's contents: a whole
+    buffer, or one subresource of a texture. XXMI writes a buffer whole and of a texture its
+    first subresource, whatever part a view shows; where the probe kept another subresource
+    (the one the view shows) the two are not about the same pixels and are only counted.
+    """
+    res = ParityResult()
+    kept: dict[int, tuple[dict, bytes]] = {}
+    game = [d for d in cap.draws() if d["origin"] != "xxmi"]
+    numbers = [n for n in dump.draw_numbers() if dump.draws[n].call]
+    if len(game) != len(numbers):
+        res.mismatches += 1
+        res.messages.append(f"  MISMATCH call count: probe {len(game)}, xxmi {len(numbers)}")
+    files = other_part = nothing_kept = 0
+    by_kind: dict[str, int] = {}
+    for ours, n in zip(game, numbers):
+        for name, slot in sorted(dump.draws[n].slots.items()):
+            for file in sorted(slot.files):
+                ext = file.rsplit(".", 1)[-1]
+                if ext not in ("buf", "dds"):
+                    continue
+                files += 1
+                what = f"call {n:06d} {name}.{ext}"
+                content = _content_of(ours, name)
+                if content is None:
+                    nothing_kept += 1
+                    res.messages.append(f"  not kept by the probe: {what}")
+                    continue
+                theirs = (dump.path / file).read_bytes()
+                entry = cap.content(content)
+                if content not in kept:
+                    kept[content] = read(content)
+                meta, mine = kept[content]
+                if ext == "dds":
+                    parsed = dds_payload(theirs)
+                    if parsed is None or entry["kind"] != "texture":
+                        res.checks += 1
+                        res.mismatches += 1
+                        res.messages.append(f"  MISMATCH {what}: not a texture on both sides")
+                        continue
+                    if entry["mip"] or entry["slice"]:
+                        other_part += 1          # XXMI: first subresource; the probe: what the view shows
+                        continue
+                    theirs = parsed[0]
+                res.checks += 1
+                by_kind[ext] = by_kind.get(ext, 0) + 1
+                if mine == theirs and meta.get("exact") is True:
+                    if verbose:
+                        res.messages.append(f"  ok {what}: {len(mine)} bytes")
+                    continue
+                res.mismatches += 1
+                first = next((i for i in range(min(len(mine), len(theirs))) if mine[i] != theirs[i]), None)
+                res.messages.append(f"  MISMATCH {what}: probe {len(mine)} bytes, xxmi {len(theirs)}, first difference at "
+                                    f"{first}, exact={meta.get('exact')}")
+    res.messages.insert(0, f"{files} buffer and texture files of {len(numbers)} calls: {res.checks} compared byte for byte "
+                           f"({by_kind.get('buf', 0)} buffers, {by_kind.get('dds', 0)} textures), {other_part} show another "
+                           f"subresource than XXMI wrote, {nothing_kept} had nothing kept; {len(kept)} distinct contents read")
+    return res
+

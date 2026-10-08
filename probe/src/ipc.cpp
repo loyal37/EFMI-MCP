@@ -77,7 +77,7 @@ static void status_json(JsonW& w)
 	w.ku("protocol", PROBE_PROTOCOL);
 	// Optional abilities, so the server need not compare version strings.
 	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
-	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("rt_snapshots"); w.end_arr();
+	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("rt_snapshots"); w.str("contents"); w.end_arr();
 	bool elevated = false;
 	uint32_t integrity = 0;
 	reload_process_info(&elevated, &integrity);
@@ -141,6 +141,51 @@ static void status_json(JsonW& w)
 	w.key("capture"); w.raw("{" + extra + "}");
 }
 
+// Which draws a request is about; see DrawMatch.
+static void parse_matches(const JVal* list, std::vector<DrawMatch>* out)
+{
+	if (!list || list->type != JVal::Arr)
+		return;
+	for (const JVal& m : list->arr) {
+		if (m.type != JVal::Obj || out->size() >= 256)
+			continue;
+		DrawMatch dm;
+		dm.draw = (int32_t)m.num_or("draw", -1);
+		dm.first = (int32_t)m.num_or("first", -1);
+		dm.last = (int32_t)m.num_or("last", -1);
+		dm.ib = (void*)(uintptr_t)_strtoui64(m.str_or("ib", "0").c_str(), nullptr, 16);
+		dm.ib_serial = (uint64_t)m.num_or("sn", 0);
+		dm.index_count = (uint32_t)m.num_or("ic", 0);
+		dm.first_index = (int64_t)m.num_or("fi", -1);
+		dm.vs = _strtoui64(m.str_or("vs", "0").c_str(), nullptr, 16);
+		dm.ps = _strtoui64(m.str_or("ps", "0").c_str(), nullptr, 16);
+		dm.shader = _strtoui64(m.str_or("sh", "0").c_str(), nullptr, 16);
+		std::string origin = m.str_or("o", "");
+		dm.origin = origin == "game" ? ORIGIN_GAME : origin == "xxmi" ? ORIGIN_XXMI : -1;
+		if (dm.any())
+			out->push_back(dm);
+	}
+}
+
+static uint32_t kinds_of(const JVal* list)
+{
+	uint32_t kinds = 0;
+	if (!list || list->type != JVal::Arr)
+		return 0;
+	for (const JVal& k : list->arr) {
+		if (k.type != JVal::Str) continue;
+		if (k.str == "ib") kinds |= CK_IB;
+		else if (k.str == "vb") kinds |= CK_VB;
+		else if (k.str == "cb") kinds |= CK_CB;
+		else if (k.str == "buf") kinds |= CK_BUF;
+		else if (k.str == "tex") kinds |= CK_TEX;
+		else if (k.str == "uav") kinds |= CK_UAV;
+		else if (k.str == "rt") kinds |= CK_RT;
+		else if (k.str == "depth") kinds |= CK_DEPTH;
+	}
+	return kinds;
+}
+
 static bool handle(HANDLE pipe, const JVal& rq)
 {
 	std::string cmd = rq.str_or("cmd", "");
@@ -184,29 +229,31 @@ static bool handle(HANDLE pipe, const JVal& rq)
 					c.rt_box[i] = box->arr[i].type == JVal::Num && box->arr[i].num > 0 ? (uint32_t)box->arr[i].num : 0;
 				c.rt_has_box = c.rt_box[2] > c.rt_box[0] && c.rt_box[3] > c.rt_box[1];
 			}
-			const JVal* list = rt->get("match");
-			if (list && list->type == JVal::Arr) {
-				for (const JVal& m : list->arr) {
-					if (m.type != JVal::Obj || c.rt_match.size() >= 256)
-						continue;
-					DrawMatch dm;
-					dm.draw = (int32_t)m.num_or("draw", -1);
-					dm.ib = (void*)(uintptr_t)_strtoui64(m.str_or("ib", "0").c_str(), nullptr, 16);
-					dm.ib_serial = (uint64_t)m.num_or("sn", 0);
-					dm.index_count = (uint32_t)m.num_or("ic", 0);
-					dm.first_index = (int64_t)m.num_or("fi", -1);
-					dm.vs = _strtoui64(m.str_or("vs", "0").c_str(), nullptr, 16);
-					dm.ps = _strtoui64(m.str_or("ps", "0").c_str(), nullptr, 16);
-					dm.shader = _strtoui64(m.str_or("sh", "0").c_str(), nullptr, 16);
-					std::string origin = m.str_or("o", "");
-					dm.origin = origin == "game" ? ORIGIN_GAME : origin == "xxmi" ? ORIGIN_XXMI : -1;
-					if (dm.any())
-						c.rt_match.push_back(dm);
-				}
-			}
+			parse_matches(rt->get("match"), &c.rt_match);
 			if (c.rt_match.empty())
 				return send_error(pipe, id, "rt.match selects no draw: give draw, ib, ic, fi, vs, ps, sh or o");
 			c.detail = 1;       // the copies belong to a full record
+		}
+		if (const JVal* ct = rq.get("contents")) {
+			// What calls saw, kept as it was: "inputs" for every call (ib, vb, cb, buf, tex), "outputs"
+			// (rt, depth, uav) for the calls that "match" selects or for "all" of them.
+			if (ct->type != JVal::Obj)
+				return send_error(pipe, id, "contents must be an object");
+			c.ct_kinds = kinds_of(ct->get("inputs")) & (CK_IB | CK_VB | CK_CB | CK_BUF | CK_TEX);
+			c.ct_out_kinds = kinds_of(ct->get("outputs")) & (CK_UAV | CK_RT | CK_DEPTH);
+			parse_matches(ct->get("match"), &c.ct_match);
+			c.ct_out_all = ct->bool_or("all", false);
+			c.ct_events = ct->bool_or("events", false);
+			c.ct_strict = ct->bool_or("strict", false);
+			double mb = ct->num_or("budget_mb", 1024);
+			mb = mb < 0.001 ? 0.001 : mb > 16384 ? 16384 : mb;
+			c.ct_budget = (uint64_t)(mb * 1048576.0);
+			if (c.ct_out_kinds && !c.ct_out_all && c.ct_match.empty())
+				return send_error(pipe, id, "contents.outputs needs contents.match (draw, first/last, ib, ic, fi, vs, ps, sh, o) or all");
+			if (!c.contents() && !c.ct_events)
+				return send_error(pipe, id, "contents asks for nothing: give inputs, outputs or events");
+			c.detail = 1;
+			c.hold = true;      // what is read in place has to stay alive
 		}
 		std::string err;
 		std::shared_ptr<Capture> cap = cap_request(c, &err);
@@ -230,7 +277,7 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		return send_msg(pipe, w.s, payload.data(), payload.size());
 	}
 
-	if (cmd == "read_buffer" || cmd == "read_texture" || cmd == "read_rt") {
+	if (cmd == "read_buffer" || cmd == "read_texture" || cmd == "read_rt" || cmd == "read_content") {
 		ReadResult r;
 		uint32_t frame = (uint32_t)rq.num_or("capture", 0);
 		uint32_t res = (uint32_t)rq.num_or("res", 0);
@@ -238,6 +285,9 @@ static bool handle(HANDLE pipe, const JVal& rq)
 			cap_read_buffer(frame, res, (uint64_t)rq.num_or("offset", 0), (uint64_t)rq.num_or("size", 0), timeout, &r);
 		else if (cmd == "read_rt")
 			cap_read_rt(frame, (uint32_t)rq.num_or("snap", 0), timeout, &r);
+		else if (cmd == "read_content")
+			cap_read_content(frame, (uint32_t)rq.num_or("snap", 0), (uint64_t)rq.num_or("offset", 0),
+			                 (uint64_t)rq.num_or("size", 0), timeout, &r);
 		else
 			cap_read_texture(frame, res, (uint32_t)rq.num_or("mip", 0), (uint32_t)rq.num_or("slice", 0), timeout, &r);
 		if (!r.ok)
@@ -300,8 +350,9 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		return send_msg(pipe, w.s, frames.data(), frames.size());
 	}
 
-	if (cmd == "release_rt") {
-		cap_release_rt((uint32_t)rq.num_or("capture", 0), timeout);
+	if (cmd == "release_rt" || cmd == "release_content") {
+		if (cmd == "release_rt") cap_release_rt((uint32_t)rq.num_or("capture", 0), timeout);
+		else cap_release_content((uint32_t)rq.num_or("capture", 0), timeout);
 		JsonW w;
 		w.begin_obj();
 		w.kd("id", id);

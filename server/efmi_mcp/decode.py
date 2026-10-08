@@ -112,17 +112,20 @@ def decode_constants(data: bytes) -> list[tuple[float, float, float, float]]:
 
 
 # ---------------------------------------------------------------- textures
-def make_dds(width: int, height: int, fmt: int, data: bytes, mips: int = 1) -> bytes:
-    """Wraps one subresource in a DDS container with a DX10 header."""
+def make_dds(width: int, height: int, fmt: int, data: bytes, mips: int = 1, depth: int = 0) -> bytes:
+    """Wraps one subresource in a DDS container with a DX10 header. depth > 0: one mip of a volume, slice after slice."""
     DDSD_CAPS, DDSD_HEIGHT, DDSD_WIDTH, DDSD_PIXELFORMAT, DDSD_MIPMAPCOUNT, DDSD_LINEARSIZE = 0x1, 0x2, 0x4, 0x1000, 0x20000, 0x80000
+    DDSD_DEPTH, DDSCAPS2_VOLUME = 0x800000, 0x200000
     flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_LINEARSIZE
     if mips > 1:
         flags |= DDSD_MIPMAPCOUNT
-    header = struct.pack("<4sIIIIIII", b"DDS ", 124, flags, height, width, len(data), 0, mips)
+    if depth:
+        flags |= DDSD_DEPTH
+    header = struct.pack("<4sIIIIIII", b"DDS ", 124, flags, height, width, len(data) // max(depth, 1), depth, mips)
     header += b"\0" * 44
     header += struct.pack("<II4sIIIII", 32, 0x4, b"DX10", 0, 0, 0, 0, 0)      # DDS_PIXELFORMAT, DDPF_FOURCC
-    header += struct.pack("<IIIII", 0x1000 | (0x400008 if mips > 1 else 0), 0, 0, 0, 0)
-    dx10 = struct.pack("<IIIII", fmt, 3, 0, 1, 0)                             # D3D10_RESOURCE_DIMENSION_TEXTURE2D
+    header += struct.pack("<IIIII", 0x1000 | (0x400008 if mips > 1 else 0), DDSCAPS2_VOLUME if depth else 0, 0, 0, 0)
+    dx10 = struct.pack("<IIIII", fmt, 4 if depth else 3, 0, 1, 0)             # D3D10_RESOURCE_DIMENSION_TEXTURE3D / 2D
     return header + dx10 + data
 
 

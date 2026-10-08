@@ -10,11 +10,13 @@
 
 volatile LONG g_recording = 0;
 volatile LONG g_tracking = 0;
-volatile LONG g_rt_after = 0;
+volatile LONG g_after = 0;
+volatile LONG g_barrier = 0;
+volatile LONG g_events = 0;
 
 // ================================================================ data model
 enum { ST_VS = 0, ST_HS, ST_DS, ST_GS, ST_PS, ST_CS, ST_COUNT };
-enum { OUT_RTV = 10, OUT_DSV = 11, OUT_CS_UAV = 12 };
+enum { OUT_RTV = 10, OUT_DSV = 11, OUT_CS_UAV = 12, OUT_OM_UAV = 13 };
 enum { RS_PENDING = 0, RS_OK = 1, RS_OOB = 2, RS_SKIPPED = 3, RS_CACHED = 4, RS_VOLATILE = 5 };
 
 union AnyDesc {
@@ -42,9 +44,9 @@ struct CapLayout { void* ptr; bool known; LayoutInfo info; };
 struct CapRegion { int32_t res; uint32_t off, size, hash; uint8_t state; bool clamped; };
 struct CapSnap   { int32_t res; uint32_t off, size; uint64_t blob_off; uint8_t state; };
 
-struct VbBind   { uint8_t slot; int32_t res; uint32_t stride, off; int32_t region; };
-struct CbBind   { uint8_t stage, slot; int32_t res; uint32_t first, num; int32_t snap; };
-struct ViewBind { uint8_t stage, slot; int32_t res; int32_t view = -1; };
+struct VbBind   { uint8_t slot; int32_t res; uint32_t stride, off; int32_t region; int32_t cont = -1; };
+struct CbBind   { uint8_t stage, slot; int32_t res; uint32_t first, num; int32_t snap; int32_t cont = -1; };
+struct ViewBind { uint8_t stage, slot; int32_t res; int32_t view = -1; int32_t cont = -1; };
 
 // Fixed-function state objects and view parameters, recorded for full captures.
 enum { SK_BLEND = 0, SK_DEPTH = 1, SK_RASTER = 2, SK_SAMPLER = 3 };
@@ -81,6 +83,46 @@ struct RtSnap {
 };
 struct RtAfter { uint8_t kind, slot; ID3D11View* view; };
 
+// ---- contents
+// What a call read or wrote, as it was at that moment. A snapshot names one
+// version of a buffer, or one subresource of a texture as it was until the
+// next write to it.
+enum { CS_LIVE = 0, CS_COPIED = 1, CS_BUDGET = 2, CS_MEMORY = 3, CS_FAILED = 4, CS_UNSUPPORTED = 5, CS_MAPPED = 6 };
+struct ContSnap {
+	int32_t  res;
+	uint8_t  tex;                // 0: a buffer version, 1: a texture subresource
+	uint8_t  state;              // textures; a buffer answers from its track
+	uint8_t  dim;                // of the copy
+	bool     resolved;           // the copy holds the resolved samples of a multisampled texture
+	uint32_t ver;                // buffers
+	uint32_t mip, slice;         // textures
+	ID3D11Resource* copy;        // textures: the subresource as it was, once something was about to write to it
+	uint32_t w, h, d;
+	DXGI_FORMAT format, hint;    // hint: the format of the view it was seen through, to resolve typeless samples
+	uint64_t bytes;
+};
+// Bytes [off, off+size) of a buffer as they were up to and including version `ver`.
+struct ContPatch { uint32_t ver, off, size, chunk, at; };
+struct ContChunk { ID3D11Buffer* buf; uint32_t cap, used; };
+struct ContPending { uint32_t sub; int32_t snap; };
+struct ContTrack {
+	int32_t  rid = -1;
+	bool     buffer = false;
+	// buffers
+	uint32_t ver = 0;            // every write that follows a reference starts a new version
+	int32_t  cur = -1;           // snapshot of the latest version that was referenced
+	bool     sealed = false;     // the whole buffer was saved after that reference: nothing more to keep
+	bool     lost = false;       // a piece could not be kept: versions up to lost_ver cannot be rebuilt
+	uint8_t  lost_why = 0;
+	uint32_t lost_ver = 0;
+	uint64_t since_ref = 0;      // bytes saved since the latest reference
+	std::vector<ContPatch> patches;
+	// textures: subresources that a call referenced and nothing has written to since
+	std::vector<ContPending> pending;
+};
+struct OutAfter { uint32_t bind; };          // index into Capture::views of an output to note after the call
+struct CapEvent { uint8_t type; uint32_t draw; int32_t dst, src; uint32_t a[4]; float f[4]; bool has_f; };
+
 struct DrawRec {
 	uint32_t index = 0;
 	uint8_t  type = 0;
@@ -101,6 +143,7 @@ struct DrawRec {
 	uint32_t out_begin = 0, out_count = 0;
 	float    vp[4] = {};
 	bool     has_vp = false;
+	int32_t  ib_cont = -1;       // contents: the index buffer as it was
 
 	// full captures only
 	bool     has_state = false;
@@ -111,6 +154,7 @@ struct DrawRec {
 	uint32_t sc_begin = 0, sc_count = 0;
 	uint32_t vp_count = 0;
 	float    vp_z[2] = { 0, 1 };
+	uint32_t vp_begin = 0;       // all of them, when there is more than one
 	int32_t  indirect_snap = -1;
 };
 
@@ -168,6 +212,21 @@ struct Capture {
 	std::unordered_map<void*, int32_t> view_ids;
 	std::vector<SamplerBind> samplers;
 	std::vector<D3D11_RECT> rects;
+	std::vector<D3D11_VIEWPORT> viewports;
+
+	// contents
+	std::vector<ContSnap> conts;
+	std::unordered_map<void*, ContTrack> tracks;
+	std::vector<ContChunk> cchunks;
+	std::vector<OutAfter> out_after;  // outputs of the call that is being issued right now
+	uint32_t after_draw = 0;
+	uint64_t ct_bytes = 0;            // kept so far
+	uint32_t ct_copies = 0, ct_lost = 0;
+	uint32_t ct_out_calls = 0;        // calls whose outputs were noted
+	bool     ct_unknown = false;      // a command list ran: what is read in place may be newer than the call
+	bool     ct_released = false;     // the contents were let go of
+	std::vector<CapEvent> events;
+	uint32_t events_dropped = 0;
 
 	std::vector<RtSnap> rts;
 	std::vector<RtAfter> rt_after;   // targets of the draw that is being issued right now
@@ -454,6 +513,13 @@ static void resync_gpu_writers()
 		ID3D11UnorderedAccessView_Release(uavs[i]);
 		g_cs_uav_any = true;
 	}
+	memset(uavs, 0, sizeof(uavs));
+	OCTX(OMGetRenderTargetsAndUnorderedAccessViews)(rctx(), 0, nullptr, nullptr, 0, n, uavs);
+	for (UINT i = 0; i < n; i++) {
+		if (!uavs[i]) continue;
+		g_om_uav[i] = view_resource((ID3D11View*)uavs[i]);
+		ID3D11UnorderedAccessView_Release(uavs[i]);
+	}
 	ID3D11Buffer* so[D3D11_SO_BUFFER_SLOT_COUNT];
 	memset(so, 0, sizeof(so));
 	OCTX(SOGetTargets)(rctx(), D3D11_SO_BUFFER_SLOT_COUNT, so);
@@ -463,6 +529,23 @@ static void resync_gpu_writers()
 		ID3D11Buffer_Release(so[i]);
 	}
 	refresh_om_any();
+}
+
+void cap_view_written(ID3D11View* view)
+{
+	void* r = view_resource(view);
+	if (r)
+		reg_buffer_written(r, 0, 0xffffffffu);
+}
+
+void cap_outputs_changed(bool compute);
+
+void cap_state_swapped()
+{
+	if (g_tracking)
+		resync_gpu_writers();
+	cap_outputs_changed(false);
+	cap_outputs_changed(true);
 }
 
 // ================================================================ interning
@@ -800,6 +883,698 @@ static int32_t snapshot(Capture* c, ID3D11Buffer* buf, int32_t rid, uint32_t off
 	return idx;
 }
 
+// ================================================================ contents
+// What a call read and wrote, as it was when the call was issued, for as long
+// as the capture is held.
+//
+// Recording a frame copies nothing for this: a draw only notes which version
+// of each resource it saw. Whatever is about to change a resource (a map, an
+// update, a copy, a clear, a draw or a dispatch that has it bound for writing)
+// passes one of the hooks first, and there the version that is still wanted is
+// set aside: of a buffer only the bytes about to be overwritten, of a texture
+// the subresource. A resource nothing writes to again is read where it is. So
+// a static mesh or texture costs nothing however many draws use it, and
+// something that changes is copied once for every version that was used.
+static Capture* g_bar = nullptr;                       // the capture whose contents are being kept
+static std::unordered_map<void*, uint32_t> g_mapped;   // what the game has mapped right now
+
+static bool memory_allows(uint64_t bytes)
+{
+	MEMORYSTATUSEX m;
+	memset(&m, 0, sizeof(m));
+	m.dwLength = sizeof(m);
+	if (!GlobalMemoryStatusEx(&m))
+		return true;
+	// The game comes first: never take the machine below 2 GiB of free memory.
+	const uint64_t reserve = 2048ull << 20;
+	return m.ullAvailPhys > bytes + reserve && m.ullAvailPageFile > bytes + reserve;
+}
+
+static bool is_block_compressed(DXGI_FORMAT f)
+{
+	return (f >= DXGI_FORMAT_BC1_TYPELESS && f <= DXGI_FORMAT_BC5_SNORM) ||
+	       (f >= DXGI_FORMAT_BC6H_TYPELESS && f <= DXGI_FORMAT_BC7_UNORM_SRGB);
+}
+
+static bool is_typeless(DXGI_FORMAT f)
+{
+	switch (f) {
+	case DXGI_FORMAT_R32G32B32A32_TYPELESS: case DXGI_FORMAT_R32G32B32_TYPELESS: case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+	case DXGI_FORMAT_R32G32_TYPELESS: case DXGI_FORMAT_R32G8X24_TYPELESS: case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+	case DXGI_FORMAT_R8G8B8A8_TYPELESS: case DXGI_FORMAT_R16G16_TYPELESS: case DXGI_FORMAT_R32_TYPELESS:
+	case DXGI_FORMAT_R24G8_TYPELESS: case DXGI_FORMAT_R8G8_TYPELESS: case DXGI_FORMAT_R16_TYPELESS:
+	case DXGI_FORMAT_R8_TYPELESS: case DXGI_FORMAT_BC1_TYPELESS: case DXGI_FORMAT_BC2_TYPELESS:
+	case DXGI_FORMAT_BC3_TYPELESS: case DXGI_FORMAT_BC4_TYPELESS: case DXGI_FORMAT_BC5_TYPELESS:
+	case DXGI_FORMAT_B8G8R8A8_TYPELESS: case DXGI_FORMAT_B8G8R8X8_TYPELESS: case DXGI_FORMAT_BC6H_TYPELESS:
+	case DXGI_FORMAT_BC7_TYPELESS:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool is_depth_format(DXGI_FORMAT f)
+{
+	switch (f) {
+	case DXGI_FORMAT_R32G8X24_TYPELESS: case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+	case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT: case DXGI_FORMAT_D32_FLOAT: case DXGI_FORMAT_R24G8_TYPELESS:
+	case DXGI_FORMAT_D24_UNORM_S8_UINT: case DXGI_FORMAT_R24_UNORM_X8_TYPELESS: case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
+	case DXGI_FORMAT_D16_UNORM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static uint64_t surface_bytes(uint32_t w, uint32_t h, uint32_t d, DXGI_FORMAT f)
+{
+	size_t n = 0, row = 0, rows = 0;
+	dxgi_surface_info(w, h, f, &n, &row, &rows);
+	return (uint64_t)n * d;
+}
+
+static uint32_t mips_of(const CapRes& cr)
+{
+	uint32_t n = cr.dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D ? cr.live.t2.MipLevels
+	           : cr.dim == D3D11_RESOURCE_DIMENSION_TEXTURE1D ? cr.live.t1.MipLevels
+	           : cr.dim == D3D11_RESOURCE_DIMENSION_TEXTURE3D ? cr.live.t3.MipLevels : 1;
+	return n ? n : 1;
+}
+
+struct Staged {
+	ID3D11Resource* tex = nullptr;
+	uint8_t  dim = 0;
+	bool     resolved = false;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	uint32_t w = 0, h = 0, d = 1;
+	uint64_t bytes = 0;
+};
+
+// Queues a copy of one subresource, as it is now, into a staging texture of its
+// own. Returns 0, or the CS_* reason why there is none. hint: the format of the
+// view the texture was seen through, which a typeless multisampled texture needs
+// to be resolved. limit: bytes that may still be spent, 0 for any number.
+static int stage_subresource(ID3D11Resource* r, const AnyDesc& live, uint8_t dim, uint32_t mip, uint32_t slice,
+                             DXGI_FORMAT hint, uint64_t limit, Staged* out)
+{
+	ID3D11Device* dev = rdev();
+	ID3D11DeviceContext* ctx = rctx();
+	out->dim = dim;
+	if (g_mapped.count(r))
+		return CS_MAPPED;                // the runtime would drop the copy without a word
+
+	if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE1D) {
+		// XXMI's IniParams live in a 1D texture, which makes this worth having.
+		const D3D11_TEXTURE1D_DESC& d = live.t1;
+		if (mip >= d.MipLevels || slice >= d.ArraySize) return CS_FAILED;
+		out->w = std::max(d.Width >> mip, (UINT)1);
+		out->h = 1;
+		out->format = d.Format;
+		out->bytes = surface_bytes(out->w, 1, 1, d.Format);
+		if (!out->bytes) return CS_UNSUPPORTED;
+		if (limit && out->bytes > limit) return CS_BUDGET;
+		D3D11_TEXTURE1D_DESC s;
+		memset(&s, 0, sizeof(s));
+		s.Width = out->w;
+		s.MipLevels = 1;
+		s.ArraySize = 1;
+		s.Format = d.Format;
+		s.Usage = D3D11_USAGE_STAGING;
+		s.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		ID3D11Texture1D* st = nullptr;
+		if (FAILED(ODEV(CreateTexture1D)(dev, &s, nullptr, &st)) || !st) return CS_FAILED;
+		OCTX(CopySubresourceRegion)(ctx, (ID3D11Resource*)st, 0, 0, 0, 0, r, mip + slice * d.MipLevels, nullptr);
+		out->tex = (ID3D11Resource*)st;
+		return 0;
+	}
+
+	if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE3D) {
+		const D3D11_TEXTURE3D_DESC& d = live.t3;
+		if (mip >= d.MipLevels) return CS_FAILED;
+		out->w = std::max(d.Width >> mip, (UINT)1);
+		out->h = std::max(d.Height >> mip, (UINT)1);
+		out->d = std::max(d.Depth >> mip, (UINT)1);
+		out->format = d.Format;
+		out->bytes = surface_bytes(out->w, out->h, out->d, d.Format);
+		if (!out->bytes) return CS_UNSUPPORTED;
+		if (limit && out->bytes > limit) return CS_BUDGET;
+		if (out->bytes >= (1u << 20) && !memory_allows(out->bytes)) return CS_MEMORY;
+		D3D11_TEXTURE3D_DESC s;
+		memset(&s, 0, sizeof(s));
+		s.Width = out->w;
+		s.Height = out->h;
+		if (is_block_compressed(d.Format)) {
+			s.Width = (out->w + 3) & ~3u;
+			s.Height = (out->h + 3) & ~3u;
+		}
+		s.Depth = out->d;
+		s.MipLevels = 1;
+		s.Format = d.Format;
+		s.Usage = D3D11_USAGE_STAGING;
+		s.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		ID3D11Texture3D* st = nullptr;
+		if (FAILED(ODEV(CreateTexture3D)(dev, &s, nullptr, &st)) || !st) return CS_FAILED;
+		OCTX(CopySubresourceRegion)(ctx, (ID3D11Resource*)st, 0, 0, 0, 0, r, mip, nullptr);
+		out->tex = (ID3D11Resource*)st;
+		return 0;
+	}
+
+	if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+		return CS_UNSUPPORTED;
+	const D3D11_TEXTURE2D_DESC& d = live.t2;
+	if (mip >= d.MipLevels || slice >= d.ArraySize) return CS_FAILED;
+	out->w = std::max(d.Width >> mip, (UINT)1);
+	out->h = std::max(d.Height >> mip, (UINT)1);
+	DXGI_FORMAT fmt = d.Format;
+	const bool multisampled = d.SampleDesc.Count > 1;
+	if (multisampled) {
+		// Samples can only be read back resolved, and depth cannot be resolved.
+		if ((d.BindFlags & D3D11_BIND_DEPTH_STENCIL) || is_depth_format(fmt)) return CS_UNSUPPORTED;
+		if (is_typeless(fmt)) fmt = hint;
+		UINT support = 0;
+		if (fmt == DXGI_FORMAT_UNKNOWN || is_typeless(fmt) || FAILED(ODEV(CheckFormatSupport)(dev, fmt, &support))
+		    || !(support & D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE))
+			return CS_UNSUPPORTED;
+	}
+	out->format = fmt;
+	out->bytes = surface_bytes(out->w, out->h, 1, fmt);
+	if (!out->bytes) return CS_UNSUPPORTED;
+	if (limit && out->bytes > limit) return CS_BUDGET;
+	if (out->bytes >= (1u << 20) && !memory_allows(out->bytes)) return CS_MEMORY;
+
+	D3D11_TEXTURE2D_DESC s;
+	memset(&s, 0, sizeof(s));
+	s.Width = out->w;
+	s.Height = out->h;
+	if (is_block_compressed(fmt)) {
+		s.Width = (out->w + 3) & ~3u;
+		s.Height = (out->h + 3) & ~3u;
+	}
+	s.MipLevels = 1;
+	s.ArraySize = 1;
+	s.Format = fmt;
+	s.SampleDesc.Count = 1;
+	s.Usage = D3D11_USAGE_STAGING;
+	s.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	ID3D11Texture2D* st = nullptr;
+	if (FAILED(ODEV(CreateTexture2D)(dev, &s, nullptr, &st)) || !st) return CS_FAILED;
+	const UINT sub = mip + slice * d.MipLevels;
+	if (multisampled) {
+		D3D11_TEXTURE2D_DESC t = s;
+		t.Usage = D3D11_USAGE_DEFAULT;
+		t.CPUAccessFlags = 0;
+		t.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		ID3D11Texture2D* tmp = nullptr;
+		if (FAILED(ODEV(CreateTexture2D)(dev, &t, nullptr, &tmp)) || !tmp) {
+			ID3D11Texture2D_Release(st);
+			return CS_FAILED;
+		}
+		OCTX(ResolveSubresource)(ctx, (ID3D11Resource*)tmp, 0, r, sub, fmt);
+		OCTX(CopyResource)(ctx, (ID3D11Resource*)st, (ID3D11Resource*)tmp);
+		ID3D11Texture2D_Release(tmp);
+		out->resolved = true;
+	} else {
+		OCTX(CopySubresourceRegion)(ctx, (ID3D11Resource*)st, 0, 0, 0, 0, r, sub, nullptr);
+	}
+	out->tex = (ID3D11Resource*)st;
+	return 0;
+}
+
+// ---- buffers
+// Sets aside bytes of a buffer in a staging chunk the capture owns.
+static int cont_store(Capture* c, ID3D11Buffer* src, uint32_t off, uint32_t size, uint32_t* chunk, uint32_t* at)
+{
+	if (c->ct_bytes + size > c->rq.ct_budget)
+		return CS_BUDGET;
+	if (g_mapped.count(src))
+		return CS_MAPPED;
+	if (c->cchunks.empty() || c->cchunks.back().cap - c->cchunks.back().used < size) {
+		const uint32_t want = size > (4u << 20) ? (size + 0xFFFFu) & ~0xFFFFu : 4u << 20;
+		if (!memory_allows(want))
+			return CS_MEMORY;
+		ID3D11Buffer* b = create_staging(want);
+		if (!b)
+			return CS_FAILED;
+		c->cchunks.push_back({ b, want, 0 });
+	}
+	ContChunk& ch = c->cchunks.back();
+	D3D11_BOX box = { off, 0, 0, off + size, 1, 1 };
+	OCTX(CopySubresourceRegion)(rctx(), (ID3D11Resource*)ch.buf, 0, ch.used, 0, 0, (ID3D11Resource*)src, 0, &box);
+	*chunk = (uint32_t)c->cchunks.size() - 1;
+	*at = ch.used;
+	ch.used += size;
+	c->ct_bytes += size;
+	c->ct_copies++;
+	return 0;
+}
+
+// The version of a buffer a call sees.
+static int32_t cont_buffer(Capture* c, ID3D11Buffer* buf, int32_t rid)
+{
+	if (rid < 0)
+		return -1;
+	ContTrack& t = c->tracks[buf];
+	if (t.rid < 0) {
+		t.rid = rid;
+		t.buffer = true;
+	}
+	if (t.cur >= 0 && c->conts[t.cur].ver == t.ver)
+		return t.cur;
+	ContSnap s;
+	memset(&s, 0, sizeof(s));
+	s.res = rid;
+	s.ver = t.ver;
+	t.cur = (int32_t)c->conts.size();
+	t.sealed = false;
+	t.since_ref = 0;
+	c->conts.push_back(s);
+	return t.cur;
+}
+
+// [off, off+size) of a buffer is about to be overwritten.
+static void cont_buffer_write(Capture* c, ContTrack& t, ID3D11Buffer* buf, uint32_t off, uint32_t size)
+{
+	const uint32_t bw = c->res[t.rid].live.buf.ByteWidth;
+	if (off >= bw)
+		return;
+	if (size > bw - off)
+		size = bw - off;
+	if (!size)
+		return;
+	if (!t.sealed) {
+		// Many small pieces come to more than the buffer itself: keep all of it once instead.
+		if (t.since_ref + size > bw) {
+			off = 0;
+			size = bw;
+		}
+		uint32_t chunk = 0, at = 0;
+		const int why = cont_store(c, buf, off, size, &chunk, &at);
+		if (!why) {
+			t.patches.push_back({ t.ver, off, size, chunk, at });
+			t.since_ref += size;
+			if (size == bw)
+				t.sealed = true;
+		} else {
+			t.lost = true;
+			t.lost_ver = t.ver;
+			t.lost_why = (uint8_t)why;
+			t.sealed = true;             // the versions so far are beyond help; a new reference starts over
+			c->ct_lost++;
+		}
+	}
+	t.ver++;
+}
+
+// ---- textures
+// One subresource of a texture as a call sees it.
+static int32_t cont_texture(Capture* c, ID3D11Resource* r, int32_t rid, uint32_t mip, uint32_t slice, DXGI_FORMAT hint)
+{
+	if (rid < 0)
+		return -1;
+	const uint32_t sub = mip + slice * mips_of(c->res[rid]);
+	ContTrack& t = c->tracks[r];
+	if (t.rid < 0)
+		t.rid = rid;
+	for (const ContPending& p : t.pending)
+		if (p.sub == sub)
+			return p.snap;
+	ContSnap s;
+	memset(&s, 0, sizeof(s));
+	s.res = rid;
+	s.tex = 1;
+	s.state = CS_LIVE;
+	s.mip = mip;
+	s.slice = slice;
+	s.hint = hint;
+	const int32_t idx = (int32_t)c->conts.size();
+	c->conts.push_back(s);
+	t.pending.push_back({ sub, idx });
+	return idx;
+}
+
+// Subresources of a texture are about to be written: those of one mip in slices
+// [first, first+count), or all of them when count is 0.
+static void cont_texture_write(Capture* c, ContTrack& t, ID3D11Resource* r, uint32_t mip, uint32_t first, uint32_t count)
+{
+	if (t.pending.empty())
+		return;
+	const CapRes& cr = c->res[t.rid];
+	const uint32_t mips = mips_of(cr);
+	for (size_t i = t.pending.size(); i-- > 0;) {
+		const uint32_t sub = t.pending[i].sub;
+		if (count && (sub % mips != mip || sub / mips < first || sub / mips - first >= count))
+			continue;
+		ContSnap& s = c->conts[t.pending[i].snap];
+		const uint64_t left = c->rq.ct_budget > c->ct_bytes ? c->rq.ct_budget - c->ct_bytes : 0;
+		Staged st;
+		const int why = left ? stage_subresource(r, cr.live, cr.dim, s.mip, s.slice, s.hint, left, &st) : CS_BUDGET;
+		if (!why) {
+			s.copy = st.tex;
+			s.state = CS_COPIED;
+			s.dim = st.dim;
+			s.resolved = st.resolved;
+			s.w = st.w; s.h = st.h; s.d = st.d;
+			s.format = st.format;
+			s.bytes = st.bytes;
+			c->ct_bytes += st.bytes;
+			c->ct_copies++;
+		} else {
+			s.state = (uint8_t)why;
+			c->ct_lost++;
+		}
+		t.pending.erase(t.pending.begin() + i);
+	}
+}
+
+// What a view shows of its resource, as a call sees it.
+static int32_t cont_of_view(Capture* c, int32_t rid, int32_t view_id, bool buffers, bool textures)
+{
+	if (rid < 0)
+		return -1;
+	const CapRes& cr = c->res[rid];
+	if (cr.dim == D3D11_RESOURCE_DIMENSION_BUFFER)
+		return buffers ? cont_buffer(c, (ID3D11Buffer*)cr.ptr, rid) : -1;
+	if (!textures || view_id < 0 || cr.dim == D3D11_RESOURCE_DIMENSION_UNKNOWN)
+		return -1;
+	const CapView& cv = c->view_descs[view_id];
+	const uint32_t slice = cr.dim == D3D11_RESOURCE_DIMENSION_TEXTURE3D ? 0 : cv.p[2];
+	return cont_texture(c, (ID3D11Resource*)cr.ptr, rid, cv.p[0], slice, (DXGI_FORMAT)cv.format);
+}
+
+// Which subresources a view writes to: one mip, array slices [first, first+count).
+// A shader resource view (GenerateMips) answers with count 0: all of them.
+static void view_span(ID3D11View* v, int kind, uint32_t* mip, uint32_t* first, uint32_t* count)
+{
+	*mip = 0; *first = 0; *count = 1;
+	switch (kind) {
+	case VK_RTV: {
+		D3D11_RENDER_TARGET_VIEW_DESC d;
+		ID3D11RenderTargetView_GetDesc((ID3D11RenderTargetView*)v, &d);
+		switch (d.ViewDimension) {
+		case D3D11_RTV_DIMENSION_TEXTURE1D:        *mip = d.Texture1D.MipSlice; break;
+		case D3D11_RTV_DIMENSION_TEXTURE1DARRAY:   *mip = d.Texture1DArray.MipSlice; *first = d.Texture1DArray.FirstArraySlice; *count = d.Texture1DArray.ArraySize; break;
+		case D3D11_RTV_DIMENSION_TEXTURE2D:        *mip = d.Texture2D.MipSlice; break;
+		case D3D11_RTV_DIMENSION_TEXTURE2DARRAY:   *mip = d.Texture2DArray.MipSlice; *first = d.Texture2DArray.FirstArraySlice; *count = d.Texture2DArray.ArraySize; break;
+		case D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY: *first = d.Texture2DMSArray.FirstArraySlice; *count = d.Texture2DMSArray.ArraySize; break;
+		case D3D11_RTV_DIMENSION_TEXTURE3D:        *mip = d.Texture3D.MipSlice; break;
+		default: break;
+		}
+		break;
+	}
+	case VK_DSV: {
+		D3D11_DEPTH_STENCIL_VIEW_DESC d;
+		ID3D11DepthStencilView_GetDesc((ID3D11DepthStencilView*)v, &d);
+		switch (d.ViewDimension) {
+		case D3D11_DSV_DIMENSION_TEXTURE1D:        *mip = d.Texture1D.MipSlice; break;
+		case D3D11_DSV_DIMENSION_TEXTURE1DARRAY:   *mip = d.Texture1DArray.MipSlice; *first = d.Texture1DArray.FirstArraySlice; *count = d.Texture1DArray.ArraySize; break;
+		case D3D11_DSV_DIMENSION_TEXTURE2D:        *mip = d.Texture2D.MipSlice; break;
+		case D3D11_DSV_DIMENSION_TEXTURE2DARRAY:   *mip = d.Texture2DArray.MipSlice; *first = d.Texture2DArray.FirstArraySlice; *count = d.Texture2DArray.ArraySize; break;
+		case D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY: *first = d.Texture2DMSArray.FirstArraySlice; *count = d.Texture2DMSArray.ArraySize; break;
+		default: break;
+		}
+		break;
+	}
+	case VK_UAV: {
+		D3D11_UNORDERED_ACCESS_VIEW_DESC d;
+		ID3D11UnorderedAccessView_GetDesc((ID3D11UnorderedAccessView*)v, &d);
+		switch (d.ViewDimension) {
+		case D3D11_UAV_DIMENSION_TEXTURE1D:        *mip = d.Texture1D.MipSlice; break;
+		case D3D11_UAV_DIMENSION_TEXTURE1DARRAY:   *mip = d.Texture1DArray.MipSlice; *first = d.Texture1DArray.FirstArraySlice; *count = d.Texture1DArray.ArraySize; break;
+		case D3D11_UAV_DIMENSION_TEXTURE2D:        *mip = d.Texture2D.MipSlice; break;
+		case D3D11_UAV_DIMENSION_TEXTURE2DARRAY:   *mip = d.Texture2DArray.MipSlice; *first = d.Texture2DArray.FirstArraySlice; *count = d.Texture2DArray.ArraySize; break;
+		case D3D11_UAV_DIMENSION_TEXTURE3D:        *mip = d.Texture3D.MipSlice; break;
+		default: break;
+		}
+		break;
+	}
+	default:
+		*count = 0;
+		break;
+	}
+	if (!*count)
+		*mip = *first = 0;
+}
+
+// Waits until the GPU has done everything queued so far. Only the strict mode
+// needs it: a no-overwrite map hands out the memory itself, so what is written
+// through it is seen by a copy that was queued before the map but runs after.
+static void gpu_sync()
+{
+	D3D11_QUERY_DESC qd = { D3D11_QUERY_EVENT, 0 };
+	ID3D11Query* q = nullptr;
+	if (FAILED(ODEV(CreateQuery)(rdev(), &qd, &q)) || !q)
+		return;
+	OCTX(End)(rctx(), (ID3D11Asynchronous*)q);
+	OCTX(Flush)(rctx());
+	BOOL done = FALSE;
+	const uint64_t t0 = now_ms();
+	while (OCTX(GetData)(rctx(), (ID3D11Asynchronous*)q, &done, sizeof(done), 0) != S_OK || !done) {
+		if (now_ms() - t0 > 250)
+			break;                       // never hold the game up for long
+		SwitchToThread();
+	}
+	ID3D11Query_Release(q);
+}
+
+// ---- the hooks' side
+// Which of the resources a capture watches the game has mapped: a copy from a
+// mapped resource is dropped by the runtime without a word.
+void cap_mapped(ID3D11Resource* res, bool mapped)
+{
+	if (mapped) {
+		if (g_bar && g_bar->tracks.count(res))
+			g_mapped[res]++;
+	} else if (!g_mapped.empty()) {
+		auto it = g_mapped.find(res);
+		if (it != g_mapped.end() && --it->second == 0)
+			g_mapped.erase(it);
+	}
+}
+
+void cap_before_write(ID3D11Resource* res, uint32_t sub, uint32_t off, uint32_t size, bool keeps_rest)
+{
+	Capture* c = g_bar;
+	if (!c || !res)
+		return;
+	auto it = c->tracks.find(res);
+	if (it == c->tracks.end())
+		return;
+	ContTrack& t = it->second;
+	if (t.buffer) {
+		// A writer that promises to leave alone what is in use changes nothing a call has seen.
+		if (!keeps_rest) {
+			cont_buffer_write(c, t, (ID3D11Buffer*)res, off, size);
+		} else if (c->rq.ct_strict) {
+			const bool copies = !t.sealed;
+			cont_buffer_write(c, t, (ID3D11Buffer*)res, off, size);
+			if (copies)
+				gpu_sync();
+		}
+	} else if (sub == 0xffffffffu) {
+		cont_texture_write(c, t, res, 0, 0, 0);
+	} else {
+		const uint32_t mips = mips_of(c->res[t.rid]);
+		cont_texture_write(c, t, res, sub % mips, sub / mips, 1);
+	}
+}
+
+void cap_before_view_write(ID3D11View* view, int kind)
+{
+	Capture* c = g_bar;
+	if (!c || !view)
+		return;
+	ID3D11Resource* r = nullptr;
+	ID3D11View_GetResource(view, &r);
+	if (!r)
+		return;
+	auto it = c->tracks.find(r);
+	if (it != c->tracks.end()) {
+		ContTrack& t = it->second;
+		if (t.buffer) {
+			cont_buffer_write(c, t, (ID3D11Buffer*)r, 0, 0xffffffffu);
+		} else {
+			uint32_t mip, first, count;
+			view_span(view, kind, &mip, &first, &count);
+			cont_texture_write(c, t, r, mip, first, count);
+		}
+	}
+	ID3D11Resource_Release(r);
+}
+
+// What the pipeline has bound for writing. The bindings are read from the
+// runtime when they have changed, not at every call.
+struct BoundOut { void* res; uint32_t mip, first, count; };
+static BoundOut g_om_out[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT + 1 + D3D11_1_UAV_SLOT_COUNT + D3D11_SO_BUFFER_SLOT_COUNT];
+static BoundOut g_cs_out[D3D11_1_UAV_SLOT_COUNT];
+static uint32_t g_om_out_n = 0, g_cs_out_n = 0;
+static bool g_om_dirty = true, g_cs_dirty = true;
+
+void cap_outputs_changed(bool compute)
+{
+	if (compute) g_cs_dirty = true;
+	else g_om_dirty = true;
+}
+
+static void bound_add(BoundOut* list, uint32_t* n, ID3D11View* v, int kind)
+{
+	ID3D11Resource* r = nullptr;
+	ID3D11View_GetResource(v, &r);
+	if (!r)
+		return;
+	BoundOut b;
+	b.res = r;
+	view_span(v, kind, &b.mip, &b.first, &b.count);
+	list[(*n)++] = b;
+	ID3D11Resource_Release(r);           // identity only: what is bound stays alive
+}
+
+static UINT uav_slots()
+{
+	return g_feature_level >= D3D_FEATURE_LEVEL_11_1 ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
+}
+
+static void refresh_om_outputs()
+{
+	g_om_out_n = 0;
+	ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
+	ID3D11DepthStencilView* dsv = nullptr;
+	static ID3D11UnorderedAccessView* uavs[D3D11_1_UAV_SLOT_COUNT];
+	memset(rtvs, 0, sizeof(rtvs));
+	memset(uavs, 0, sizeof(uavs));
+	const UINT n = uav_slots();
+	OCTX(OMGetRenderTargetsAndUnorderedAccessViews)(rctx(), D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv, 0, n, uavs);
+	for (UINT i = 0; i < _countof(rtvs); i++) {
+		if (!rtvs[i]) continue;
+		bound_add(g_om_out, &g_om_out_n, (ID3D11View*)rtvs[i], VK_RTV);
+		ID3D11RenderTargetView_Release(rtvs[i]);
+	}
+	if (dsv) {
+		D3D11_DEPTH_STENCIL_VIEW_DESC d;
+		ID3D11DepthStencilView_GetDesc(dsv, &d);
+		const UINT read_only = D3D11_DSV_READ_ONLY_DEPTH | D3D11_DSV_READ_ONLY_STENCIL;
+		if ((d.Flags & read_only) != read_only)
+			bound_add(g_om_out, &g_om_out_n, (ID3D11View*)dsv, VK_DSV);
+		ID3D11DepthStencilView_Release(dsv);
+	}
+	for (UINT i = 0; i < n; i++) {
+		if (!uavs[i]) continue;
+		bound_add(g_om_out, &g_om_out_n, (ID3D11View*)uavs[i], VK_UAV);
+		ID3D11UnorderedAccessView_Release(uavs[i]);
+	}
+	ID3D11Buffer* so[D3D11_SO_BUFFER_SLOT_COUNT];
+	memset(so, 0, sizeof(so));
+	OCTX(SOGetTargets)(rctx(), D3D11_SO_BUFFER_SLOT_COUNT, so);
+	for (UINT i = 0; i < D3D11_SO_BUFFER_SLOT_COUNT; i++) {
+		if (!so[i]) continue;
+		g_om_out[g_om_out_n++] = { so[i], 0, 0, 0 };
+		ID3D11Buffer_Release(so[i]);
+	}
+	g_om_dirty = false;
+}
+
+static void refresh_cs_outputs()
+{
+	g_cs_out_n = 0;
+	static ID3D11UnorderedAccessView* uavs[D3D11_1_UAV_SLOT_COUNT];
+	memset(uavs, 0, sizeof(uavs));
+	const UINT n = uav_slots();
+	OCTX(CSGetUnorderedAccessViews)(rctx(), 0, n, uavs);
+	for (UINT i = 0; i < n; i++) {
+		if (!uavs[i]) continue;
+		bound_add(g_cs_out, &g_cs_out_n, (ID3D11View*)uavs[i], VK_UAV);
+		ID3D11UnorderedAccessView_Release(uavs[i]);
+	}
+	g_cs_dirty = false;
+}
+
+void cap_before_call_writes(bool dispatch)
+{
+	Capture* c = g_bar;
+	if (!c || c->tracks.empty())
+		return;
+	if (dispatch ? g_cs_dirty : g_om_dirty) {
+		if (dispatch) refresh_cs_outputs();
+		else refresh_om_outputs();
+	}
+	const BoundOut* list = dispatch ? g_cs_out : g_om_out;
+	const uint32_t n = dispatch ? g_cs_out_n : g_om_out_n;
+	for (uint32_t i = 0; i < n; i++) {
+		auto it = c->tracks.find(list[i].res);
+		if (it == c->tracks.end())
+			continue;
+		ContTrack& t = it->second;
+		if (t.buffer)
+			cont_buffer_write(c, t, (ID3D11Buffer*)list[i].res, 0, 0xffffffffu);
+		else
+			cont_texture_write(c, t, (ID3D11Resource*)list[i].res, list[i].mip, list[i].first, list[i].count);
+	}
+}
+
+void cap_before_unknown_writes()
+{
+	// Nothing says what a command list writes. Copies that were made stay what
+	// they are; whatever is still read in place can no longer be vouched for.
+	if (g_bar)
+		g_bar->ct_unknown = true;
+}
+
+static void cont_release(Capture* c)
+{
+	for (ContChunk& ch : c->cchunks)
+		if (ch.buf) ID3D11Buffer_Release(ch.buf);
+	c->cchunks.clear();
+	for (ContSnap& s : c->conts) {
+		if (s.copy) ID3D11Resource_Release(s.copy);
+		s.copy = nullptr;
+	}
+	if (!c->tracks.empty() || !c->conts.empty())
+		c->ct_released = true;
+	c->tracks.clear();
+	c->out_after.clear();
+	if (g_bar == c) {
+		g_bar = nullptr;
+		InterlockedExchange(&g_barrier, 0);
+		g_mapped.clear();
+	}
+}
+
+// ---- the list of writes
+void cap_event(uint8_t type, ID3D11Resource* dst, ID3D11Resource* src, uint32_t a0, uint32_t a1, uint32_t a2,
+               uint32_t a3, const float* f)
+{
+	Capture* c = g_rec.get();
+	if (!c || !c->rq.ct_events)
+		return;
+	if (c->events.size() >= 100000) {
+		c->events_dropped++;
+		return;
+	}
+	CapEvent e;
+	memset(&e, 0, sizeof(e));
+	e.type = type;
+	e.draw = (uint32_t)c->draws.size();          // the call that comes next
+	e.dst = dst ? res_id(c, dst) : -1;
+	e.src = src ? res_id(c, src) : -1;
+	e.a[0] = a0; e.a[1] = a1; e.a[2] = a2; e.a[3] = a3;
+	if (f) {
+		memcpy(e.f, f, sizeof(e.f));
+		e.has_f = true;
+	}
+	c->events.push_back(e);
+}
+
+void cap_event_view(uint8_t type, ID3D11View* view, uint32_t a0, uint32_t a1, const float* f)
+{
+	if (!view)
+		return;
+	ID3D11Resource* r = nullptr;
+	ID3D11View_GetResource(view, &r);
+	if (!r)
+		return;
+	cap_event(type, r, nullptr, a0, a1, 0, 0, f);
+	ID3D11Resource_Release(r);
+}
+
 // ================================================================ per-draw state
 static void get_cbs(int stage, ID3D11Buffer** cbs, UINT* first, UINT* num)
 {
@@ -877,6 +1652,8 @@ static void record_stage(Capture* c, DrawRec* d, int stage, bool full)
 		b.snap = -1;
 		if (c->rq.cb_data)
 			b.snap = snapshot(c, cbs[i], b.res, first[i] * 16, num[i] * 16);
+		if (c->rq.ct_kinds & CK_CB)
+			b.cont = cont_buffer(c, cbs[i], b.res);
 		c->cbs.push_back(b);
 		d->cb_count++;
 		ID3D11Buffer_Release(cbs[i]);
@@ -892,6 +1669,8 @@ static void record_stage(Capture* c, DrawRec* d, int stage, bool full)
 		v.slot = (uint8_t)i;
 		v.res = view_res_id(c, (ID3D11View*)srvs[i]);
 		v.view = view_desc_id(c, (ID3D11View*)srvs[i], VK_SRV, v.res);
+		if (c->rq.ct_kinds & (CK_BUF | CK_TEX))
+			v.cont = cont_of_view(c, v.res, v.view, (c->rq.ct_kinds & CK_BUF) != 0, (c->rq.ct_kinds & CK_TEX) != 0);
 		c->views.push_back(v);
 		d->srv_count++;
 		ID3D11ShaderResourceView_Release(srvs[i]);
@@ -945,6 +1724,11 @@ static void record_fixed_state(Capture* c, DrawRec* d, ID3D11DeviceContext* ctx)
 	OCTX(RSGetViewports)(ctx, &nvp, vps);
 	if (nvp > _countof(vps)) nvp = _countof(vps);
 	d->vp_count = nvp;
+	if (nvp > 1) {
+		d->vp_begin = (uint32_t)c->viewports.size();
+		for (UINT i = 0; i < nvp; i++)
+			c->viewports.push_back(vps[i]);
+	}
 	if (nvp) {
 		d->vp[0] = vps[0].TopLeftX; d->vp[1] = vps[0].TopLeftY; d->vp[2] = vps[0].Width; d->vp[3] = vps[0].Height;
 		d->vp_z[0] = vps[0].MinDepth; d->vp_z[1] = vps[0].MaxDepth;
@@ -954,23 +1738,26 @@ static void record_fixed_state(Capture* c, DrawRec* d, ID3D11DeviceContext* ctx)
 }
 
 // ================================================================ render target copies
-static bool rt_matches(Capture* c, const DrawRec& d)
+static bool draw_matches(Capture* c, const DrawRec& d, const std::vector<DrawMatch>& list)
 {
-	if (c->rq.rt_match.empty())
+	if (list.empty())
 		return false;
-	uint64_t vs = 0, ps = 0;
+	uint64_t vs = 0, ps = 0, cs = 0;
 	if (d.shaders[ST_VS] >= 0 && c->shaders[d.shaders[ST_VS]].known) vs = c->shaders[d.shaders[ST_VS]].info.hash;
 	if (d.shaders[ST_PS] >= 0 && c->shaders[d.shaders[ST_PS]].known) ps = c->shaders[d.shaders[ST_PS]].info.hash;
+	if (d.shaders[ST_CS] >= 0 && c->shaders[d.shaders[ST_CS]].known) cs = c->shaders[d.shaders[ST_CS]].info.hash;
 	const CapRes* ib = d.ib_res >= 0 ? &c->res[d.ib_res] : nullptr;
-	for (const DrawMatch& m : c->rq.rt_match) {
+	for (const DrawMatch& m : list) {
 		if (m.draw >= 0 && (uint32_t)m.draw != d.index) continue;
+		if (m.first >= 0 && d.index < (uint32_t)m.first) continue;
+		if (m.last >= 0 && d.index > (uint32_t)m.last) continue;
 		if (m.ib && (!ib || ib->ptr != m.ib)) continue;
 		if (m.ib_serial && (!ib || ib->serial != m.ib_serial)) continue;
 		if (m.index_count && d.a.index_count != m.index_count) continue;
 		if (m.first_index >= 0 && d.a.first_index != (uint32_t)m.first_index) continue;
 		if (m.vs && vs != m.vs) continue;
 		if (m.ps && ps != m.ps) continue;
-		if (m.shader && vs != m.shader && ps != m.shader) continue;
+		if (m.shader && vs != m.shader && ps != m.shader && cs != m.shader) continue;
 		if (m.origin >= 0 && d.caller.origin != m.origin) continue;
 		return true;
 	}
@@ -1090,15 +1877,30 @@ static void rt_release_copies(Capture* c)
 	}
 }
 
+// Which of a call's outputs are to be noted once it has run (CK_* bits).
+static uint32_t want_outputs(Capture* c, const DrawRec& d)
+{
+	c->out_after.clear();            // nothing is left unless a call never returned to its hook
+	if (!c->rq.ct_out_kinds)
+		return 0;
+	return c->rq.ct_out_all || draw_matches(c, d, c->rq.ct_match) ? c->rq.ct_out_kinds : 0;
+}
+
 void cap_after_draw()
 {
-	InterlockedExchange(&g_rt_after, 0);
+	InterlockedExchange(&g_after, 0);
 	Capture* c = g_rec.get();
 	if (!c)
 		return;
 	for (RtAfter& t : c->rt_after)
 		rt_copy(c, c->rt_after_draw, 1, t.kind, t.slot, t.view);
 	rt_drop_pending(c);
+	// What the call left behind: the version that stands until the next write.
+	for (const OutAfter& o : c->out_after) {
+		ViewBind& v = c->views[o.bind];
+		v.cont = cont_of_view(c, v.res, v.view, true, true);
+	}
+	c->out_after.clear();
 }
 
 void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
@@ -1156,6 +1958,8 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 				ib_region(fmt, ib_off, a, &ro, &rs);
 				d.ib_region = region(c, ib, d.ib_res, ro, rs);
 			}
+			if (c->rq.ct_kinds & CK_IB)
+				d.ib_cont = cont_buffer(c, ib, d.ib_res);
 			ID3D11Buffer_Release(ib);
 		}
 
@@ -1180,6 +1984,8 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 				vb_region(strides[i], offsets[i], a, &ro, &rs);
 				b.region = region(c, vbs[i], b.res, ro, rs);
 			}
+			if (c->rq.ct_kinds & CK_VB)
+				b.cont = cont_buffer(c, vbs[i], b.res);
 			c->vbs.push_back(b);
 			d.vb_count++;
 			ID3D11Buffer_Release(vbs[i]);
@@ -1220,17 +2026,23 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 			d.out_begin = (uint32_t)c->views.size();
 			ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
 			ID3D11DepthStencilView* dsv = nullptr;
+			static ID3D11UnorderedAccessView* om_uavs[D3D11_1_UAV_SLOT_COUNT];
 			memset(rtvs, 0, sizeof(rtvs));
-			OCTX(OMGetRenderTargets)(ctx, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv);
+			memset(om_uavs, 0, sizeof(om_uavs));
+			const UINT n_uav = uav_slots();
+			OCTX(OMGetRenderTargetsAndUnorderedAccessViews)(ctx, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv,
+			                                                0, n_uav, om_uavs);
 			// Render target copies: for the first rt_max selected draws that have a target to copy.
-			const bool matched = rt_matches(c, d);
+			const bool matched = draw_matches(c, d, c->rq.rt_match);
 			const bool copy_targets = matched && c->rt_draws < c->rq.rt_max;
 			if (matched) c->rt_matched++;
 			rt_drop_pending(c);          // nothing is pending unless a draw never returned to its hook
+			const uint32_t keep = want_outputs(c, d);
 			bool colour = false;
 			for (UINT i = 0; i < _countof(rtvs); i++) {
 				if (!rtvs[i]) continue;
 				int32_t rid = view_res_id(c, (ID3D11View*)rtvs[i]);
+				if (keep & CK_RT) c->out_after.push_back({ (uint32_t)c->views.size() });
 				c->views.push_back({ (uint8_t)OUT_RTV, (uint8_t)i, rid, view_desc_id(c, (ID3D11View*)rtvs[i], VK_RTV, rid) });
 				d.out_count++;
 				if (copy_targets && (!colour || c->rq.rt_all))
@@ -1240,19 +2052,33 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 			}
 			if (dsv) {
 				int32_t rid = view_res_id(c, (ID3D11View*)dsv);
+				if (keep & CK_DEPTH) c->out_after.push_back({ (uint32_t)c->views.size() });
 				c->views.push_back({ (uint8_t)OUT_DSV, 0, rid, view_desc_id(c, (ID3D11View*)dsv, VK_DSV, rid) });
 				d.out_count++;
 				if (copy_targets && c->rq.rt_depth)
 					rt_select(c, d.index, OUT_DSV, 0, (ID3D11View*)dsv);
 				ID3D11DepthStencilView_Release(dsv);
 			}
+			// What a pixel shader writes besides its render targets.
+			for (UINT i = 0; i < n_uav; i++) {
+				if (!om_uavs[i]) continue;
+				int32_t rid = view_res_id(c, (ID3D11View*)om_uavs[i]);
+				if (keep & CK_UAV) c->out_after.push_back({ (uint32_t)c->views.size() });
+				c->views.push_back({ (uint8_t)OUT_OM_UAV, (uint8_t)i, rid, view_desc_id(c, (ID3D11View*)om_uavs[i], VK_UAV, rid) });
+				d.out_count++;
+				ID3D11UnorderedAccessView_Release(om_uavs[i]);
+			}
 			if (!c->rt_after.empty()) {
 				// The hook that called us copies them again once the draw has been issued.
 				c->rt_draws++;
 				c->rt_after_draw = d.index;
-				InterlockedExchange(&g_rt_after, 1);
+				InterlockedExchange(&g_after, 1);
 			} else if (matched && !colour && !c->rq.rt_depth) {
 				c->rt_depth_only++;      // a shadow or depth pass: it does not count towards the limit
+			}
+			if (!c->out_after.empty()) {
+				c->ct_out_calls++;
+				InterlockedExchange(&g_after, 1);
 			}
 
 			record_fixed_state(c, &d, ctx);
@@ -1265,14 +2091,21 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 			d.out_begin = (uint32_t)c->views.size();
 			ID3D11UnorderedAccessView* uavs[D3D11_1_UAV_SLOT_COUNT];
 			memset(uavs, 0, sizeof(uavs));
-			UINT n = g_feature_level >= D3D_FEATURE_LEVEL_11_1 ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
+			UINT n = uav_slots();
 			OCTX(CSGetUnorderedAccessViews)(ctx, 0, n, uavs);
+			rt_drop_pending(c);
+			const uint32_t keep = want_outputs(c, d);
 			for (UINT i = 0; i < n; i++) {
 				if (!uavs[i]) continue;
 				int32_t rid = view_res_id(c, (ID3D11View*)uavs[i]);
+				if (keep & CK_UAV) c->out_after.push_back({ (uint32_t)c->views.size() });
 				c->views.push_back({ (uint8_t)OUT_CS_UAV, (uint8_t)i, rid, view_desc_id(c, (ID3D11View*)uavs[i], VK_UAV, rid) });
 				d.out_count++;
 				ID3D11UnorderedAccessView_Release(uavs[i]);
+			}
+			if (!c->out_after.empty()) {
+				c->ct_out_calls++;
+				InterlockedExchange(&g_after, 1);
 			}
 		}
 	}
@@ -1421,6 +2254,7 @@ static void release_capture_refs(Capture* c)
 	c->held.clear();
 	rt_release_copies(c);
 	rt_drop_pending(c);
+	cont_release(c);
 }
 
 static std::deque<std::shared_ptr<Capture>> g_finalizing;   // recorded, waiting for the GPU
@@ -1429,7 +2263,9 @@ static void end_recording()
 {
 	std::shared_ptr<Capture> c = g_rec;
 	InterlockedExchange(&g_recording, 0);
+	InterlockedExchange(&g_events, 0);
 	g_rec.reset();
+	c->out_after.clear();
 	c->t_end = now_ms();
 	g_finalizing.push_back(c);
 }
@@ -1547,8 +2383,37 @@ static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volat
 	hash_get_resolution(&c->res_w, &c->res_h);
 	c->draws.reserve(8192);
 	c->res.reserve(4096);
+	if (!live) {
+		// One capture at a time has its contents kept: those of the one before end here.
+		if (g_bar)
+			cont_release(g_bar);
+		if (rq.contents()) {
+			c->rq.hold = true;           // what is read in place has to stay alive
+			g_bar = c.get();
+			g_mapped.clear();
+			g_om_dirty = g_cs_dirty = true;
+			InterlockedExchange(&g_barrier, 1);
+		}
+		InterlockedExchange(&g_events, rq.ct_events ? 1 : 0);
+	}
 	g_rec = c;
 	InterlockedExchange(&g_recording, 1);
+}
+
+// The swap chain's buffer is not the game's to keep once it has been presented.
+static void cont_before_present()
+{
+	Capture* c = g_bar;
+	if (!c || c->tracks.empty() || !g_swap)
+		return;
+	ID3D11Resource* back = nullptr;
+	IDXGISwapChain* sc = (IDXGISwapChain*)g_swap->obj;
+	if (FAILED(((IDXGISwapChainVtbl*)g_swap->orig)->GetBuffer(sc, 0, IID_ID3D11Resource, (void**)&back)) || !back)
+		return;
+	auto it = c->tracks.find(back);
+	if (it != c->tracks.end() && !it->second.buffer)
+		cont_texture_write(c, it->second, back, 0, 0, 0);
+	ID3D11Resource_Release(back);
 }
 
 // ---------------------------------------------------------------- jobs
@@ -1556,7 +2421,8 @@ static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volat
 // the copy is issued on one frame and collected on a later one.
 struct Job {
 	// 1 read buffer, 2 read texture, 3 release, 4 read a render target copy,
-	// 5 release the render target copies of a capture
+	// 5 release the render target copies of a capture, 6 read contents,
+	// 7 release the contents of a capture
 	int      type = 0;
 	uint32_t frame = 0, res = 0, mip = 0, slice = 0;
 	uint64_t offset = 0, size = 0;
@@ -1570,8 +2436,18 @@ struct Job {
 	uint64_t r_off = 0, r_size = 0, r_bw = 0;
 	bool     unchanged_known = false, unchanged = false;
 	D3D11_TEXTURE2D_DESC tdesc = {};
-	UINT     mw = 0, mh = 0;
-	bool     is_1d = false;
+	UINT     mw = 0, mh = 0, md = 1;
+	uint8_t  tdim = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
+	UINT     tex_depth = 0;      // of a 3D texture
+	bool     resolved = false;   // the samples of a multisampled texture, resolved
+
+	// contents
+	bool     c_buffer = false;   // put together from a buffer and the pieces kept of it
+	bool     c_base = false;     // ... of which the buffer itself is needed
+	bool     c_exact = true;
+	const char* c_from = nullptr;
+	struct Piece { ID3D11Buffer* chunk; uint32_t at, off, size; };
+	std::vector<Piece> c_pieces; // laid over the buffer in this order
 
 	Job() { done = CreateEventW(nullptr, TRUE, FALSE, nullptr); }
 	~Job() { if (done) CloseHandle(done); }
@@ -1622,77 +2498,65 @@ static bool start_read_buffer(Job* j)
 	return true;
 }
 
-static bool is_block_compressed(DXGI_FORMAT f)
+static const char* k_cont_why[] = {
+	"", "", "the copy budget of the capture was used up", "the machine was short of free memory",
+	"the copy could not be made", "this kind of texture cannot be read back (multisampled depth, or multisampled "
+	"and typeless without a view to say how to resolve it)", "the resource was mapped at that moment",
+};
+
+// What a job that reads a texture reports about it.
+static void job_texture_shape(Job* j, const CapRes& cr, const Staged& st)
 {
-	return (f >= DXGI_FORMAT_BC1_TYPELESS && f <= DXGI_FORMAT_BC5_SNORM) ||
-	       (f >= DXGI_FORMAT_BC6H_TYPELESS && f <= DXGI_FORMAT_BC7_UNORM_SRGB);
+	memset(&j->tdesc, 0, sizeof(j->tdesc));
+	j->tdim = cr.dim;
+	switch (cr.dim) {
+	case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+		j->tdesc.Width = cr.live.t1.Width;
+		j->tdesc.Height = 1;
+		j->tdesc.MipLevels = cr.live.t1.MipLevels;
+		j->tdesc.ArraySize = cr.live.t1.ArraySize;
+		break;
+	case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+		j->tdesc.Width = cr.live.t3.Width;
+		j->tdesc.Height = cr.live.t3.Height;
+		j->tdesc.MipLevels = cr.live.t3.MipLevels;
+		j->tdesc.ArraySize = 1;
+		j->tex_depth = cr.live.t3.Depth;
+		break;
+	default:
+		j->tdesc = cr.live.t2;
+		break;
+	}
+	j->tdesc.Format = st.format;
+	j->mw = st.w; j->mh = st.h; j->md = st.d;
+	j->resolved = st.resolved;
 }
 
 static bool start_read_texture(Job* j)
 {
 	ReadResult* o = j->out.get();
-	const CapRes* cr = job_resource(j, D3D11_RESOURCE_DIMENSION_TEXTURE2D, D3D11_RESOURCE_DIMENSION_TEXTURE1D,
-	                                "only 1D and 2D textures (including arrays and cubes) can be read");
-	if (!cr) return false;
-
-	if (cr->dim == D3D11_RESOURCE_DIMENSION_TEXTURE1D) {
-		// XXMI's IniParams live in a 1D texture, which makes this worth having.
-		const D3D11_TEXTURE1D_DESC& d1 = cr->live.t1;
-		if (j->mip >= d1.MipLevels || j->slice >= d1.ArraySize) { o->err = "mip or slice out of range"; return false; }
-		UINT w1 = std::max(d1.Width >> j->mip, (UINT)1);
-		D3D11_TEXTURE1D_DESC s1;
-		memset(&s1, 0, sizeof(s1));
-		s1.Width = w1;
-		s1.MipLevels = 1;
-		s1.ArraySize = 1;
-		s1.Format = d1.Format;
-		s1.Usage = D3D11_USAGE_STAGING;
-		s1.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-		ID3D11Texture1D* st1 = nullptr;
-		if (FAILED(ODEV(CreateTexture1D)(rdev(), &s1, nullptr, &st1)) || !st1) { o->err = "could not create staging texture"; return false; }
-		OCTX(CopySubresourceRegion)(rctx(), (ID3D11Resource*)st1, 0, 0, 0, 0, (ID3D11Resource*)cr->ptr,
-		                            j->mip + j->slice * d1.MipLevels, nullptr);
-		j->staging = (ID3D11Resource*)st1;
-		memset(&j->tdesc, 0, sizeof(j->tdesc));
-		j->tdesc.Width = d1.Width;
-		j->tdesc.Height = 1;
-		j->tdesc.MipLevels = d1.MipLevels;
-		j->tdesc.ArraySize = d1.ArraySize;
-		j->tdesc.Format = d1.Format;
-		j->mw = w1; j->mh = 1;
-		j->is_1d = true;
-		return true;
+	Capture* c = g_last.get();
+	if (!c || c->frame != j->frame) { o->err = "that capture is no longer held by the probe; capture again"; return false; }
+	if (!c->rq.hold || c->held.empty()) { o->err = "that capture was taken without hold, its resources cannot be read"; return false; }
+	if (j->res >= c->res.size()) { o->err = "bad resource id"; return false; }
+	const CapRes* cr = &c->res[j->res];
+	if (cr->dim != D3D11_RESOURCE_DIMENSION_TEXTURE1D && cr->dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D
+	    && cr->dim != D3D11_RESOURCE_DIMENSION_TEXTURE3D) {
+		o->err = "resource is not a texture";
+		return false;
 	}
-
-	D3D11_TEXTURE2D_DESC d = cr->live.t2;
-	if (d.SampleDesc.Count > 1) { o->err = "multisampled textures cannot be read back"; return false; }
-	if (j->mip >= d.MipLevels || j->slice >= d.ArraySize) { o->err = "mip or slice out of range"; return false; }
-
-	UINT mw = std::max(d.Width >> j->mip, (UINT)1);
-	UINT mh = std::max(d.Height >> j->mip, (UINT)1);
-	D3D11_TEXTURE2D_DESC sd;
-	memset(&sd, 0, sizeof(sd));
-	sd.Width = mw;
-	sd.Height = mh;
-	if (is_block_compressed(d.Format)) {
-		sd.Width = (mw + 3) & ~3u;
-		sd.Height = (mh + 3) & ~3u;
+	const uint32_t slices = cr->dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D ? cr->live.t2.ArraySize
+	                      : cr->dim == D3D11_RESOURCE_DIMENSION_TEXTURE1D ? cr->live.t1.ArraySize : 1;
+	if (j->mip >= mips_of(*cr) || j->slice >= slices) { o->err = "mip or slice out of range"; return false; }
+	Staged st;
+	const int why = stage_subresource((ID3D11Resource*)cr->ptr, cr->live, cr->dim, j->mip, j->slice,
+	                                  DXGI_FORMAT_UNKNOWN, 0, &st);
+	if (why) {
+		o->err = why == CS_FAILED ? "could not create staging texture" : k_cont_why[why];
+		return false;
 	}
-	sd.MipLevels = 1;
-	sd.ArraySize = 1;
-	sd.Format = d.Format;
-	sd.SampleDesc.Count = 1;
-	sd.Usage = D3D11_USAGE_STAGING;
-	sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-	ID3D11Texture2D* st = nullptr;
-	HRESULT hr = ODEV(CreateTexture2D)(rdev(), &sd, nullptr, &st);
-	if (FAILED(hr) || !st) { o->err = "could not create staging texture"; return false; }
-
-	UINT sub = j->mip + j->slice * d.MipLevels;
-	OCTX(CopySubresourceRegion)(rctx(), (ID3D11Resource*)st, 0, 0, 0, 0, (ID3D11Resource*)cr->ptr, sub, nullptr);
-	j->staging = (ID3D11Resource*)st;
-	j->tdesc = d;
-	j->mw = mw; j->mh = mh;
+	j->staging = st.tex;
+	job_texture_shape(j, *cr, st);
 	return true;
 }
 
@@ -1715,9 +2579,141 @@ static bool start_read_rt(Job* j)
 	return true;
 }
 
+// What a slot held when its call was issued. A texture is its copy, or the
+// texture itself when nothing has written to it since. A buffer is the buffer
+// as it is now with the pieces laid over it that were set aside before each
+// later write: for every byte, the oldest piece that is newer than the call.
+static bool start_read_content(Job* j)
+{
+	ReadResult* o = j->out.get();
+	Capture* c = g_last.get();
+	if (!c || c->frame != j->frame) { o->err = "that capture is no longer held by the probe; capture again"; return false; }
+	if (c->ct_released) {
+		o->err = "the contents of that capture have been released (a newer capture was started, or they were let go of); capture again";
+		return false;
+	}
+	if (j->res >= c->conts.size()) { o->err = "bad contents id"; return false; }
+	const ContSnap& s = c->conts[j->res];
+	const CapRes& cr = c->res[s.res];
+	static const char* not_kept = "what this slot held at the call was not kept: ";
+	if (s.tex) {
+		Staged st;
+		if (s.state == CS_COPIED) {
+			ID3D11Resource_AddRef(s.copy);
+			j->staging = s.copy;
+			st.format = s.format; st.w = s.w; st.h = s.h; st.d = s.d; st.resolved = s.resolved;
+			j->c_from = "copy";
+		} else if (s.state != CS_LIVE) {
+			o->err = std::string(not_kept) + k_cont_why[s.state];
+			return false;
+		} else {
+			// Nothing has written to it since the call: it is read where it is.
+			const int why = stage_subresource((ID3D11Resource*)cr.ptr, cr.live, cr.dim, s.mip, s.slice, s.hint, 0, &st);
+			if (why) { o->err = std::string("could not be read: ") + k_cont_why[why]; return false; }
+			j->staging = st.tex;
+			j->c_from = "in place";
+			j->c_exact = !c->ct_unknown;
+		}
+		job_texture_shape(j, cr, st);
+		j->mip = s.mip;
+		j->slice = s.slice;
+		return true;
+	}
+
+	auto it = c->tracks.find(cr.ptr);
+	if (it == c->tracks.end()) { o->err = "the contents of that capture are gone"; return false; }
+	const ContTrack& t = it->second;
+	if (t.lost && s.ver <= t.lost_ver) { o->err = std::string(not_kept) + k_cont_why[t.lost_why]; return false; }
+	const uint64_t bw = cr.live.buf.ByteWidth;
+	uint64_t off = j->offset, size = j->size;
+	if (off >= bw) { o->err = "offset is past the end of the buffer"; return false; }
+	if (!size || size > bw - off) size = bw - off;
+	if (size > 512ull * 1024 * 1024) { o->err = "read too large"; return false; }
+	j->c_buffer = true;
+	j->r_off = off; j->r_size = size; j->r_bw = bw;
+	bool need_base = true;
+	for (size_t i = t.patches.size(); i-- > 0;) {    // newest first, so that the oldest is laid on last
+		const ContPatch& p = t.patches[i];
+		if (p.ver < s.ver)
+			break;                                   // older than the call: not about this version
+		if ((uint64_t)p.off + p.size <= off || p.off >= off + size)
+			continue;
+		ID3D11Buffer* chunk = c->cchunks[p.chunk].buf;
+		ID3D11Buffer_AddRef(chunk);
+		j->c_pieces.push_back({ chunk, p.at, p.off, p.size });
+		if (p.off <= off && (uint64_t)p.off + p.size >= off + size)
+			need_base = false;                       // it holds every byte that was asked for
+	}
+	j->c_base = need_base;
+	j->c_from = !need_base ? "copy" : j->c_pieces.empty() ? "in place" : "in place and copies";
+	if (need_base) {
+		if (g_mapped.count(cr.ptr)) { o->err = "the buffer is mapped by the game right now; ask again"; return false; }
+		ID3D11Buffer* st = create_staging((uint32_t)size);
+		if (!st) { o->err = "could not create staging buffer"; return false; }
+		D3D11_BOX box = { (UINT)off, 0, 0, (UINT)(off + size), 1, 1 };
+		OCTX(CopySubresourceRegion)(rctx(), (ID3D11Resource*)st, 0, 0, 0, 0, (ID3D11Resource*)cr.ptr, 0, &box);
+		j->staging = (ID3D11Resource*)st;
+		j->c_exact = !c->ct_unknown;
+	}
+	return true;
+}
+
+static void write_content_meta(JsonW& w, const Job* j)
+{
+	// exact: these are the bytes of the call. Not so only when a command list ran in between,
+	// whose writes cannot be seen, and part of the answer was read where it lies.
+	w.kb("exact", j->c_exact);
+	if (!j->c_exact)
+		w.ks("why", "a deferred command list was executed after the call; its writes cannot be seen");
+	w.ks("from", j->c_from ? j->c_from : "");
+}
+
+// Returns true when the job is finished (successfully or not).
+static bool finish_read_content_buffer(Job* j, bool block)
+{
+	ReadResult* o = j->out.get();
+	const UINT flags = block ? 0 : D3D11_MAP_FLAG_DO_NOT_WAIT;
+	D3D11_MAPPED_SUBRESOURCE m;
+	o->data.assign((size_t)j->r_size, 0);
+	if (j->c_base) {
+		memset(&m, 0, sizeof(m));
+		HRESULT hr = OCTX(Map)(rctx(), j->staging, 0, D3D11_MAP_READ, flags, &m);
+		if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+			return false;
+		if (FAILED(hr) || !m.pData) { o->err = "Map failed"; o->data.clear(); return true; }
+		memcpy(o->data.data(), m.pData, (size_t)j->r_size);
+		OCTX(Unmap)(rctx(), j->staging, 0);
+	}
+	for (const Job::Piece& p : j->c_pieces) {
+		memset(&m, 0, sizeof(m));
+		HRESULT hr = OCTX(Map)(rctx(), (ID3D11Resource*)p.chunk, 0, D3D11_MAP_READ, flags, &m);
+		if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+			return false;                            // started over on a later frame
+		if (FAILED(hr) || !m.pData) { o->err = "Map failed"; o->data.clear(); return true; }
+		const uint64_t lo = std::max<uint64_t>(p.off, j->r_off);
+		const uint64_t hi = std::min<uint64_t>((uint64_t)p.off + p.size, j->r_off + j->r_size);
+		memcpy(o->data.data() + (lo - j->r_off), (const uint8_t*)m.pData + p.at + (lo - p.off), (size_t)(hi - lo));
+		OCTX(Unmap)(rctx(), (ID3D11Resource*)p.chunk, 0);
+	}
+	JsonW w;
+	w.begin_obj();
+	w.ku("offset", j->r_off);
+	w.ku("size", j->r_size);
+	w.ku("byte_width", j->r_bw);
+	w.ku("read_frame", (uint32_t)g_frame_no);
+	w.ku("pieces", j->c_pieces.size());
+	write_content_meta(w, j);
+	w.end_obj();
+	o->meta = w.s;
+	o->ok = true;
+	return true;
+}
+
 // Returns true when the job is finished (successfully or not).
 static bool finish_read(Job* j, bool block)
 {
+	if (j->c_buffer)
+		return finish_read_content_buffer(j, block);
 	ReadResult* o = j->out.get();
 	D3D11_MAPPED_SUBRESOURCE m;
 	memset(&m, 0, sizeof(m));
@@ -1747,10 +2743,12 @@ static bool finish_read(Job* j, bool block)
 		size_t num_bytes = 0, row_bytes = 0, rows = 0;
 		dxgi_surface_info(j->mw, j->mh, d.Format, &num_bytes, &row_bytes, &rows);
 		if (row_bytes && rows) {
-			o->data.resize(row_bytes * rows);
+			o->data.resize(row_bytes * rows * j->md);
 			size_t copy = std::min(row_bytes, (size_t)m.RowPitch);
-			for (size_t r = 0; r < rows; r++)
-				memcpy(o->data.data() + r * row_bytes, (const uint8_t*)m.pData + r * m.RowPitch, copy);
+			for (size_t z = 0; z < j->md; z++)
+				for (size_t r = 0; r < rows; r++)
+					memcpy(o->data.data() + (z * rows + r) * row_bytes,
+					       (const uint8_t*)m.pData + z * m.DepthPitch + r * m.RowPitch, copy);
 			JsonW w;
 			w.begin_obj();
 			w.ku("width", j->mw);
@@ -1766,8 +2764,20 @@ static bool finish_read(Job* j, bool block)
 			w.ku("tex_width", d.Width);
 			w.ku("tex_height", d.Height);
 			w.kb("cube", (d.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0);
-			w.ks("kind", j->is_1d ? "tex1d" : "tex2d");
+			w.ks("kind", j->tdim == D3D11_RESOURCE_DIMENSION_TEXTURE1D ? "tex1d"
+			           : j->tdim == D3D11_RESOURCE_DIMENSION_TEXTURE3D ? "tex3d" : "tex2d");
+			if (j->tdim == D3D11_RESOURCE_DIMENSION_TEXTURE3D) {
+				// The rows of every depth slice follow one another.
+				w.ku("depth", j->md);
+				w.ku("tex_depth", j->tex_depth);
+			}
+			if (j->resolved) {
+				w.kb("resolved", true);
+				w.ku("samples", d.SampleDesc.Count);
+			}
 			w.ku("read_frame", (uint32_t)g_frame_no);
+			if (j->type == 6)
+				write_content_meta(w, j);
 			w.end_obj();
 			o->meta = w.s;
 			o->ok = true;
@@ -1785,6 +2795,9 @@ static void drop_staging(Job* j)
 		ID3D11Resource_Release(j->staging);
 		j->staging = nullptr;
 	}
+	for (Job::Piece& p : j->c_pieces)
+		ID3D11Buffer_Release(p.chunk);
+	j->c_pieces.clear();
 }
 
 static void run_jobs()
@@ -1812,16 +2825,23 @@ static void run_jobs()
 			if (g_last && g_last->frame == j->frame)
 				rt_release_copies(g_last.get());
 			break;
+		case 6: flying = start_read_content(j.get()); break;
+		case 7:
+			if (g_last && g_last->frame == j->frame)
+				cont_release(g_last.get());
+			break;
 		case 3:
 			if (g_last) { release_capture_refs(g_last.get()); g_last.reset(); }
 			arena_free_idle();
 			break;
 		}
 		g_last_touch = now_ms();
-		if (flying)
+		if (flying) {
 			g_inflight.push_back(j);
-		else
+		} else {
+			drop_staging(j.get());       // what a start that gave up had already taken hold of
 			SetEvent(j->done);
+		}
 	}
 
 	// collect what the GPU has finished
@@ -1852,6 +2872,10 @@ void cap_on_frame_boundary()
 		return;
 	hooks_verify();
 
+	if (g_bar) {
+		cont_before_present();
+		g_om_dirty = g_cs_dirty = true;      // a flip leaves the back buffer unbound
+	}
 	if (g_rec)
 		end_recording();
 
@@ -1861,6 +2885,8 @@ void cap_on_frame_boundary()
 		g_seen_client_gen = gen;
 		g_track_gen++;
 		g_rcache.clear();
+		if (g_bar && g_bar != g_rec.get())
+			cont_release(g_bar);
 		if (g_tracking) {
 			resync_gpu_writers();
 		} else {
@@ -1876,7 +2902,8 @@ void cap_on_frame_boundary()
 		arena_free_idle();
 
 	// Do not pin the game's resources forever if the client went quiet.
-	if (g_last && now_ms() - g_last_touch > 180000 && (!g_last->held.empty() || rt_holds_copies(g_last.get()))) {
+	if (g_last && now_ms() - g_last_touch > 180000
+	    && (!g_last->held.empty() || rt_holds_copies(g_last.get()) || !g_last->tracks.empty())) {
 		release_capture_refs(g_last.get());
 		plog("capture: released resources of frame %u after inactivity", g_last->frame);
 	}
@@ -2025,6 +3052,26 @@ void cap_release_rt(uint32_t frame, uint32_t timeout_ms)
 	run_job(j, timeout_ms);
 }
 
+void cap_read_content(uint32_t frame, uint32_t snap, uint64_t offset, uint64_t size, uint32_t timeout_ms, ReadResult* out)
+{
+	auto j = std::make_shared<Job>();
+	j->out = std::make_shared<ReadResult>();
+	j->type = 6; j->frame = frame; j->res = snap; j->offset = offset; j->size = size;
+	if (!run_job(j, timeout_ms)) {
+		out->err = "timed out waiting for the game to present a frame";
+		return;
+	}
+	*out = std::move(*j->out);
+}
+
+void cap_release_content(uint32_t frame, uint32_t timeout_ms)
+{
+	auto j = std::make_shared<Job>();
+	j->out = std::make_shared<ReadResult>();
+	j->type = 7; j->frame = frame;
+	run_job(j, timeout_ms);
+}
+
 void cap_release(uint32_t timeout_ms)
 {
 	auto j = std::make_shared<Job>();
@@ -2036,9 +3083,10 @@ void cap_release(uint32_t timeout_ms)
 void cap_status_json(std::string* out)
 {
 	char b[256];
-	snprintf(b, sizeof(b), "\"tracking\":%s,\"recording\":%s,\"live\":%s,\"region_cache\":%zu,\"arena_chunks\":%zu",
+	snprintf(b, sizeof(b), "\"tracking\":%s,\"recording\":%s,\"live\":%s,\"region_cache\":%zu,\"arena_chunks\":%zu,"
+	         "\"contents_kept\":%s",
 	         g_tracking ? "true" : "false", g_recording ? "true" : "false", g_live_on ? "true" : "false",
-	         g_rcache.size(), g_chunks.size());
+	         g_rcache.size(), g_chunks.size(), g_barrier ? "true" : "false");
 	*out += b;
 }
 
@@ -2140,6 +3188,19 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 		w.ku("rt_depth_only", c.rt_depth_only);
 		w.ku("rt_bytes", c.rt_bytes);
 		w.ku("rt_over_budget", c.rt_skipped);
+	}
+	if (c.rq.contents()) {
+		// As they stand when the capture is handed over: copies are made as the game goes on writing.
+		w.ku("ct_snaps", c.conts.size());
+		w.ku("ct_copies", c.ct_copies);
+		w.ku("ct_bytes", c.ct_bytes);
+		w.ku("ct_lost", c.ct_lost);
+		w.ku("ct_budget", c.rq.ct_budget);
+		w.ku("ct_out_calls", c.ct_out_calls);
+	}
+	if (c.rq.ct_events) {
+		w.ku("events", c.events.size());
+		w.ku("events_dropped", c.events_dropped);
 	}
 	w.end_obj();
 
@@ -2298,6 +3359,34 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 		w.end_arr();
 	}
 
+	// What calls saw, read with read_content by position: [resource, 0, version] is a buffer,
+	// [resource, 1, mip, slice] one subresource of a texture.
+	if (c.rq.contents()) {
+		w.key("cont"); w.begin_arr();
+		for (const ContSnap& s : c.conts) {
+			w.begin_arr();
+			w.i(s.res); w.u(s.tex);
+			if (s.tex) { w.u(s.mip); w.u(s.slice); }
+			else w.u(s.ver);
+			w.end_arr();
+		}
+		w.end_arr();
+	}
+
+	// The writes between the calls: [kind, number of the call that follows, written resource,
+	// source resource, four numbers] and for a clear its four values.
+	if (c.rq.ct_events) {
+		w.key("ev"); w.begin_arr();
+		for (const CapEvent& e : c.events) {
+			w.begin_arr();
+			w.u(e.type); w.u(e.draw); w.i(e.dst); w.i(e.src);
+			w.u(e.a[0]); w.u(e.a[1]); w.u(e.a[2]); w.u(e.a[3]);
+			if (e.has_f) { w.d(e.f[0]); w.d(e.f[1]); w.d(e.f[2]); w.d(e.f[3]); }
+			w.end_arr();
+		}
+		w.end_arr();
+	}
+
 	// [resource, offset, size, hash, state]
 	w.key("regions"); w.begin_arr();
 	for (const CapRegion& r : c.regions) {
@@ -2421,6 +3510,50 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 			}
 			w.ku("vpn", d.vp_count);
 			w.key("vpz"); w.begin_arr(); w.d(d.vp_z[0]); w.d(d.vp_z[1]); w.end_arr();
+			if (d.vp_count > 1) {
+				// every viewport: [left, top, width, height, min depth, max depth]
+				w.key("vps"); w.begin_arr();
+				for (uint32_t k = 0; k < d.vp_count; k++) {
+					const D3D11_VIEWPORT& v = c.viewports[d.vp_begin + k];
+					w.begin_arr();
+					w.d(v.TopLeftX); w.d(v.TopLeftY); w.d(v.Width); w.d(v.Height); w.d(v.MinDepth); w.d(v.MaxDepth);
+					w.end_arr();
+				}
+				w.end_arr();
+			}
+		}
+		if (c.rq.contents()) {
+			// Contents, by position in "cont": lists run parallel to "vb", "cb", "srv" and "out" (-1: none).
+			// For an output it is what the call left there.
+			bool any = false;
+			if (d.ib_cont >= 0) w.ki("cib", d.ib_cont);
+			for (uint32_t k = 0; k < d.vb_count; k++) any = any || c.vbs[d.vb_begin + k].cont >= 0;
+			if (any) {
+				w.key("cvb"); w.begin_arr();
+				for (uint32_t k = 0; k < d.vb_count; k++) w.i(c.vbs[d.vb_begin + k].cont);
+				w.end_arr();
+			}
+			any = false;
+			for (uint32_t k = 0; k < d.cb_count; k++) any = any || c.cbs[d.cb_begin + k].cont >= 0;
+			if (any) {
+				w.key("ccb"); w.begin_arr();
+				for (uint32_t k = 0; k < d.cb_count; k++) w.i(c.cbs[d.cb_begin + k].cont);
+				w.end_arr();
+			}
+			any = false;
+			for (uint32_t k = 0; k < d.srv_count; k++) any = any || c.views[d.srv_begin + k].cont >= 0;
+			if (any) {
+				w.key("csrv"); w.begin_arr();
+				for (uint32_t k = 0; k < d.srv_count; k++) w.i(c.views[d.srv_begin + k].cont);
+				w.end_arr();
+			}
+			any = false;
+			for (uint32_t k = 0; k < d.out_count; k++) any = any || c.views[d.out_begin + k].cont >= 0;
+			if (any) {
+				w.key("cout"); w.begin_arr();
+				for (uint32_t k = 0; k < d.out_count; k++) w.i(c.views[d.out_begin + k].cont);
+				w.end_arr();
+			}
 		}
 		w.end_obj();
 	}

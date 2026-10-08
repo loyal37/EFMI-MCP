@@ -8,7 +8,7 @@ import time
 from collections import Counter, OrderedDict
 from pathlib import Path
 
-from . import __version__, decode, model_tools, pipeline, slot_data
+from . import __version__, contents, decode, draw_outputs, model_tools, pipeline, slot_data
 from .capture_model import Capture
 from .draw_outputs import capture_draw_outputs
 from .fa_dump import DRAW_NAMES, MARKS, find_frame_dumps, parse_frame_dump
@@ -62,8 +62,17 @@ Things to know:
 the call stack). With a mod active the game's original draw of that mesh is replaced, so it does not appear; \
 efmi_toggle_mods state='off' brings the original draws back for as long as mods are off.
 - Only the most recent capture keeps its resources readable; capture again if a read says the capture is gone.
-- Buffer and texture reads return the contents at the time of the read. Constant buffers as they were at each \
-draw are available when the frame was captured with cb_data=true.
+- Buffer and texture reads return the contents at the time of the read unless the capture kept them: \
+efmi_capture_frame contents='inputs' has the probe keep what every call read (index, vertex and constant buffers, \
+buffers and textures bound as shader resources) exactly as it was when the call was issued, contents='outputs' also \
+what calls left in their render targets and unordered access views. Nothing is copied while the frame is drawn: \
+the probe copies a resource only when the game is about to overwrite it, so this is cheap for static data. \
+efmi_read_buffer and efmi_read_texture then say `exact` and where the bytes come from. The contents last until the \
+next capture or three minutes without a request. efmi_list_writes shows the maps, updates, copies and clears between \
+the calls; efmi_dump_frame writes the frame out as a folder laid out like an XXMI frame analysis dump. Needs probe \
+0.1.6. Without it, cb_data=true still keeps the bound window of every constant buffer.
+- What is not visible from here: XXMI's own command lists, variables and the calls it skipped (that is in XXMI's \
+log.txt only). XXMI's IniParams, as shaders see them, are a 1D texture in slot t120 and can be read per call.
 - To see what a draw paints, use efmi_capture_draw_outputs: it records a new frame and copies the render target \
 just before and just after the draws you select (by index buffer hash, shader hash or draw numbers of a capture), \
 then reports the pixels each one changed, with pictures. efmi_read_texture on an output only shows the target as \
@@ -308,6 +317,12 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             if "pipeline_state" not in st.get("features", ()):
                 lines.append(f"pipeline state and render target copies around draws: need probe 0.1.5 (this is "
                              f"{st['probe']}). Restart the game to load {s.probe_dll}")
+            if contents.FEATURE not in st.get("features", ()):
+                lines.append(f"contents as each call saw them (efmi_capture_frame contents=..., efmi_dump_frame): need probe "
+                             f"0.1.6 (this is {st['probe']}). Restart the game to load {s.probe_dll}")
+            elif cap.get("contents_kept"):
+                lines.append("contents: the probe is keeping what the calls of the latest capture saw (released by the next "
+                             "capture or after three minutes without a request)")
             if "region_hash_per_object" not in st.get("features", ()):
                 lines.append(f"hashes: probe {st['probe']} can record a destroyed buffer's region hash for a new buffer "
                              "at the same address (mod buffers after a reload); read the buffer to be sure. "
@@ -327,39 +342,77 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         return "\n".join(lines)
 
     # ================================================================ capture
+    contents_feature, contents_request, contents_summary = contents.FEATURE, contents.request, contents.summary
+
     @srv.tool("efmi_capture_frame",
               "Records the next frame the game draws and returns a summary. detail='full' records every binding of every draw "
               "(index/vertex buffers, shaders, constant buffers, textures, render targets); 'light' records only geometry and "
               "shaders; cb_data=true additionally keeps the contents of every constant buffer as it was at each draw. "
-              "The capture stays in memory for the other tools.",
+              "contents='inputs' has the probe keep what every call read (index, vertex and constant buffers, buffers "
+              "and textures bound as shader resources) exactly as it was when the call was issued; 'outputs' also keeps "
+              "what calls left in their render targets and unordered access views: of the calls selected with hash / "
+              "draws (as in efmi_capture_draw_outputs) or first / last (call numbers in the new frame), or of every "
+              "call when nothing selects (a render target per draw is large: mind budget_mb). Kept contents are read "
+              "with efmi_read_buffer / efmi_read_texture and written out with efmi_dump_frame; they last until the "
+              "next capture or three minutes without a request. A resource is copied only when the game is about to "
+              "overwrite it, in the frames after the capture too, so the game can stutter briefly then. Needs probe "
+              "0.1.6. The capture stays in memory for the other tools.",
               {"detail": {"type": "string", "enum": ["full", "light"], "default": "full"},
-               "cb_data": {"type": "boolean", "default": False}})
-    def efmi_capture_frame(detail: str = "full", cb_data: bool = False):
+               "cb_data": {"type": "boolean", "default": False},
+               "contents": {"type": "string", "enum": ["none", "inputs", "outputs"], "default": "none"},
+               "hash": {"type": "string", "default": "",
+                        "description": "contents='outputs': index buffer hash (8 hex digits) or shader hash (16) of the calls whose outputs to keep."},
+               "draws": {"type": "array", "items": {"type": "integer"}, "default": [],
+                         "description": "contents='outputs': call numbers in `capture` to find again in the new frame."},
+               **CAPTURE_PROP,
+               "first": {"type": "integer", "default": -1, "description": "contents='outputs': first call number in the new frame."},
+               "last": {"type": "integer", "default": -1, "description": "contents='outputs': last call number in the new frame."},
+               "depth": {"type": "boolean", "default": False, "description": "contents='outputs': keep depth targets too."},
+               "budget_mb": {"type": "integer", "minimum": 16, "maximum": 8192, "default": contents.BUDGET_MB,
+                             "description": "How much the probe may copy for this capture, in the game's memory."}},
+              read_only=False)
+    def efmi_capture_frame(detail: str = "full", cb_data: bool = False, contents: str = "none", hash: str = "",
+                           draws=None, capture="latest", first: int = -1, last: int = -1, depth: bool = False,
+                           budget_mb: int = 1024):
         t0 = time.perf_counter()
-        doc, blob = s.call(lambda c: c.capture(detail=detail, cb_data=cb_data, timeout_ms=8000))
+        wanted, chosen = None, ""
+        if contents not in (None, "", "none"):
+            status = s.call(lambda c: c.status())
+            if contents_feature not in (status.get("features") or ()):
+                raise ToolError(f"Probe {status.get('probe')} cannot keep contents; this needs 0.1.6. "
+                                f"Restart the game to load the updated {s.probe_dll}.")
+            matchers = None
+            if contents == "outputs" and (hash or draws):
+                reference = s.capture(capture) if (s.latest is not None or capture not in (None, "", "latest")) else None
+                matchers, chosen, _hashes = draw_outputs.select(reference, hash, list(draws or []))
+            wanted = contents_request(contents, matchers, int(first), int(last), bool(depth), budget_mb)
+        doc, blob = s.call(lambda c: c.capture(detail=detail, cb_data=cb_data, timeout_ms=8000, contents=wanted))
         cap = Capture(doc, blob)
         s.add_capture(cap)
         ms = (time.perf_counter() - t0) * 1000
-        draws = list(cap.draws())
-        game = [d for d in draws if d["origin"] != "xxmi"]
+        draws_made = list(cap.draws())
+        game = [d for d in draws_made if d["origin"] != "xxmi"]
         st = cap.stats
-        lines = [f"capture {cap.frame} ({cap.detail}): {len(draws)} draws ({len(game)} from the game, {len(draws) - len(game)} from XXMI/mods), "
+        lines = [f"capture {cap.frame} ({cap.detail}): {len(draws_made)} draws ({len(game)} from the game, {len(draws_made) - len(game)} from XXMI/mods), "
                  f"{len(cap.resources)} resources, {len(cap.shaders)} shaders; took {ms:.0f} ms "
                  f"(recording cost inside the game: {st['record_ms']:.2f} ms)"]
         if st.get("skipped_draws"):
             lines.append(f"WARNING: {st['skipped_draws']} draws beyond the per-frame limit were not recorded")
         if st.get("arena_full"):
             lines.append("WARNING: readback budget exhausted, some hashes are missing (state 'skipped')")
-        if not draws:
+        if not draws_made:
             lines.append("WARNING: this frame contains no recorded draws; character/resource capture is not verified. "
                          "Check the selected device/context in efmi_status and efmi_probe.log.")
+        lines += contents_summary(cap)
+        if chosen:
+            lines.append(f"  outputs kept for: {chosen}")
         if s.mods_display and not s.mods_display["enabled"]:
             lines.append(f"note: efmi_toggle_mods switched all mods OFF at frame {s.mods_display['frame']}; unless F11 was "
                          "pressed by hand since, this frame shows the game's own drawing. Switch them back on when done.")
 
         if cap.detail == "full":
             passes: "OrderedDict[tuple, list[int]]" = OrderedDict()
-            for d in draws:
+            for d in draws_made:
                 o0 = d.get("out", {}).get("o0")
                 key = (o0["res"] if o0 else -1,)
                 passes.setdefault(key, []).append(d["index"])
@@ -582,6 +635,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                                  + view_note(v) for k, v in d["out"].items()}
         if "viewport" in d:
             out["viewport"] = d["viewport"]
+        if "viewports" in d:
+            out["viewports"] = d["viewports"]       # all of them: [left, top, width, height, min depth, max depth]
         if "blend" in d:
             if d.get("viewport_count", 1) != 1:
                 out["viewport_count"] = d["viewport_count"]
@@ -597,6 +652,13 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                                      "(restart the game to load the updated efmi_probe.dll)")
         if "samplers" in d:
             out["samplers"] = {k: pipeline.describe_sampler(v) for k, v in d["samplers"].items()}
+        if cap.has_contents:
+            # Which slots the probe keeps as this call saw them (efmi_read_buffer / efmi_read_texture).
+            kept = (["ib"] if (d.get("ib") or {}).get("content") is not None else []) \
+                + [f"vb{n}" for n, v in d.get("vb", {}).items() if v.get("content") is not None] \
+                + [k for group in ("cb", "tex") for k, v in d.get(group, {}).items() if v.get("content") is not None]
+            left = [k for k, v in d.get("out", {}).items() if v.get("content") is not None]
+            out["contents_kept"] = {"as_the_call_saw_them": kept, "as_the_call_left_them": left}
         return out
 
     # ================================================================ find
@@ -863,14 +925,19 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
 
     # ================================================================ textures
     @srv.tool("efmi_read_texture",
-              "Reads a texture bound for a draw (slot such as 'ps-t0', or an output: 'o0', 'oD') as it is at the time of the call. "
-              "Saves it as .dds (and .png when the format can be converted) and returns a downscaled preview image.",
+              "Reads a texture bound for a draw (slot such as 'ps-t0', an output 'o0' / 'oD', or an unordered access view "
+              "'u0'). When the capture kept contents (efmi_capture_frame contents=...), the answer is the texture as the "
+              "call saw it, or for an output as the call left it; otherwise it is the texture as it is now, which the "
+              "answer says. mip / slice default to the subresource the bound view shows. 3D textures are read whole "
+              "(slice then picks the depth slice of the picture), multisampled colour textures resolved. Saves .dds "
+              "(and .png when the format can be converted) and returns a downscaled preview image.",
               {**CAPTURE_PROP, "draw": {"type": "integer"}, "slot": {"type": "string"},
-               "mip": {"type": "integer", "default": 0}, "slice": {"type": "integer", "default": 0,
-                                                                     "description": "array slice or cube face"},
+               "mip": {"type": "integer", "default": -1, "description": "-1: the first mip the view shows"},
+               "slice": {"type": "integer", "default": -1,
+                         "description": "array slice or cube face; -1: the first the view shows. For a 3D texture: the depth slice shown."},
                "preview": {"type": "boolean", "default": True}},
               ["draw", "slot"], read_only=False)
-    def efmi_read_texture(draw: int, slot: str, capture="latest", mip: int = 0, slice: int = 0, preview: bool = True):
+    def efmi_read_texture(draw: int, slot: str, capture="latest", mip: int = -1, slice: int = -1, preview: bool = True):
         cap = s.capture(capture)
         if not 0 <= draw < len(cap):
             raise ToolError(f"draw must be 0..{len(cap) - 1}")
@@ -879,18 +946,56 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         entry = d.get("tex", {}).get(slot.lower()) or d.get("out", {}).get(slot)
         if not entry:
             raise ToolError(f"nothing bound to {slot}; textures: {list(d.get('tex', {}))}; outputs: {list(d.get('out', {}))}")
-        meta, data = s.call(lambda c: c.read_texture(cap.frame, entry["res"], mip, slice))
+        resource = cap.resource(entry["res"]) or {}
+        if resource.get("kind") == "buffer":
+            raise ToolError(f"{slot} holds a buffer, not a texture: use efmi_read_buffer")
+        volume = resource.get("kind") == "tex3d"
+        view = entry.get("view") or {}
+        kept = cap.content(entry.get("content"))
+        # What the view shows first; a kept entry is exactly that subresource.
+        shown = (kept["mip"], kept["slice"]) if kept else (
+            view.get("most_detailed_mip", view.get("mip_slice", 0)), 0 if volume else view.get("first_slice", view.get("first_face", 0)))
+        want_mip = shown[0] if mip < 0 else mip
+        want_slice = (0 if volume else shown[1]) if slice < 0 else (0 if volume else slice)
+        meta = data = None
+        when, from_capture = "", False
+        if kept and kept["kind"] == "texture" and (kept["mip"], kept["slice"]) == (want_mip, want_slice):
+            try:
+                meta, data = s.call(lambda c: c.read_content(cap.frame, kept["id"]))
+                from_capture = True
+                when = ("as the call left it" if slot in d.get("out", {}) else "as it was when the call was issued")
+                if not meta.get("exact", True):
+                    when += f" (NOT CERTAIN: {meta.get('why', 'unknown writes happened since')})"
+            except ToolError as exc:
+                when = f"current contents, not necessarily those at the draw (what the capture kept could not be used: {exc})"
+        if data is None:
+            meta, data = s.call(lambda c: c.read_texture(cap.frame, entry["res"], want_mip, want_slice))
+            when = when or ("current contents, not necessarily those at the draw"
+                            + ("; the capture kept another subresource of this texture" if kept else
+                               "; capture with contents to get it as the call saw it" if not cap.has_contents else ""))
         w, h, fmt = meta["width"], meta["height"], meta["format"]
-        stem = f"{entry['hash'] or 'res%d' % entry['res']}-mip{mip}" + (f"-slice{slice}" if slice else "")
+        depth = meta.get("depth", 0)
+        stem = f"{entry['hash'] or 'res%d' % entry['res']}-mip{want_mip}" + (f"-slice{want_slice}" if want_slice else "")
+        if from_capture:
+            stem += f"-draw{draw}"            # one file per version, not one per texture
         folder = s.frame_dir(cap)
         dds_path = folder / f"{stem}.dds"
-        dds_path.write_bytes(decode.make_dds(w, h, fmt, data))
-        text = [f"{slot} of draw {draw}: hash {entry['hash'] or 'unknown'}, {meta['tex_width']}x{meta['tex_height']} {meta['format_name']}, "
+        dds_path.write_bytes(decode.make_dds(w, h, fmt, data, depth=depth))
+        shape = f"{meta['tex_width']}x{meta['tex_height']}" + (f"x{meta['tex_depth']}" if depth else "")
+        text = [f"{slot} of draw {draw}: hash {entry['hash'] or 'unknown'}, {shape} {meta['format_name']}, "
                 f"{meta['mips']} mips, array {meta['array']}{', cube' if meta.get('cube') else ''}",
-                f"read mip {mip} ({w}x{h}) at frame {meta['read_frame']} (current contents, not necessarily those at the draw)",
+                f"read mip {want_mip} ({w}x{h}{'x%d' % depth if depth else ''}) at frame {meta['read_frame']} ({when})",
                 f"saved: {dds_path}"]
+        if meta.get("resolved"):
+            text.append(f"multisampled ({meta.get('samples')} samples): these are the resolved pixels")
         result: list = []
-        png, small = decode.texture_to_pngs(w, h, fmt, data, preview_max_size=512 if preview else 0)
+        picture = data
+        if depth:
+            shown_slice = max(0, min(slice if slice >= 0 else 0, depth - 1))
+            size = len(data) // depth
+            picture = data[shown_slice * size:(shown_slice + 1) * size]
+            text.append(f"picture: depth slice {shown_slice} of {depth}")
+        png, small = decode.texture_to_pngs(w, h, fmt, picture, preview_max_size=512 if preview else 0)
         if png:
             png_path = folder / f"{stem}.png"
             png_path.write_bytes(png)
@@ -900,6 +1005,73 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         else:
             text.append("no PNG: this format is not converted here (the .dds holds the exact data)")
         return ["\n".join(text)] + result
+
+    # ================================================================ the writes between the calls
+    @srv.tool("efmi_list_writes",
+              "The maps, updates, copies, clears, mip generations and resolves a frame issued between its calls, in "
+              "order: what changed which resource before which call. From a capture taken with contents (probe 0.1.6). "
+              "Filter by a range of calls, by the hash of the resource written to or read from, or by kind. Draws and "
+              "dispatches also write (their render targets and unordered access views): those are in efmi_get_draw.",
+              {**CAPTURE_PROP, "first": {"type": "integer", "default": 0, "description": "writes issued before this call or later"},
+               "last": {"type": "integer", "default": -1, "description": "writes issued before this call or earlier; -1: to the end"},
+               "hash": {"type": "string", "default": "", "description": "only writes to or from the resource with this hash"},
+               "kind": {"type": "string", "default": "", "description": "e.g. Map, UpdateSubresource, CopySubresourceRegion, ClearRenderTargetView"},
+               "offset": {"type": "integer", "default": 0}, "limit": {"type": "integer", "default": 60}})
+    def efmi_list_writes(capture="latest", first: int = 0, last: int = -1, hash: str = "", kind: str = "",
+                         offset: int = 0, limit: int = 60):
+        cap = s.capture(capture)
+        if "ev" not in cap.doc:
+            raise ToolError(f"capture {cap.frame} has no list of writes: take one with efmi_capture_frame contents='inputs' "
+                            "(probe 0.1.6)")
+        wanted = _norm_hash(hash)
+        rows = []
+        for event in cap.events():
+            if event["before_call"] < first or (last >= 0 and event["before_call"] > last):
+                continue
+            if kind and event["type"].lower() != kind.lower():
+                continue
+            if wanted and wanted not in [(cap.resource(event[k]) or {}).get("hash") for k in ("dst", "src")]:
+                continue
+            rows.append(event)
+        limit = max(1, min(int(limit), 300))
+        page = rows[offset:offset + limit]
+        kinds = Counter(event["type"] for event in rows)
+        lines = [f"capture {cap.frame}: {len(rows)} writes match of {len(cap.raw_events)} listed"
+                 + (f" ({', '.join(f'{n} {k}' for k, n in kinds.most_common())})" if rows else "")]
+        if cap.stats.get("events_dropped"):
+            lines.append(f"WARNING: {cap.stats['events_dropped']} more writes were not listed (the list was full)")
+        lines += [f"before #{event['before_call']:<5} {contents.event_text(cap, event)}" for event in page]
+        if offset + len(page) < len(rows):
+            lines.append(f"... {len(rows) - offset - len(page)} more (use offset={offset + len(page)})")
+        return "\n".join(lines)
+
+    # ================================================================ a frame as a folder
+    @srv.tool("efmi_dump_frame",
+              "Writes calls of a capture to a folder laid out like an XXMI frame analysis dump: per call and slot a file "
+              "named NNNNNN-<slot>=<hash>-vs=...-ps=..., linked to one copy of each distinct content under deduped/. "
+              "Buffers are written whole as .buf, with the .txt XXMI writes for index buffers (the indices of the draw), "
+              "vertex buffers (layout and the vertices the draw uses) and constant buffers (the bound registers); "
+              "textures as .dds holding the subresource the view shows (XXMI: always the first); outputs as the call "
+              "left them; log.txt lists the calls with the writes between them. Use a capture taken with contents: "
+              "then every file holds what the call saw. From a capture without, only what provably has not changed "
+              "since is written unless only_exact=false. Calls are numbered as in the capture (from 0). XXMI's own "
+              "command list and variable trace is not available here. A whole game frame is gigabytes: select calls "
+              "with first/last and kinds; the answer says where to continue when a limit stops it.",
+              {**CAPTURE_PROP, "first": {"type": "integer", "default": 0}, "last": {"type": "integer", "default": -1, "description": "-1: the last call"},
+               "kinds": {"type": "array", "items": {"type": "string", "enum": ["ib", "vb", "cb", "buf", "tex", "out"]}, "default": [],
+                         "description": "empty: all. buf: buffers bound as shader resources, tex: textures, out: what calls wrote."},
+               "txt": {"type": "boolean", "default": True},
+               "only_exact": {"type": "boolean", "default": True},
+               "max_mb": {"type": "integer", "minimum": 1, "maximum": 65536, "default": 2048},
+               "max_seconds": {"type": "integer", "minimum": 5, "maximum": 1800, "default": 120},
+               "folder": {"type": "string", "default": "", "description": "default: <output folder>/frame-<n>/dump"}},
+              read_only=False)
+    def efmi_dump_frame(capture="latest", first: int = 0, last: int = -1, kinds=None, txt: bool = True,
+                        only_exact: bool = True, max_mb: int = 2048, max_seconds: int = 120, folder: str = ""):
+        cap = s.capture(capture)
+        return contents.dump_frame(s, cap, first=int(first), last=int(last), kinds=list(kinds or []), txt=bool(txt),
+                                   only_exact=bool(only_exact), max_mb=int(max_mb), max_seconds=float(max_seconds),
+                                   folder=folder)
 
     # ================================================================ what a draw paints
     @srv.tool("efmi_capture_draw_outputs",

@@ -9,6 +9,8 @@
   7. model workflow unit tests (no game, Blender or LoyalTools; model_offline_integration.py is opt-in)
   8. mods switch unit tests (fake probe; the real F11 test mods_toggle_integration_test.py is opt-in)
   9. draw output and pipeline state unit tests (fake probe)
+ 10. contents: what each call saw, against bytes the sandbox is known to have written; byte for byte
+     against XXMI's own frame analysis of the same calls; and the tools on top (fake probe)
 """
 from __future__ import annotations
 
@@ -33,6 +35,8 @@ def main() -> int:
         ("parity with XXMI (probe loaded first)", ["sandbox/parity_test.py", "--probe-first"]),
         ("parity with XXMI (system d3d11.dll already loaded)", ["sandbox/parity_test.py", "--preload-runtime"]),
         ("probe self-test", ["sandbox/selftest.py"]),
+        ("contents: what each call saw", ["sandbox/contents_test.py"]),
+        ("contents: byte for byte against XXMI's frame analysis", ["sandbox/contents_parity_test.py"]),
         ("multiple-device regression", ["sandbox/multidevice_test.py"]),
         ("multiple-device regression with XXMI", ["sandbox/multidevice_test.py", "--xxmi"]),
         ("MCP server end to end", ["sandbox/mcp_test.py"]),
@@ -41,6 +45,7 @@ def main() -> int:
         ("model workflow logic (export checks, deployment, draw comparison, jobs)", ["sandbox/model_workflow_test.py"]),
         ("mods switch MCP contract (fake probe)", ["sandbox/mods_toggle_test.py"]),
         ("draw outputs and pipeline state (fake probe)", ["sandbox/draw_outputs_test.py"]),
+        ("contents: slots, tools and the folder writer (fake probe)", ["sandbox/contents_unit_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")

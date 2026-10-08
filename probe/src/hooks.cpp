@@ -623,13 +623,14 @@ static void STDMETHODCALLTYPE H_Draw(ID3D11DeviceContext* This, UINT VertexCount
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DRAW; a.vertex_count = VertexCount; a.first_vertex = StartVertexLocation;
 		RECORD_DRAW(DT_DRAW, a, nullptr, nullptr, 0);
 		if (g_tracking) cap_gpu_writes_om();
+		if (g_barrier) cap_before_call_writes(false);
 	}
 	CTX_ORIG(h)->Draw(This, VertexCount, StartVertexLocation);
-	if (g_rt_after && h == g_ctx) cap_after_draw();
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawIndexed(ID3D11DeviceContext* This, UINT IndexCount, UINT StartIndexLocation,
@@ -638,14 +639,15 @@ static void STDMETHODCALLTYPE H_DrawIndexed(ID3D11DeviceContext* This, UINT Inde
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DRAW_INDEXED; a.index_count = IndexCount; a.first_index = StartIndexLocation;
 		a.first_vertex = (uint32_t)BaseVertexLocation;
 		RECORD_DRAW(DT_DRAW_INDEXED, a, nullptr, nullptr, 0);
 		if (g_tracking) cap_gpu_writes_om();
+		if (g_barrier) cap_before_call_writes(false);
 	}
 	CTX_ORIG(h)->DrawIndexed(This, IndexCount, StartIndexLocation, BaseVertexLocation);
-	if (g_rt_after && h == g_ctx) cap_after_draw();
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawInstanced(ID3D11DeviceContext* This, UINT VertexCountPerInstance, UINT InstanceCount,
@@ -654,14 +656,15 @@ static void STDMETHODCALLTYPE H_DrawInstanced(ID3D11DeviceContext* This, UINT Ve
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DRAW_INSTANCED; a.vertex_count = VertexCountPerInstance; a.instance_count = InstanceCount;
 		a.first_vertex = StartVertexLocation; a.first_instance = StartInstanceLocation;
 		RECORD_DRAW(DT_DRAW_INSTANCED, a, nullptr, nullptr, 0);
 		if (g_tracking) cap_gpu_writes_om();
+		if (g_barrier) cap_before_call_writes(false);
 	}
 	CTX_ORIG(h)->DrawInstanced(This, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
-	if (g_rt_after && h == g_ctx) cap_after_draw();
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawIndexedInstanced(ID3D11DeviceContext* This, UINT IndexCountPerInstance,
@@ -671,16 +674,17 @@ static void STDMETHODCALLTYPE H_DrawIndexedInstanced(ID3D11DeviceContext* This, 
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DRAW_INDEXED_INSTANCED; a.index_count = IndexCountPerInstance;
 		a.instance_count = InstanceCount; a.first_index = StartIndexLocation;
 		a.first_vertex = (uint32_t)BaseVertexLocation; a.first_instance = StartInstanceLocation;
 		RECORD_DRAW(DT_DRAW_INDEXED_INSTANCED, a, nullptr, nullptr, 0);
 		if (g_tracking) cap_gpu_writes_om();
+		if (g_barrier) cap_before_call_writes(false);
 	}
 	CTX_ORIG(h)->DrawIndexedInstanced(This, IndexCountPerInstance, InstanceCount, StartIndexLocation,
 	                                  BaseVertexLocation, StartInstanceLocation);
-	if (g_rt_after && h == g_ctx) cap_after_draw();
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawAuto(ID3D11DeviceContext* This)
@@ -688,13 +692,14 @@ static void STDMETHODCALLTYPE H_DrawAuto(ID3D11DeviceContext* This)
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DRAW_AUTO;
 		RECORD_DRAW(DT_DRAW_AUTO, a, nullptr, nullptr, 0);
 		if (g_tracking) cap_gpu_writes_om();
+		if (g_barrier) cap_before_call_writes(false);
 	}
 	CTX_ORIG(h)->DrawAuto(This);
-	if (g_rt_after && h == g_ctx) cap_after_draw();
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawIndexedInstancedIndirect(ID3D11DeviceContext* This, ID3D11Buffer* pArgs, UINT Offset)
@@ -702,13 +707,14 @@ static void STDMETHODCALLTYPE H_DrawIndexedInstancedIndirect(ID3D11DeviceContext
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DRAW_INDEXED_INSTANCED_INDIRECT;
 		RECORD_DRAW(DT_DRAW_INDEXED_INSTANCED_INDIRECT, a, nullptr, pArgs, Offset);
 		if (g_tracking) cap_gpu_writes_om();
+		if (g_barrier) cap_before_call_writes(false);
 	}
 	CTX_ORIG(h)->DrawIndexedInstancedIndirect(This, pArgs, Offset);
-	if (g_rt_after && h == g_ctx) cap_after_draw();
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DrawInstancedIndirect(ID3D11DeviceContext* This, ID3D11Buffer* pArgs, UINT Offset)
@@ -716,13 +722,14 @@ static void STDMETHODCALLTYPE H_DrawInstancedIndirect(ID3D11DeviceContext* This,
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DRAW_INSTANCED_INDIRECT;
 		RECORD_DRAW(DT_DRAW_INSTANCED_INDIRECT, a, nullptr, pArgs, Offset);
 		if (g_tracking) cap_gpu_writes_om();
+		if (g_barrier) cap_before_call_writes(false);
 	}
 	CTX_ORIG(h)->DrawInstancedIndirect(This, pArgs, Offset);
-	if (g_rt_after && h == g_ctx) cap_after_draw();
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* This, UINT X, UINT Y, UINT Z)
@@ -730,13 +737,15 @@ static void STDMETHODCALLTYPE H_Dispatch(ID3D11DeviceContext* This, UINT X, UINT
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DISPATCH;
 		uint32_t tg[3] = { X, Y, Z };
 		RECORD_DRAW(DT_DISPATCH, a, tg, nullptr, 0);
 		if (g_tracking) cap_gpu_writes_cs();
+		if (g_barrier) cap_before_call_writes(true);
 	}
 	CTX_ORIG(h)->Dispatch(This, X, Y, Z);
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 static void STDMETHODCALLTYPE H_DispatchIndirect(ID3D11DeviceContext* This, ID3D11Buffer* pArgs, UINT Offset)
@@ -744,48 +753,83 @@ static void STDMETHODCALLTYPE H_DispatchIndirect(ID3D11DeviceContext* This, ID3D
 	HookedObj* h = ctx_of(This);
 	g_hstats.draws++;
 	if (h == g_ctx) g_hstats.tracked_draws++;
-	if (g_swap && h == g_ctx && (g_recording || g_tracking)) {
+	if (g_swap && h == g_ctx && (g_recording || g_tracking || g_barrier)) {
 		DrawArgs a; a.type = DT_DISPATCH_INDIRECT;
 		RECORD_DRAW(DT_DISPATCH_INDIRECT, a, nullptr, pArgs, Offset);
 		if (g_tracking) cap_gpu_writes_cs();
+		if (g_barrier) cap_before_call_writes(true);
 	}
 	CTX_ORIG(h)->DispatchIndirect(This, pArgs, Offset);
+	if (g_after && h == g_ctx) cap_after_draw();
 }
 
 // ---- writes (only looked at while a client is connected)
+// While a capture keeps contents (g_barrier), each of these says what it is
+// about to change before the runtime is asked to: that is when the capture
+// sets aside what a recorded call saw there.
 static HRESULT STDMETHODCALLTYPE H_Map(ID3D11DeviceContext* This, ID3D11Resource* pResource, UINT Subresource,
                                        D3D11_MAP MapType, UINT MapFlags, D3D11_MAPPED_SUBRESOURCE* pMapped)
 {
 	HookedObj* h = ctx_of(This);
 	g_hstats.maps++;
-	return CTX_ORIG(h)->Map(This, pResource, Subresource, MapType, MapFlags, pMapped);
+	if (g_barrier && h == g_ctx && MapType != D3D11_MAP_READ)
+		cap_before_write(pResource, Subresource, 0, 0xffffffffu, MapType == D3D11_MAP_WRITE_NO_OVERWRITE);
+	HRESULT hr = CTX_ORIG(h)->Map(This, pResource, Subresource, MapType, MapFlags, pMapped);
+	if (h == g_ctx && SUCCEEDED(hr)) {
+		if (g_barrier) cap_mapped(pResource, true);
+		if (g_events) cap_event(EV_MAP, pResource, nullptr, Subresource, (uint32_t)MapType);
+	}
+	return hr;
 }
 
 static void STDMETHODCALLTYPE H_Unmap(ID3D11DeviceContext* This, ID3D11Resource* pResource, UINT Subresource)
 {
 	HookedObj* h = ctx_of(This);
-	// The new contents become visible to the GPU here.
-	if (g_swap && g_tracking && h == g_ctx)
-		cap_buffer_written(pResource);
+	if (h == g_ctx) {
+		// The new contents become visible to the GPU here.
+		if (g_swap && g_tracking) cap_buffer_written(pResource);
+		if (g_barrier) cap_mapped(pResource, false);
+		if (g_events) cap_event(EV_UNMAP, pResource, nullptr, Subresource);
+	}
 	CTX_ORIG(h)->Unmap(This, pResource, Subresource);
+}
+
+static inline void note_update(ID3D11Resource* pDst, UINT DstSub, const D3D11_BOX* pBox, bool keeps_rest)
+{
+	const uint32_t off = pBox ? pBox->left : 0, size = pBox ? pBox->right - pBox->left : 0xffffffffu;
+	if (g_swap && g_tracking) cap_buffer_written(pDst, off, size);
+	if (g_barrier) cap_before_write(pDst, DstSub, off, size, keeps_rest);
+	if (g_events) cap_event(EV_UPDATE, pDst, nullptr, DstSub, off, size, pBox ? 1 : 0);
+}
+
+static inline void note_copy_region(ID3D11Resource* pDst, UINT DstSub, UINT DstX, ID3D11Resource* pSrc, UINT SrcSub,
+                                    const D3D11_BOX* pSrcBox, bool keeps_rest)
+{
+	// The game fills its shared mesh buffers this way: only the bytes that are
+	// actually replaced lose their cached hashes, and only those are set aside.
+	const uint32_t size = pSrcBox ? pSrcBox->right - pSrcBox->left : 0xffffffffu - DstX;
+	if (g_swap && g_tracking) cap_buffer_written(pDst, DstX, size);
+	if (g_barrier) cap_before_write(pDst, DstSub, DstX, size, keeps_rest);
+	if (g_events) cap_event(EV_COPY_REGION, pDst, pSrc, DstSub, DstX, size, SrcSub);
 }
 
 static void STDMETHODCALLTYPE H_UpdateSubresource(ID3D11DeviceContext* This, ID3D11Resource* pDst, UINT DstSub,
                                                   const D3D11_BOX* pBox, const void* pData, UINT RowPitch, UINT DepthPitch)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_swap && g_tracking && h == g_ctx) {
-		if (pBox) cap_buffer_written(pDst, pBox->left, pBox->right - pBox->left);
-		else cap_buffer_written(pDst);
-	}
+	if (h == g_ctx)
+		note_update(pDst, DstSub, pBox, false);
 	CTX_ORIG(h)->UpdateSubresource(This, pDst, DstSub, pBox, pData, RowPitch, DepthPitch);
 }
 
 static void STDMETHODCALLTYPE H_CopyResource(ID3D11DeviceContext* This, ID3D11Resource* pDst, ID3D11Resource* pSrc)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_swap && g_tracking && h == g_ctx)
-		cap_buffer_written(pDst);
+	if (h == g_ctx) {
+		if (g_swap && g_tracking) cap_buffer_written(pDst);
+		if (g_barrier) cap_before_write(pDst, 0xffffffffu, 0, 0xffffffffu, false);
+		if (g_events) cap_event(EV_COPY, pDst, pSrc);
+	}
 	CTX_ORIG(h)->CopyResource(This, pDst, pSrc);
 }
 
@@ -794,12 +838,8 @@ static void STDMETHODCALLTYPE H_CopySubresourceRegion(ID3D11DeviceContext* This,
                                                       UINT SrcSub, const D3D11_BOX* pSrcBox)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_swap && g_tracking && h == g_ctx) {
-		// The game fills its shared mesh buffers this way: only the bytes that
-		// are actually replaced lose their cached hashes.
-		if (pSrcBox) cap_buffer_written(pDst, DstX, pSrcBox->right - pSrcBox->left);
-		else cap_buffer_written(pDst, DstX, 0xffffffffu - DstX);
-	}
+	if (h == g_ctx)
+		note_copy_region(pDst, DstSub, DstX, pSrc, SrcSub, pSrcBox, false);
 	CTX_ORIG(h)->CopySubresourceRegion(This, pDst, DstSub, DstX, DstY, DstZ, pSrc, SrcSub, pSrcBox);
 }
 
@@ -807,8 +847,11 @@ static void STDMETHODCALLTYPE H_CopyStructureCount(ID3D11DeviceContext* This, ID
                                                    ID3D11UnorderedAccessView* pSrcView)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_swap && g_tracking && h == g_ctx)
-		cap_buffer_written(pDst, DstOffset, 4);
+	if (h == g_ctx) {
+		if (g_swap && g_tracking) cap_buffer_written(pDst, DstOffset, 4);
+		if (g_barrier) cap_before_write((ID3D11Resource*)pDst, 0, DstOffset, 4, false);
+		if (g_events) cap_event(EV_COPY_COUNT, (ID3D11Resource*)pDst, nullptr, DstOffset);
+	}
 	CTX_ORIG(h)->CopyStructureCount(This, pDst, DstOffset, pSrcView);
 }
 
@@ -817,10 +860,8 @@ static void STDMETHODCALLTYPE H_UpdateSubresource1(ID3D11DeviceContext1* This, I
                                                    UINT DepthPitch, UINT CopyFlags)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_swap && g_tracking && h == g_ctx) {
-		if (pBox) cap_buffer_written(pDst, pBox->left, pBox->right - pBox->left);
-		else cap_buffer_written(pDst);
-	}
+	if (h == g_ctx)
+		note_update(pDst, DstSub, pBox, (CopyFlags & D3D11_COPY_NO_OVERWRITE) != 0);
 	CTX1_ORIG(h)->UpdateSubresource1(This, pDst, DstSub, pBox, pData, RowPitch, DepthPitch, CopyFlags);
 }
 
@@ -829,19 +870,129 @@ static void STDMETHODCALLTYPE H_CopySubresourceRegion1(ID3D11DeviceContext1* Thi
                                                        UINT SrcSub, const D3D11_BOX* pSrcBox, UINT CopyFlags)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_swap && g_tracking && h == g_ctx) {
-		if (pSrcBox) cap_buffer_written(pDst, DstX, pSrcBox->right - pSrcBox->left);
-		else cap_buffer_written(pDst, DstX, 0xffffffffu - DstX);
-	}
+	if (h == g_ctx)
+		note_copy_region(pDst, DstSub, DstX, pSrc, SrcSub, pSrcBox, (CopyFlags & D3D11_COPY_NO_OVERWRITE) != 0);
 	CTX1_ORIG(h)->CopySubresourceRegion1(This, pDst, DstSub, DstX, DstY, DstZ, pSrc, SrcSub, pSrcBox, CopyFlags);
 }
 
 static void STDMETHODCALLTYPE H_DiscardResource(ID3D11DeviceContext1* This, ID3D11Resource* pResource)
 {
 	HookedObj* h = ctx_of(This);
-	if (g_swap && g_tracking && h == g_ctx)
-		cap_buffer_written(pResource);
+	if (h == g_ctx) {
+		if (g_swap && g_tracking) cap_buffer_written(pResource);
+		if (g_barrier) cap_before_write(pResource, 0xffffffffu, 0, 0xffffffffu, false);
+		if (g_events) cap_event(EV_DISCARD, pResource, nullptr);
+	}
 	CTX1_ORIG(h)->DiscardResource(This, pResource);
+}
+
+// ---- writes through a view
+static void STDMETHODCALLTYPE H_ClearRenderTargetView(ID3D11DeviceContext* This, ID3D11RenderTargetView* pView,
+                                                      const FLOAT ColorRGBA[4])
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_barrier) cap_before_view_write((ID3D11View*)pView, 1);
+		if (g_events) cap_event_view(EV_CLEAR_RTV, (ID3D11View*)pView, 0, 0, ColorRGBA);
+	}
+	CTX_ORIG(h)->ClearRenderTargetView(This, pView, ColorRGBA);
+}
+
+static void STDMETHODCALLTYPE H_ClearDepthStencilView(ID3D11DeviceContext* This, ID3D11DepthStencilView* pView,
+                                                      UINT ClearFlags, FLOAT Depth, UINT8 Stencil)
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_barrier) cap_before_view_write((ID3D11View*)pView, 2);
+		if (g_events) {
+			const float f[4] = { Depth, 0, 0, 0 };
+			cap_event_view(EV_CLEAR_DSV, (ID3D11View*)pView, ClearFlags, Stencil, f);
+		}
+	}
+	CTX_ORIG(h)->ClearDepthStencilView(This, pView, ClearFlags, Depth, Stencil);
+}
+
+static void STDMETHODCALLTYPE H_ClearUnorderedAccessViewUint(ID3D11DeviceContext* This, ID3D11UnorderedAccessView* pView,
+                                                             const UINT Values[4])
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_swap && g_tracking) cap_view_written((ID3D11View*)pView);
+		if (g_barrier) cap_before_view_write((ID3D11View*)pView, 3);
+		if (g_events) {
+			const float f[4] = { (float)Values[0], (float)Values[1], (float)Values[2], (float)Values[3] };
+			cap_event_view(EV_CLEAR_UAV_UINT, (ID3D11View*)pView, Values[0], Values[1], f);
+		}
+	}
+	CTX_ORIG(h)->ClearUnorderedAccessViewUint(This, pView, Values);
+}
+
+static void STDMETHODCALLTYPE H_ClearUnorderedAccessViewFloat(ID3D11DeviceContext* This, ID3D11UnorderedAccessView* pView,
+                                                              const FLOAT Values[4])
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_swap && g_tracking) cap_view_written((ID3D11View*)pView);
+		if (g_barrier) cap_before_view_write((ID3D11View*)pView, 3);
+		if (g_events) cap_event_view(EV_CLEAR_UAV_FLOAT, (ID3D11View*)pView, 0, 0, Values);
+	}
+	CTX_ORIG(h)->ClearUnorderedAccessViewFloat(This, pView, Values);
+}
+
+static void STDMETHODCALLTYPE H_GenerateMips(ID3D11DeviceContext* This, ID3D11ShaderResourceView* pView)
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_barrier) cap_before_view_write((ID3D11View*)pView, 0);
+		if (g_events) cap_event_view(EV_GENERATE_MIPS, (ID3D11View*)pView);
+	}
+	CTX_ORIG(h)->GenerateMips(This, pView);
+}
+
+static void STDMETHODCALLTYPE H_ResolveSubresource(ID3D11DeviceContext* This, ID3D11Resource* pDst, UINT DstSub,
+                                                   ID3D11Resource* pSrc, UINT SrcSub, DXGI_FORMAT Format)
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_barrier) cap_before_write(pDst, DstSub, 0, 0xffffffffu, false);
+		if (g_events) cap_event(EV_RESOLVE, pDst, pSrc, DstSub, SrcSub, (uint32_t)Format);
+	}
+	CTX_ORIG(h)->ResolveSubresource(This, pDst, DstSub, pSrc, SrcSub, Format);
+}
+
+static void STDMETHODCALLTYPE H_ClearView(ID3D11DeviceContext1* This, ID3D11View* pView, const FLOAT Color[4],
+                                          const D3D11_RECT* pRect, UINT NumRects)
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_swap && g_tracking) cap_view_written(pView);
+		if (g_barrier) cap_before_view_write(pView, -1);
+		if (g_events) cap_event_view(EV_CLEAR_VIEW, pView, NumRects, 0, Color);
+	}
+	CTX1_ORIG(h)->ClearView(This, pView, Color, pRect, NumRects);
+}
+
+static void STDMETHODCALLTYPE H_DiscardView(ID3D11DeviceContext1* This, ID3D11View* pView)
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_swap && g_tracking) cap_view_written(pView);
+		if (g_barrier) cap_before_view_write(pView, -1);
+		if (g_events) cap_event_view(EV_DISCARD_VIEW, pView);
+	}
+	CTX1_ORIG(h)->DiscardView(This, pView);
+}
+
+static void STDMETHODCALLTYPE H_DiscardView1(ID3D11DeviceContext1* This, ID3D11View* pView, const D3D11_RECT* pRects,
+                                             UINT NumRects)
+{
+	HookedObj* h = ctx_of(This);
+	if (h == g_ctx) {
+		if (g_swap && g_tracking) cap_view_written(pView);
+		if (g_barrier) cap_before_view_write(pView, -1);
+		if (g_events) cap_event_view(EV_DISCARD_VIEW, pView, NumRects);
+	}
+	CTX1_ORIG(h)->DiscardView1(This, pView, pRects, NumRects);
 }
 
 // ---- GPU-side writers
@@ -852,6 +1003,8 @@ static void STDMETHODCALLTYPE H_CSSetUnorderedAccessViews(ID3D11DeviceContext* T
 	HookedObj* h = ctx_of(This);
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_set_cs_uavs(StartSlot, NumUAVs, ppUAVs);
+	if (g_barrier && h == g_ctx)
+		cap_outputs_changed(true);
 	CTX_ORIG(h)->CSSetUnorderedAccessViews(This, StartSlot, NumUAVs, ppUAVs, pInitialCounts);
 }
 
@@ -862,6 +1015,8 @@ static void STDMETHODCALLTYPE H_OMSetRenderTargets(ID3D11DeviceContext* This, UI
 	discover_render_targets(NumViews, ppRTVs);
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_set_om_uavs(0, 0, nullptr);          // this call unbinds all OM UAVs
+	if (g_barrier && h == g_ctx)
+		cap_outputs_changed(false);
 	CTX_ORIG(h)->OMSetRenderTargets(This, NumViews, ppRTVs, pDSV);
 }
 
@@ -873,6 +1028,8 @@ static void STDMETHODCALLTYPE H_OMSetRenderTargetsAndUnorderedAccessViews(
 	discover_render_targets(NumRTVs, ppRTVs);
 	if (g_swap && g_tracking && h == g_ctx && NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS)
 		cap_set_om_uavs(UAVStartSlot, NumUAVs, ppUAVs);
+	if (g_barrier && h == g_ctx)
+		cap_outputs_changed(false);
 	CTX_ORIG(h)->OMSetRenderTargetsAndUnorderedAccessViews(This, NumRTVs, ppRTVs, pDSV, UAVStartSlot, NumUAVs,
 	                                                       ppUAVs, pUAVInitialCounts);
 }
@@ -883,6 +1040,8 @@ static void STDMETHODCALLTYPE H_SOSetTargets(ID3D11DeviceContext* This, UINT Num
 	HookedObj* h = ctx_of(This);
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_set_so_targets(NumBuffers, ppTargets);
+	if (g_barrier && h == g_ctx)
+		cap_outputs_changed(false);
 	CTX_ORIG(h)->SOSetTargets(This, NumBuffers, ppTargets, pOffsets);
 }
 
@@ -891,6 +1050,10 @@ static void STDMETHODCALLTYPE H_ClearState(ID3D11DeviceContext* This)
 	HookedObj* h = ctx_of(This);
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_state_cleared();
+	if (h == g_ctx) {
+		if (g_barrier) { cap_outputs_changed(false); cap_outputs_changed(true); }
+		if (g_events) cap_event(EV_CLEAR_STATE, nullptr, nullptr);
+	}
 	CTX_ORIG(h)->ClearState(This);
 }
 
@@ -901,7 +1064,21 @@ static void STDMETHODCALLTYPE H_ExecuteCommandList(ID3D11DeviceContext* This, ID
 	// Whatever the list wrote is invisible to us: forget everything we cached.
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_invalidate_all();
+	if (h == g_ctx) {
+		if (g_barrier) { cap_before_unknown_writes(); cap_outputs_changed(false); cap_outputs_changed(true); }
+		if (g_events) cap_event(EV_COMMAND_LIST, nullptr, nullptr, Restore ? 1 : 0);
+	}
 	CTX_ORIG(h)->ExecuteCommandList(This, pList, Restore);
+}
+
+static void STDMETHODCALLTYPE H_SwapDeviceContextState(ID3D11DeviceContext1* This, ID3DDeviceContextState* pState,
+                                                       ID3DDeviceContextState** ppPrevious)
+{
+	HookedObj* h = ctx_of(This);
+	CTX1_ORIG(h)->SwapDeviceContextState(This, pState, ppPrevious);
+	// Every binding is another one now: ask the runtime instead of going by what was set.
+	if (g_swap && h == g_ctx && (g_tracking || g_barrier))
+		cap_state_swapped();
 }
 
 static void apply_context_hooks(HookedObj* h, bool ctx1)
@@ -928,11 +1105,21 @@ static void apply_context_hooks(HookedObj* h, bool ctx1)
 	v->SOSetTargets = H_SOSetTargets;
 	v->ClearState = H_ClearState;
 	v->ExecuteCommandList = H_ExecuteCommandList;
+	v->ClearRenderTargetView = H_ClearRenderTargetView;
+	v->ClearDepthStencilView = H_ClearDepthStencilView;
+	v->ClearUnorderedAccessViewUint = H_ClearUnorderedAccessViewUint;
+	v->ClearUnorderedAccessViewFloat = H_ClearUnorderedAccessViewFloat;
+	v->GenerateMips = H_GenerateMips;
+	v->ResolveSubresource = H_ResolveSubresource;
 	if (ctx1) {
 		ID3D11DeviceContext1Vtbl* v1 = (ID3D11DeviceContext1Vtbl*)h->clone;
 		v1->UpdateSubresource1 = H_UpdateSubresource1;
 		v1->CopySubresourceRegion1 = H_CopySubresourceRegion1;
 		v1->DiscardResource = H_DiscardResource;
+		v1->ClearView = H_ClearView;
+		v1->DiscardView = H_DiscardView;
+		v1->DiscardView1 = H_DiscardView1;
+		v1->SwapDeviceContextState = H_SwapDeviceContextState;
 	}
 }
 

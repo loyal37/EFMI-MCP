@@ -131,15 +131,25 @@ class ProbeClient:
 
     def capture(self, detail: str = "full", hash_ib: bool = True, hash_vb: bool = True,
                 cb_data: bool = False, hold: bool = True, max_draws: int = 0,
-                timeout_ms: int = 5000, rt: dict | None = None) -> tuple[dict, bytes]:
+                timeout_ms: int = 5000, rt: dict | None = None,
+                contents: dict | None = None) -> tuple[dict, bytes]:
         """Records the next frame. Returns (capture document, binary blob).
 
         ``rt`` (probe 0.1.5) has the render target copied around the draws that
         match: {"match": [{draw, ib, sn, ic, fi, vs, ps, sh, o}, ...], "max", "before",
         "all", "depth", "box", "budget_mb"}. The copies are listed in the
         document's "rts" and read with read_rt.
+
+        ``contents`` (probe 0.1.6) keeps what calls read and wrote as it was when
+        they were issued: {"inputs": ["ib", "vb", "cb", "buf", "tex"] for every
+        call, "outputs": ["rt", "depth", "uav"] for the calls "match" selects (also
+        by "first"/"last" call numbers) or "all" of them, "events": list the
+        writes between the calls, "budget_mb"}. The document's "cont" lists them;
+        they are read with read_content while the capture is the latest one.
         """
         fields = {"rt": rt} if rt else {}
+        if contents:
+            fields["contents"] = contents
         reply, payload = self.request(
             "capture", detail=detail, hash_ib=hash_ib, hash_vb=hash_vb, cb_data=cb_data,
             hold=hold, max_draws=max_draws, timeout_ms=timeout_ms, **fields,
@@ -164,6 +174,22 @@ class ProbeClient:
         """One render target copy of a capture taken with ``rt``, by its position in "rts"."""
         reply, payload = self.request("read_rt", capture=capture_frame, snap=snap, timeout_ms=timeout_ms)
         return reply.get("meta", {}), payload
+
+    def read_content(self, capture_frame: int, snap: int, offset: int = 0, size: int = 0,
+                     timeout_ms: int = 5000) -> tuple[dict, bytes]:
+        """What a slot held when its call was issued, by its position in the capture's "cont".
+
+        A buffer: bytes [offset, offset+size), size 0 to the end. A texture: the rows of its
+        subresource, like read_texture. meta["exact"] is False only when the probe cannot vouch
+        for the bytes (a deferred command list ran after the call).
+        """
+        reply, payload = self.request("read_content", capture=capture_frame, snap=snap, offset=offset,
+                                      size=size, timeout_ms=timeout_ms)
+        return reply.get("meta", {}), payload
+
+    def release_content(self, capture_frame: int) -> None:
+        """Lets go of the contents a capture keeps; the game's writes are no longer watched for it."""
+        self.request("release_content", capture=capture_frame)
 
     def release_rt(self, capture_frame: int) -> None:
         """Frees the render target copies of a capture in the game; the rest of it stays readable."""

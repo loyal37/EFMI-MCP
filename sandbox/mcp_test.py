@@ -20,6 +20,9 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "server"))
 
 from parity_test import signal  # noqa: E402
+from contents_test import boxed, colour, fill, patched  # noqa: E402
+from efmi_mcp.fa_dump import parse_frame_dump  # noqa: E402
+from efmi_mcp.parity import dds_payload  # noqa: E402
 from efmi_mcp.probe_client import find_probes  # noqa: E402
 
 RUN = HERE / "run"
@@ -454,6 +457,153 @@ def main() -> int:
                   and len([c for c in content if c["type"] == "image"]) == 2, text)
         else:
             check("mesh 3 is listed", False, text)
+        sb.quit()
+        sb = None
+
+        print("== a third game session: what each call saw (contents)")
+        sb = Sandbox(["--content-pass", "--state-pass"])
+        if not sb.ready.wait(30):
+            check("third sandbox starts", False)
+            return 1
+        time.sleep(1.0)
+        mcp.call("efmi_status")     # the pipe of the session before is gone: the first request finds that out
+        text, err, _ = mcp.call("efmi_status")
+        check("the server connects to the third game process", not err and "probe 0.1." in text and "NOT ATTACHED" not in text, text)
+        text, err, _ = mcp.call("efmi_capture_frame", contents="outputs")
+        if verbose: print(text)
+        check("capture with contents says what is kept",
+              not err and "contents: the probe keeps what each call saw" in text and "what they wrote is kept for" in text
+              and "efmi_list_writes" in text, text)
+        text, err, _ = mcp.call("efmi_status")
+        check("status says that contents are being kept", "the probe is keeping what the calls of the latest capture saw" in text, text)
+        text, err, _ = mcp.call("efmi_list_draws", origin="game", call="DrawIndexed", limit=200)
+        by_vs: dict[str, list[int]] = {}
+        for line in text.splitlines():
+            if line.startswith("#") and "ic=294" in line and "vs=" in line:
+                by_vs.setdefault(line.split("vs=")[1].split()[0], []).append(int(line.split()[0][1:]))
+        content_draws = next((numbers for numbers in by_vs.values() if len(numbers) == 24), [])
+        check("the 24 draws of the content pass are listed", len(content_draws) == 24, text)
+        # In frame order: tags 1-19, then 28 and 29, then 20-22.
+        call = dict(zip(list(range(1, 20)) + [28, 29, 20, 21, 22], content_draws))
+        time.sleep(0.7)             # many frames later: everything has been overwritten again
+        if call:
+            text, err, _ = mcp.call("efmi_read_buffer", draw=call[1], slot="vb1", whole=True, save=True)
+            b = json.loads(text) if not err else {}
+            saved = Path(b.get("saved", "missing")).read_bytes() if b.get("saved") else b""
+            fc = int.from_bytes(saved[:4], "little") if saved else 0
+            check("read_buffer: a rewritten vertex buffer as the first draw saw it",
+                  b.get("exact") is True and "as it was when the call was issued" in b.get("source", "")
+                  and saved == fill(8192, 1, fc) and fc > 0, text)
+            text, err, _ = mcp.call("efmi_read_buffer", draw=call[5], slot="vs-t9", first=4, count=4, view="hex")
+            b = json.loads(text) if not err else {}
+            p5 = patched(fill(4096, 4, fc), 64, fill(64, 5, fc))
+            check("read_buffer: a pool as one of several draws saw it, by element",
+                  b.get("exact") is True and [b["values"][f"e{i}"] for i in range(4, 8)] == [p5[i * 16:i * 16 + 16].hex() for i in range(4, 8)]
+                  and b.get("elements") == 256, text)
+            text, err, _ = mcp.call("efmi_read_buffer", draw=call[20], slot="u1", view="uint", count=3)
+            b = json.loads(text) if not err else {}
+            check("read_buffer: what a pixel shader wrote through an unordered access view, after that draw",
+                  b.get("exact") is True and "after the call" in b.get("source", "")
+                  and [b["values"][k] for k in ("e0", "e1", "e2")] == [[20 * 65536], [20 * 65536 + 1], [20 * 65536 + 2]], text)
+            text, err, _ = mcp.call("efmi_read_buffer", draw=call[1], slot="ps-cb2", view="uint")
+            b = json.loads(text) if not err else {}
+            check("read_buffer: a constant buffer that is rewritten before every draw",
+                  b.get("exact") is True and b.get("values", {}).get("c1", [None])[:2] == [1, fc], text)
+
+            text, err, content = mcp.call("efmi_read_texture", draw=call[10], slot="ps-t11")
+            dds = next((Path(line.split("saved: ")[1]) for line in text.splitlines() if line.endswith(".dds")), None)
+            check("read_texture: a render target as the draw that sampled it saw it",
+                  not err and "as it was when the call was issued" in text and dds is not None
+                  and dds_payload(dds.read_bytes())[0] == colour(10, fc) * 256
+                  and len([c for c in content if c["type"] == "image"]) == 1, text)
+            text, err, _ = mcp.call("efmi_read_texture", draw=call[18], slot="o0")
+            dds = next((Path(line.split("saved: ")[1]) for line in text.splitlines() if line.endswith(".dds")), None)
+            check("read_texture: what a draw left in the slice and mip its view shows",
+                  not err and "as the call left it" in text and "read mip 1 (8x8)" in text and dds is not None
+                  and dds_payload(dds.read_bytes())[0] == colour(18, fc) * 64, text)
+            text, err, _ = mcp.call("efmi_read_texture", draw=call[13], slot="ps-t12")
+            dds = next((Path(line.split("saved: ")[1]) for line in text.splitlines() if line.endswith(".dds")), None)
+            u13 = boxed(colour(12, fc) * 64, 8, 2, 2, 6, 6, colour(13, fc))
+            check("read_texture: a texture between two updates", not err and dds is not None
+                  and dds_payload(dds.read_bytes())[0] == u13, text)
+            text, err, _ = mcp.call("efmi_read_texture", draw=call[1], slot="ps-t4", slice=3)
+            check("read_texture: a 3D texture", not err and "16x16x16" in text and "picture: depth slice 3 of 16" in text, text)
+            text, err, _ = mcp.call("efmi_read_texture", draw=call[19], slot="o0")
+            check("read_texture: a multisampled target, resolved", not err and "resolved pixels" in text, text)
+            text, err, _ = mcp.call("efmi_read_texture", draw=call[5], slot="vs-t9")
+            check("read_texture: a buffer slot names the tool to use", err and "efmi_read_buffer" in text, text)
+
+            text, err, _ = mcp.call("efmi_get_draw", draw=call[20])
+            d = json.loads(text) if not err else {}
+            check("get_draw: the unordered access view of a draw, and which slots are kept",
+                  set(d.get("outputs", {})) == {"o0", "u1"} and "u1" in d.get("contents_kept", {}).get("as_the_call_left_them", [])
+                  and {"ib", "vb1", "ps-cb2", "vs-t9"} <= set(d.get("contents_kept", {}).get("as_the_call_saw_them", [])), text)
+            text, err, _ = mcp.call("efmi_list_writes", first=call[10] + 1, last=call[11], kind="ClearRenderTargetView")
+            cleared = json.loads(text.split(" to ")[-1]) if not err and " to [" in text else []
+            check("list_writes: the clear between two draws, with its colour",
+                  not err and "1 writes match" in text and f"before #{call[11]}" in text
+                  and [round(v * 255) for v in cleared] == list(colour(11, fc)), text)
+            text, err, _ = mcp.call("efmi_list_writes", first=call[4] + 1, last=call[7])
+            check("list_writes: updates and a copy with their ranges",
+                  not err and "box from 64, 64 wide" in text and "at 256 ([256, 320))" in text and "write-discard" in text, text)
+
+            dump_dir = OUT / "contents-dump"
+            shutil.rmtree(dump_dir, ignore_errors=True)
+            text, err, _ = mcp.call("efmi_dump_frame", first=call[4], last=call[7], folder=str(dump_dir))
+            if verbose: print(text)
+            b = json.loads(text) if not err else {}
+            check("dump_frame: the calls asked for, nothing left out",
+                  b.get("calls_written") == [call[4], call[7]] and not b.get("skipped") and "stopped" not in b
+                  and b.get("files", 0) > 60, text)
+            if dump_dir.exists():
+                dump = parse_frame_dump(dump_dir)
+                p4 = fill(4096, 4, fc)
+                p6 = patched(p5, 256, fill(64, 6, fc))
+                p7 = patched(p6, 96, fill(64, 7, fc))
+                pools = {}
+                for tag, wanted in ((4, p4), (5, p5), (6, p6), (7, p7)):
+                    slot = dump.draws[call[tag]].slots.get("vs-t9")
+                    file = next((f for f in (slot.files if slot else []) if f.endswith(".buf")), None)
+                    pools[tag] = file is not None and (dump_dir / file).read_bytes() == wanted
+                check("dump_frame: one pool, four files, each as its draw saw it", all(pools.values()) and len(pools) == 4, str(pools))
+                first = dump.draws[call[4]]
+                check("dump_frame: the folder reads like a frame analysis dump",
+                      first.call == "DrawIndexed" and first.args.get("IndexCount") == 294
+                      and {"ib", "vb0", "vb1", "vs-cb0", "ps-cb2", "vs-t9", "ps-t0", "o0"} <= set(first.slots)
+                      and first.slots["ib"].full_hash is not None and len(first.shaders) == 2, f"{first.call} {first.args} {sorted(first.slots)}")
+                ib_txt = next(dump_dir.glob(f"{call[4]:06d}-ib=*.txt"), None)
+                vb_txt = next(dump_dir.glob(f"{call[4]:06d}-vb0=*.txt"), None)
+                cb_txt = next(dump_dir.glob(f"{call[4]:06d}-ps-cb2=*.txt"), None)
+                check("dump_frame: index, vertex and constant text like XXMI's",
+                      ib_txt is not None and ib_txt.read_text().startswith("byte offset: 0\nfirst index: 0\nindex count: 294\ntopology: trianglelist\nformat: DXGI_FORMAT_R16_UINT\n\n0 1 2\n")
+                      and vb_txt is not None and "vertex-data:" in vb_txt.read_text() and "vb0[0]+000 POSITION: " in vb_txt.read_text()
+                      and "  SemanticName: POSITION\n" in vb_txt.read_text()
+                      and cb_txt is not None and cb_txt.read_text().splitlines()[4].startswith("cb2[1].x: "),
+                      f"{ib_txt} {vb_txt} {cb_txt}")
+                texture = next(dump_dir.glob(f"{call[4]:06d}-ps-t0=*.dds"), None)
+                check("dump_frame: textures as DDS, each distinct content stored once",
+                      texture is not None and dds_payload(texture.read_bytes())[1]["width"] == 256
+                      and len(list((dump_dir / "deduped").iterdir())) < b.get("files", 0) / 2, str(texture))
+                log = (dump_dir / "log.txt").read_text(encoding="utf-8")
+                check("dump_frame: the log lists the calls and the writes between them",
+                      f"{call[5]:06d} DrawIndexed(IndexCount:294, StartIndexLocation:0, BaseVertexLocation:0)" in log
+                      and f"{call[5]:06d} UpdateSubresource" in log and "box from 64, 64 wide" in log, log[:600])
+            text, err, _ = mcp.call("efmi_list_draws", origin="game", call="DrawIndexedInstancedIndirect")
+            x_line = next((l for l in text.splitlines() if l.startswith("#")), "")
+            text, err, _ = mcp.call("efmi_get_draw", draw=int(x_line.split()[0][1:]) if x_line else 0)
+            d = json.loads(text) if not err else {}
+            check("get_draw: every viewport", d.get("viewports") == [[0, 0, 128, 64, 0.25, 0.75], [8, 16, 64, 32, 0, 1]], text)
+
+            text, err, _ = mcp.call("efmi_capture_frame", contents="inputs")
+            check("capture with inputs only keeps no outputs", not err and "what they wrote is kept" not in text
+                  and "contents: the probe keeps" in text, text)
+            text, err, _ = mcp.call("efmi_read_buffer", draw=call[20], slot="u1", count=1)
+            b = json.loads(text) if not err else {}
+            check("an output that was not kept is read as it is now, and says so",
+                  b.get("exact") is False and "not at the call" in b.get("source", ""), text)
+            text, err, _ = mcp.call("efmi_capture_frame")
+            text, err, _ = mcp.call("efmi_status")
+            check("an ordinary capture ends the keeping", "the probe is keeping" not in text, text)
         sb.quit()
         sb = None
     finally:

@@ -142,6 +142,51 @@ void cs_pose(uint3 id : SV_DispatchThreadID)
 }
 )";
 
+// --content-pass: shaders whose output is known byte for byte.
+static const char* k_hlsl_content = R"(
+cbuffer K : register(b2)
+{
+	float4 k_colour;
+	uint4  k_value;    // x = tag, y = frame counter
+};
+
+float4 vs_tri(uint id : SV_VertexID) : SV_Position
+{
+	float2 uv = float2((id << 1) & 2, id & 2);
+	return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+
+float4 ps_fill(float4 pos : SV_Position) : SV_Target
+{
+	return k_colour;
+}
+
+RWByteAddressBuffer u_px : register(u1);
+
+float4 ps_uav(float4 pos : SV_Position) : SV_Target
+{
+	uint i = (uint)pos.y * 16 + (uint)pos.x;
+	u_px.Store(4 * i, k_value.x * 65536 + i);
+	return k_colour;
+}
+
+RWByteAddressBuffer u_fill : register(u0);
+
+[numthreads(64, 1, 1)]
+void cs_fill(uint3 id : SV_DispatchThreadID)
+{
+	u_fill.Store(id.x * 4, k_value.x * 0x01000000 + id.x);
+}
+
+RWTexture2D<uint> u_tex : register(u0);
+
+[numthreads(8, 8, 1)]
+void cs_tex(uint3 id : SV_DispatchThreadID)
+{
+	u_tex[id.xy] = k_value.x * 1000 + id.y * 16 + id.x;
+}
+)";
+
 static bool compile(const char* entry, const char* target, ID3DBlob** out, const char* source = k_hlsl)
 {
 	ID3DBlob* err = nullptr;
@@ -201,6 +246,10 @@ static int g_recreate_mesh3 = 0;            // --recreate-mesh3 N: every N frame
 static int g_repeat = 1;                    // --repeat: issue the mesh draws this many times per frame
 static bool g_state_pass = false;           // --state-pass: one more draw, indirect, with all fixed-function
                                             // state set and views that show a part of their resource
+static bool g_content_pass = false;         // --content-pass: calls between which buffers and textures of every
+                                            // kind are rewritten with bytes that say when they were written
+static bool g_content_static = false;       // --content-static: the same bytes in every frame (to compare two frames)
+static uint32_t g_frame_counter = 0;
 static int g_vsync = 1;                     // --novsync sets this to 0
 static unsigned g_skip = 0;                 // --skip bit mask, for bisecting a scene
 static uint32_t g_lcg = 0x12345678;
@@ -247,8 +296,22 @@ struct Scene {
 	ID3D11ShaderResourceView* x_tex_part = nullptr, *x_buf_part = nullptr;
 	ID3D11RenderTargetView* x_rtv_mip1 = nullptr;
 	ID3D11Buffer* x_args = nullptr;
+
+	// --content-pass
+	ID3D11VertexShader* c_vs = nullptr;
+	ID3D11PixelShader* c_ps_fill = nullptr, *c_ps_uav = nullptr;
+	ID3D11ComputeShader* c_cs_fill = nullptr, *c_cs_tex = nullptr;
+	ID3D11Buffer* c_ib = nullptr, *c_k = nullptr, *c_dyn_vb = nullptr, *c_pool = nullptr, *c_ubuf = nullptr, *c_om_buf = nullptr;
+	ID3D11ShaderResourceView* c_pool_srv = nullptr;
+	ID3D11UnorderedAccessView* c_ubuf_uav = nullptr, *c_om_uav = nullptr, *c_utex_uav = nullptr;
+	ID3D11Texture2D* c_dyn_tex = nullptr, *c_aux = nullptr, *c_aux2 = nullptr, *c_upd = nullptr, *c_gen = nullptr;
+	ID3D11Texture2D* c_arr = nullptr, *c_ms = nullptr, *c_res = nullptr, *c_utex = nullptr;
+	ID3D11ShaderResourceView* c_dyn_tex_srv = nullptr, *c_aux2_srv = nullptr, *c_upd_srv = nullptr, *c_gen_srv = nullptr;
+	ID3D11ShaderResourceView* c_gen_srv_mip2 = nullptr, *c_res_srv = nullptr;
+	ID3D11RenderTargetView* c_aux_rtv = nullptr, *c_aux2_rtv = nullptr, *c_gen_rtv = nullptr, *c_arr_rtv = nullptr, *c_ms_rtv = nullptr;
 };
 static bool build_state_pass(Scene& s);
+static bool build_content_pass(Scene& s);
 
 // Mesh 3 in its own immutable buffers (hash includes the data), 32-bit indices.
 // A variant other than 0 keeps every size and changes the bytes: the vertices
@@ -514,6 +577,8 @@ static bool build_scene(Scene& s)
 	hr = s.dev->CreateRasterizerState(&rd, &s.rs); CHECK(hr, "rs");
 	if (g_state_pass && !build_state_pass(s))
 		return false;
+	if (g_content_pass && !build_content_pass(s))
+		return false;
 	return true;
 }
 
@@ -691,6 +756,338 @@ static void render_state_pass(Scene& s)
 	s.ctx->RSSetViewports(1, &vp);
 }
 
+// ------------------------------------------------------------------ --content-pass
+// Bytes that say what they are: the frame they were written in, a tag for the
+// place in the frame, then a pattern of both. sandbox/selftest.py computes the
+// same and compares it with what the probe says a call saw.
+static uint8_t pat(uint32_t tag, uint32_t fc, uint32_t i)
+{
+	return (uint8_t)(tag * 131u + fc * 17u + i * 7u + (i >> 8) * 3u);
+}
+
+static void fill(uint8_t* p, uint32_t size, uint32_t tag, uint32_t fc)
+{
+	for (uint32_t i = 0; i < size; i++) p[i] = pat(tag, fc, i);
+	if (size >= 8) { memcpy(p, &fc, 4); memcpy(p + 4, &tag, 4); }
+}
+
+static void colour(uint32_t tag, uint32_t fc, uint8_t rgba[4])
+{
+	rgba[0] = (uint8_t)(tag * 9 + fc);
+	rgba[1] = (uint8_t)(tag * 5 + 40);
+	rgba[2] = (uint8_t)(255 - tag * 3);
+	rgba[3] = 255;
+}
+
+static void colour_f(uint32_t tag, uint32_t fc, float out[4])
+{
+	uint8_t c[4];
+	colour(tag, fc, c);
+	for (int i = 0; i < 4; i++) out[i] = c[i] / 255.0f;
+}
+
+static bool content_tex(Scene& s, UINT w, UINT h, UINT mips, UINT array, DXGI_FORMAT fmt, UINT samples, D3D11_USAGE usage,
+                        UINT bind, UINT cpu, UINT misc, ID3D11Texture2D** out)
+{
+	D3D11_TEXTURE2D_DESC d = {};
+	d.Width = w; d.Height = h; d.MipLevels = mips; d.ArraySize = array; d.Format = fmt;
+	d.SampleDesc.Count = samples; d.Usage = usage; d.BindFlags = bind; d.CPUAccessFlags = cpu; d.MiscFlags = misc;
+	HRESULT hr = s.dev->CreateTexture2D(&d, nullptr, out);
+	CHECK(hr, "content texture");
+	return true;
+}
+
+static const UINT k_content_indices = 294;
+
+static bool build_content_pass(Scene& s)
+{
+	HRESULT hr;
+	ID3DBlob* b = nullptr;
+	if (!compile("vs_tri", "vs_5_0", &b, k_hlsl_content)) return false;
+	hr = s.dev->CreateVertexShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &s.c_vs); b->Release(); CHECK(hr, "c vs");
+	if (!compile("ps_fill", "ps_5_0", &b, k_hlsl_content)) return false;
+	hr = s.dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &s.c_ps_fill); b->Release(); CHECK(hr, "c ps fill");
+	if (!compile("ps_uav", "ps_5_0", &b, k_hlsl_content)) return false;
+	hr = s.dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &s.c_ps_uav); b->Release(); CHECK(hr, "c ps uav");
+	if (!compile("cs_fill", "cs_5_0", &b, k_hlsl_content)) return false;
+	hr = s.dev->CreateComputeShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &s.c_cs_fill); b->Release(); CHECK(hr, "c cs fill");
+	if (!compile("cs_tex", "cs_5_0", &b, k_hlsl_content)) return false;
+	hr = s.dev->CreateComputeShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &s.c_cs_tex); b->Release(); CHECK(hr, "c cs tex");
+
+	// One triangle that covers the target, over and over. XXMI 1.2.0's frame analysis does not come back
+	// from a draw of three or six indices in this program (found by trying); with as many as mesh 3 has it does.
+	D3D11_BUFFER_DESC d = {};
+	uint16_t tri[k_content_indices];
+	for (UINT i = 0; i < k_content_indices; i++) tri[i] = (uint16_t)(i % 3);
+	D3D11_SUBRESOURCE_DATA init = { tri, 0, 0 };
+	d.ByteWidth = sizeof(tri); d.Usage = D3D11_USAGE_IMMUTABLE; d.BindFlags = D3D11_BIND_INDEX_BUFFER;
+	hr = s.dev->CreateBuffer(&d, &init, &s.c_ib); CHECK(hr, "c ib");
+
+	d = {};
+	d.ByteWidth = 32; d.Usage = D3D11_USAGE_DYNAMIC; d.BindFlags = D3D11_BIND_CONSTANT_BUFFER; d.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	hr = s.dev->CreateBuffer(&d, nullptr, &s.c_k); CHECK(hr, "c k");
+	d.ByteWidth = 8192; d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+	hr = s.dev->CreateBuffer(&d, nullptr, &s.c_dyn_vb); CHECK(hr, "c dyn vb");
+
+	{   // a pool of sixteen-byte elements read by the vertex shader, as a skeleton or instance pool is
+		d = {};
+		d.ByteWidth = 4096; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; d.StructureByteStride = 16;
+		hr = s.dev->CreateBuffer(&d, nullptr, &s.c_pool); CHECK(hr, "c pool");
+		hr = s.dev->CreateShaderResourceView(s.c_pool, nullptr, &s.c_pool_srv); CHECK(hr, "c pool srv");
+	}
+	{   // buffers a compute shader and a pixel shader write
+		d = {};
+		d.ByteWidth = 4096; d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+		d.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+		hr = s.dev->CreateBuffer(&d, nullptr, &s.c_ubuf); CHECK(hr, "c ubuf");
+		D3D11_UNORDERED_ACCESS_VIEW_DESC u = {};
+		u.Format = DXGI_FORMAT_R32_TYPELESS; u.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+		u.Buffer.NumElements = 1024; u.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+		hr = s.dev->CreateUnorderedAccessView(s.c_ubuf, &u, &s.c_ubuf_uav); CHECK(hr, "c ubuf uav");
+		d.ByteWidth = 1024;
+		hr = s.dev->CreateBuffer(&d, nullptr, &s.c_om_buf); CHECK(hr, "c om buf");
+		u.Buffer.NumElements = 256;
+		hr = s.dev->CreateUnorderedAccessView(s.c_om_buf, &u, &s.c_om_uav); CHECK(hr, "c om uav");
+	}
+
+	const DXGI_FORMAT rgba = DXGI_FORMAT_R8G8B8A8_UNORM;
+	const UINT rt_srv = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+	if (!content_tex(s, 8, 8, 1, 1, rgba, 1, D3D11_USAGE_DYNAMIC, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, 0, &s.c_dyn_tex)) return false;
+	hr = s.dev->CreateShaderResourceView(s.c_dyn_tex, nullptr, &s.c_dyn_tex_srv); CHECK(hr, "c dyn tex srv");
+	if (!content_tex(s, 16, 16, 1, 1, rgba, 1, D3D11_USAGE_DEFAULT, rt_srv, 0, 0, &s.c_aux)) return false;
+	hr = s.dev->CreateRenderTargetView(s.c_aux, nullptr, &s.c_aux_rtv); CHECK(hr, "c aux rtv");
+	if (!content_tex(s, 16, 16, 1, 1, rgba, 1, D3D11_USAGE_DEFAULT, rt_srv, 0, 0, &s.c_aux2)) return false;
+	hr = s.dev->CreateRenderTargetView(s.c_aux2, nullptr, &s.c_aux2_rtv); CHECK(hr, "c aux2 rtv");
+	hr = s.dev->CreateShaderResourceView(s.c_aux2, nullptr, &s.c_aux2_srv); CHECK(hr, "c aux2 srv");
+	if (!content_tex(s, 8, 8, 1, 1, rgba, 1, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0, &s.c_upd)) return false;
+	hr = s.dev->CreateShaderResourceView(s.c_upd, nullptr, &s.c_upd_srv); CHECK(hr, "c upd srv");
+	{   // a mip chain filled by GenerateMips, looked at through a view of its third level
+		if (!content_tex(s, 16, 16, 4, 1, rgba, 1, D3D11_USAGE_DEFAULT, rt_srv, 0, D3D11_RESOURCE_MISC_GENERATE_MIPS, &s.c_gen)) return false;
+		D3D11_RENDER_TARGET_VIEW_DESC rv = {};
+		rv.Format = rgba; rv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+		hr = s.dev->CreateRenderTargetView(s.c_gen, &rv, &s.c_gen_rtv); CHECK(hr, "c gen rtv");
+		hr = s.dev->CreateShaderResourceView(s.c_gen, nullptr, &s.c_gen_srv); CHECK(hr, "c gen srv");
+		D3D11_SHADER_RESOURCE_VIEW_DESC sv = {};
+		sv.Format = rgba; sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		sv.Texture2D.MostDetailedMip = 2; sv.Texture2D.MipLevels = 1;
+		hr = s.dev->CreateShaderResourceView(s.c_gen, &sv, &s.c_gen_srv_mip2); CHECK(hr, "c gen srv mip 2");
+	}
+	{   // a render target that is one slice of one mip of an array
+		if (!content_tex(s, 16, 16, 2, 3, rgba, 1, D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET, 0, 0, &s.c_arr)) return false;
+		D3D11_RENDER_TARGET_VIEW_DESC rv = {};
+		rv.Format = rgba; rv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+		rv.Texture2DArray.MipSlice = 1; rv.Texture2DArray.FirstArraySlice = 2; rv.Texture2DArray.ArraySize = 1;
+		hr = s.dev->CreateRenderTargetView(s.c_arr, &rv, &s.c_arr_rtv); CHECK(hr, "c arr rtv");
+	}
+	{   // a multisampled target and the texture it is resolved into
+		if (!content_tex(s, 16, 16, 1, 1, rgba, 4, D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET, 0, 0, &s.c_ms)) return false;
+		hr = s.dev->CreateRenderTargetView(s.c_ms, nullptr, &s.c_ms_rtv); CHECK(hr, "c ms rtv");
+		if (!content_tex(s, 16, 16, 1, 1, rgba, 1, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0, &s.c_res)) return false;
+		hr = s.dev->CreateShaderResourceView(s.c_res, nullptr, &s.c_res_srv); CHECK(hr, "c res srv");
+	}
+	{   // a texture a compute shader writes
+		if (!content_tex(s, 16, 16, 1, 1, DXGI_FORMAT_R32_UINT, 1, D3D11_USAGE_DEFAULT,
+		                 D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE, 0, 0, &s.c_utex)) return false;
+		hr = s.dev->CreateUnorderedAccessView(s.c_utex, nullptr, &s.c_utex_uav); CHECK(hr, "c utex uav");
+	}
+	return true;
+}
+
+// The constants every content call reads: its colour, its tag and the frame counter. The buffer is
+// rewritten whole before each call, so each call sees its own version of it.
+static void content_k(Scene& s, uint32_t tag, uint32_t fc)
+{
+	D3D11_MAPPED_SUBRESOURCE m;
+	if (FAILED(s.ctx->Map(s.c_k, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+	float c[4];
+	colour_f(tag, fc, c);
+	const uint32_t v[4] = { tag, fc, 0, 0 };
+	memcpy(m.pData, c, 16);
+	memcpy((uint8_t*)m.pData + 16, v, 16);
+	s.ctx->Unmap(s.c_k, 0);
+}
+
+static void content_draw(Scene& s, uint32_t tag, uint32_t fc)
+{
+	content_k(s, tag, fc);
+	s.ctx->DrawIndexed(k_content_indices, 0, 0);
+}
+
+static void content_fill_tex(Scene& s, ID3D11Texture2D* t, uint32_t tag, uint32_t fc)
+{
+	D3D11_MAPPED_SUBRESOURCE m;
+	if (FAILED(s.ctx->Map(t, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+	uint8_t c[4];
+	colour(tag, fc, c);
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++)
+			memcpy((uint8_t*)m.pData + y * m.RowPitch + x * 4, c, 4);
+	s.ctx->Unmap(t, 0);
+}
+
+static void render_content_pass(Scene& s)
+{
+	const uint32_t fc = g_content_static ? 0 : g_frame_counter;
+	static uint8_t bytes[8192];
+	uint8_t px[8 * 8 * 4];
+	float cf[4];
+	D3D11_MAPPED_SUBRESOURCE m;
+	const D3D11_VIEWPORT vp16 = { 0, 0, 16, 16, 0, 1 }, vp8 = { 0, 0, 8, 8, 0, 1 };
+
+	// The vertex shader takes no vertex data. The scene's layout stays bound all the same, with mesh 3's
+	// positions in slot 0 and the dynamic buffer in slot 1 where the layout expects colours: XXMI's
+	// frame analysis writes out the vertex buffers a layout refers to, and those are compared with it.
+	s.ctx->IASetInputLayout(s.layout);
+	{
+		ID3D11Buffer* vbs[2] = { s.vb3a, s.c_dyn_vb };
+		UINT strides[2] = { sizeof(V0), sizeof(V1) };
+		UINT offs[2] = { 0, 0 };
+		s.ctx->IASetVertexBuffers(0, 2, vbs, strides, offs);
+	}
+	s.ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	s.ctx->IASetIndexBuffer(s.c_ib, DXGI_FORMAT_R16_UINT, 0);
+	UINT zero = 0;
+	s.ctx->VSSetShader(s.c_vs, nullptr, 0);
+	s.ctx->PSSetShader(s.c_ps_fill, nullptr, 0);
+	s.ctx->PSSetConstantBuffers(2, 1, &s.c_k);
+	s.ctx->CSSetConstantBuffers(2, 1, &s.c_k);
+	s.ctx->RSSetViewports(1, &vp16);
+	s.ctx->OMSetRenderTargets(1, &s.c_aux_rtv, nullptr);
+
+	// 1-3: a dynamic vertex buffer, rewritten whole twice and then added to
+	if (SUCCEEDED(s.ctx->Map(s.c_dyn_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { fill((uint8_t*)m.pData, 8192, 1, fc); s.ctx->Unmap(s.c_dyn_vb, 0); }
+	content_draw(s, 1, fc);
+	if (SUCCEEDED(s.ctx->Map(s.c_dyn_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { fill((uint8_t*)m.pData, 8192, 2, fc); s.ctx->Unmap(s.c_dyn_vb, 0); }
+	content_draw(s, 2, fc);
+	if (SUCCEEDED(s.ctx->Map(s.c_dyn_vb, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &m))) { fill((uint8_t*)m.pData + 4096, 256, 3, fc); s.ctx->Unmap(s.c_dyn_vb, 0); }
+	content_draw(s, 3, fc);
+
+	// 4-7: a pool the vertex shader reads, rewritten whole, then in overlapping pieces by update and by copy
+	s.ctx->VSSetShaderResources(9, 1, &s.c_pool_srv);
+	fill(bytes, 4096, 4, fc);
+	s.ctx->UpdateSubresource(s.c_pool, 0, nullptr, bytes, 0, 0);
+	content_draw(s, 4, fc);
+	{
+		fill(bytes, 64, 5, fc);
+		D3D11_BOX box = { 64, 0, 0, 128, 1, 1 };
+		s.ctx->UpdateSubresource(s.c_pool, 0, &box, bytes, 0, 0);
+	}
+	content_draw(s, 5, fc);
+	if (SUCCEEDED(s.ctx->Map(s.upload, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+		fill((uint8_t*)m.pData, 64, 6, fc);
+		s.ctx->Unmap(s.upload, 0);
+		D3D11_BOX box = { 0, 0, 0, 64, 1, 1 };
+		s.ctx->CopySubresourceRegion(s.c_pool, 0, 256, 0, 0, s.upload, 0, &box);
+	}
+	content_draw(s, 6, fc);
+	{
+		fill(bytes, 64, 7, fc);
+		D3D11_BOX box = { 96, 0, 0, 160, 1, 1 };
+		s.ctx->UpdateSubresource(s.c_pool, 0, &box, bytes, 0, 0);
+	}
+	content_draw(s, 7, fc);
+
+	// 8-9: a texture that is mapped and rewritten
+	s.ctx->PSSetShaderResources(10, 1, &s.c_dyn_tex_srv);
+	content_fill_tex(s, s.c_dyn_tex, 8, fc);
+	content_draw(s, 8, fc);
+	content_fill_tex(s, s.c_dyn_tex, 9, fc);
+	content_draw(s, 9, fc);
+
+	// 10-11: a render target that is cleared between two draws that sample it
+	s.ctx->PSSetShaderResources(11, 1, &s.c_aux2_srv);
+	colour_f(10, fc, cf);
+	s.ctx->ClearRenderTargetView(s.c_aux2_rtv, cf);
+	content_draw(s, 10, fc);
+	colour_f(11, fc, cf);
+	s.ctx->ClearRenderTargetView(s.c_aux2_rtv, cf);
+	content_draw(s, 11, fc);
+
+	// 12-14: a texture updated whole, then in a box, then copied into
+	s.ctx->PSSetShaderResources(12, 1, &s.c_upd_srv);
+	for (int i = 0; i < 64; i++) colour(12, fc, px + i * 4);
+	s.ctx->UpdateSubresource(s.c_upd, 0, nullptr, px, 32, 0);
+	content_draw(s, 12, fc);
+	{
+		for (int i = 0; i < 16; i++) colour(13, fc, px + i * 4);
+		D3D11_BOX box = { 2, 2, 0, 6, 6, 1 };
+		s.ctx->UpdateSubresource(s.c_upd, 0, &box, px, 16, 0);
+	}
+	content_draw(s, 13, fc);
+	{
+		D3D11_BOX box = { 0, 0, 0, 4, 4, 1 };
+		s.ctx->CopySubresourceRegion(s.c_upd, 0, 4, 4, 0, s.c_dyn_tex, 0, &box);     // holds colour 9
+	}
+	content_draw(s, 14, fc);
+
+	// 15-17: the third mip of a chain, which only GenerateMips changes
+	s.ctx->PSSetShaderResources(13, 1, &s.c_gen_srv_mip2);
+	colour_f(15, fc, cf);
+	s.ctx->ClearRenderTargetView(s.c_gen_rtv, cf);
+	s.ctx->GenerateMips(s.c_gen_srv);
+	content_draw(s, 15, fc);
+	colour_f(16, fc, cf);
+	s.ctx->ClearRenderTargetView(s.c_gen_rtv, cf);
+	content_draw(s, 16, fc);
+	s.ctx->GenerateMips(s.c_gen_srv);
+	content_draw(s, 17, fc);
+
+	// 18: a draw into one slice of one mip of an array
+	s.ctx->RSSetViewports(1, &vp8);
+	s.ctx->OMSetRenderTargets(1, &s.c_arr_rtv, nullptr);
+	content_draw(s, 18, fc);
+	s.ctx->RSSetViewports(1, &vp16);
+
+	// 19, 28, 29: a multisampled target, and the texture it is resolved into
+	s.ctx->OMSetRenderTargets(1, &s.c_ms_rtv, nullptr);
+	content_draw(s, 19, fc);
+	s.ctx->OMSetRenderTargets(1, &s.c_aux_rtv, nullptr);
+	s.ctx->ResolveSubresource(s.c_res, 0, s.c_ms, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+	s.ctx->PSSetShaderResources(14, 1, &s.c_res_srv);
+	content_draw(s, 28, fc);
+	colour_f(29, fc, cf);
+	s.ctx->ClearRenderTargetView(s.c_ms_rtv, cf);
+	s.ctx->ResolveSubresource(s.c_res, 0, s.c_ms, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+	content_draw(s, 29, fc);
+
+	// 20-22: a pixel shader that writes a buffer next to its render target
+	s.ctx->PSSetShader(s.c_ps_uav, nullptr, 0);
+	s.ctx->OMSetRenderTargetsAndUnorderedAccessViews(1, &s.c_aux_rtv, nullptr, 1, 1, &s.c_om_uav, nullptr);
+	content_draw(s, 20, fc);
+	content_draw(s, 21, fc);
+	content_draw(s, 22, fc);
+	s.ctx->OMSetRenderTargets(1, &s.c_aux_rtv, nullptr);
+	s.ctx->PSSetShader(s.c_ps_fill, nullptr, 0);
+
+	// 23-25: a compute shader that rewrites one buffer three times; 26-27: a texture twice
+	s.ctx->CSSetShader(s.c_cs_fill, nullptr, 0);
+	s.ctx->CSSetUnorderedAccessViews(0, 1, &s.c_ubuf_uav, nullptr);
+	for (uint32_t tag = 23; tag <= 25; tag++) {
+		content_k(s, tag, fc);
+		s.ctx->Dispatch(16, 1, 1);
+	}
+	s.ctx->CSSetShader(s.c_cs_tex, nullptr, 0);
+	s.ctx->CSSetUnorderedAccessViews(0, 1, &s.c_utex_uav, nullptr);
+	for (uint32_t tag = 26; tag <= 27; tag++) {
+		content_k(s, tag, fc);
+		s.ctx->Dispatch(2, 2, 1);
+	}
+	ID3D11UnorderedAccessView* no_uav = nullptr;
+	s.ctx->CSSetUnorderedAccessViews(0, 1, &no_uav, nullptr);
+
+	// back to what the rest of the frame expects
+	ID3D11ShaderResourceView* none[5] = {};
+	ID3D11Buffer* no_buffer = nullptr;
+	s.ctx->PSSetShaderResources(10, 5, none);
+	s.ctx->VSSetShaderResources(9, 1, none);
+	s.ctx->IASetVertexBuffers(1, 1, &no_buffer, &zero, &zero);
+	s.ctx->PSSetConstantBuffers(2, 1, &no_buffer);
+	s.ctx->CSSetConstantBuffers(2, 1, &no_buffer);
+	D3D11_VIEWPORT vp = { 0, 0, (float)s.width, (float)s.height, 0, 1 };
+	s.ctx->RSSetViewports(1, &vp);
+}
+
 static void render(Scene& s, float time)
 {
 	// constants for every object, written in one go
@@ -807,6 +1204,8 @@ static void render(Scene& s, float time)
 
 	if (g_state_pass)
 		render_state_pass(s);
+	if (g_content_pass)
+		render_content_pass(s);
 
 	// present pass
 	ID3D11ShaderResourceView* none[7] = {};
@@ -933,6 +1332,21 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 	return DefWindowProcW(h, m, w, l);
 }
 
+// Where the window goes. The tests run while somebody works on the primary
+// screen, so a second screen is used whenever there is one.
+struct ScreenPick { RECT primary, other; bool has_other; };
+static BOOL CALLBACK pick_screen(HMONITOR mon, HDC, LPRECT, LPARAM p)
+{
+	ScreenPick* pick = (ScreenPick*)p;
+	MONITORINFO mi = {};
+	mi.cbSize = sizeof(mi);
+	if (!GetMonitorInfoW(mon, &mi))
+		return TRUE;
+	if (mi.dwFlags & MONITORINFOF_PRIMARY) pick->primary = mi.rcWork;
+	else if (!pick->has_other) { pick->other = mi.rcWork; pick->has_other = true; }
+	return TRUE;
+}
+
 static void press(WORD vk, bool down)
 {
 	INPUT in = {};
@@ -951,6 +1365,7 @@ int wmain(int argc, wchar_t** argv)
 	int max_frames = 0, max_seconds = 30;
 	WORD dump_vk = 0x87;                              // F24
 	UINT width = 1280, height = 720;
+	bool primary_screen = false;                      // --primary-screen: do not move to a second screen
 
 	for (int i = 1; i < argc; i++) {
 		std::wstring a = argv[i];
@@ -975,6 +1390,9 @@ int wmain(int argc, wchar_t** argv)
 		else if (a == L"--seconds") max_seconds = _wtoi(next().c_str());
 		else if (a == L"--dump-vk") dump_vk = (WORD)wcstoul(next().c_str(), nullptr, 0);
 		else if (a == L"--size") { width = _wtoi(next().c_str()); height = _wtoi(next().c_str()); }
+		else if (a == L"--primary-screen") primary_screen = true;
+		else if (a == L"--content-pass") g_content_pass = true;
+		else if (a == L"--content-static") g_content_pass = g_content_static = true;
 	}
 
 	wchar_t exe[MAX_PATH];
@@ -1008,8 +1426,17 @@ int wmain(int argc, wchar_t** argv)
 	RegisterClassW(&wc);
 	RECT rc = { 0, 0, (LONG)width, (LONG)height };
 	AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
-	HWND hwnd = CreateWindowW(L"EfmiSandbox", L"EFMI probe sandbox", WS_OVERLAPPEDWINDOW, 60, 60,
-	                          rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, wc.hInstance, nullptr);
+	ScreenPick pick = {};
+	EnumDisplayMonitors(nullptr, nullptr, pick_screen, (LPARAM)&pick);
+	const bool on_other = pick.has_other && !primary_screen;
+	const RECT work = on_other ? pick.other : pick.primary;
+	const int win_w = rc.right - rc.left, win_h = rc.bottom - rc.top;
+	// A little in from the corner when the screen is large enough for that.
+	const int win_x = work.left + (work.right - work.left >= win_w + 120 ? 60 : 0);
+	const int win_y = work.top + (work.bottom - work.top >= win_h + 120 ? 60 : 0);
+	HWND hwnd = CreateWindowW(L"EfmiSandbox", L"EFMI probe sandbox", WS_OVERLAPPEDWINDOW, win_x, win_y,
+	                          win_w, win_h, nullptr, nullptr, wc.hInstance, nullptr);
+	say("window at %d,%d on the %s screen", win_x, win_y, on_other ? "second" : "primary");
 	ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
 	// Resolve the entry point the way the engine does: by name, at run time.
@@ -1102,6 +1529,7 @@ int wmain(int argc, wchar_t** argv)
 		if (g_recreate_mesh3 > 0 && frame && frame % g_recreate_mesh3 == 0 && !recreate_mesh3(s, frame / g_recreate_mesh3, frame))
 			return 3;
 		float time = animate ? (float)(GetTickCount64() - t0) / 1000.0f : 0.0f;
+		g_frame_counter = (uint32_t)frame + 1;
 		render(s, time);
 		if (aux.dev && !aux.render(frame)) return 3;
 		// What XXMI is about to see when it polls its hotkeys inside Present:

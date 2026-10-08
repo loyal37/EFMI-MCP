@@ -51,6 +51,17 @@
 
 `hashes.py` 在导入时尝试绝对路径加载 `dist/efmi_crc32c.dll`，CPU SSE4.2检查及已知向量通过后加速CRC；缺库/不支持时保持Python回退。源文件与构建位于 `server/native/`，完全独立于注入探针。`decode.texture_to_pngs` 同次解码生成完整PNG/预览，压缩等级1保留像素。
 
+### 探针 0.1.6 / 服务 0.1.12：调用当时的内容
+
+- 数据：`Capture::conts`（`ContSnap`：缓冲的一个版本，或贴图的一个子资源）、`tracks`（按资源指针：缓冲的当前版本号、补丁表 `ContPatch{ver, off, size, chunk, at}`、是否已封口／丢失；贴图的“还没被写过的被引用子资源”表）、`cchunks`（存补丁的暂存缓冲，4 MiB 一块，大补丁单独一块）。绑定记录各带一个 `cont`（`ib_cont`、`VbBind`／`CbBind`／`ViewBind`），序列化为与 `vb`／`cb`／`srv`／`out` 平行的 `cvb`／`ccb`／`csrv`／`cout` 和 `cib`，表本身是 `cont`：`[资源, 0, 版本]` 或 `[资源, 1, mip, 切片]`。
+- 引用：`cap_on_draw`／`record_stage` 对每个绑定调 `cont_buffer`／`cont_of_view`（请求里的 `ct_kinds` 决定哪几类）；输出在原调用返回后由 `cap_after_draw` 引用（`ct_out_kinds` 加 `ct_match`／`ct_out_all` 选调用），Dispatch 也走这条路。
+- 写前拷贝：钩子在放行前调 `cap_before_write`（CPU 侧写入和拷贝，带子资源和字节范围）、`cap_before_view_write`（经视图的清除、GenerateMips）、`cap_before_call_writes`（绘制／Dispatch 的输出，取自 `g_om_out`／`g_cs_out`，绑定变过才向运行时重查）、`cap_before_unknown_writes`（command list：置 `ct_unknown`）。Present 前 `cont_before_present` 处理交换链的后备缓冲。只在 `g_barrier`（有抓取在保留内容）时生效，`g_bar` 指向那次抓取。
+- 读回：`read_content`（任务类型 6）。贴图：有拷贝读拷贝，否则原地暂存一份。缓冲：`start_read_content` 选出版本号不小于所问版本的补丁（从新到旧），需要时再拷一份现在的缓冲；`finish_read_content_buffer` 按顺序盖上去。`release_content`（类型 7）只放内容。`stage_subresource` 是暂存一个子资源的公共入口（1D／2D／3D、块压缩取整、多重采样先解析），`read_texture` 也改用它。
+- 写入列表：`g_events` 置位的那一帧，各写入钩子调 `cap_event`／`cap_event_view`，记下种类、“在第几次调用之前”、目标和来源资源、四个数、清除值；序列化为 `ev`。
+- 预算与内存：`ct_budget`（字节）；`memory_allows` 在分配大块前看空闲物理内存和提交量，低于 2 GiB 余量就不拷。丢失的项在读取时报原因（`k_cont_why`）。
+- 服务端：`slot_data.py`（槽位露出缓冲的哪一段、字节从哪来）、`contents.py`（抓取选项、写入的文字、`dump_frame` 导出）、`capture_model.py`（`content()`、`events()`、各绑定的 `content`、`viewports`）、`parity.compare_contents`（与 XXMI 导出逐字节比较）。
+- 线程：与原来一致，钩子、帧边界、读回任务都在使用即时上下文的线程上；序列化只读记录结束后不再变的字段（`cont` 表的资源／版本／子资源），状态类字段只在读回时给。
+
 ### 探针 0.1.5 / 服务 0.1.8：管线状态与绘制前后的渲染目标拷贝
 
 - 完整抓取时 `cap_on_draw` 多记：`record_fixed_state`（混合／深度模板／光栅化状态对象及其动态值、裁剪矩形、第一个视口的数值和视口总数）、`record_stage` 里的采样器、每个被绑定视图的描述（`view_desc_id`）、间接参数的快照。状态对象和视图各有一张表（`states`、`views`），绘制用下标引用；表项按内容去重，地址只用来找候选。2026-10-08 审计纠正此前“全部视口”的表述：代码虽查询全部，仅序列化第一个。
@@ -81,6 +92,7 @@
 - `sandbox/run_all.py`：准备副本、三种加载顺序的哈希对照、探针自测、MCP 端到端测试，以及两组无系统输入的自动重载单元测试。
 - `sandbox/selftest.py`、`mcp_test.py`、`parity_test.py`、`perf_test.py`：对应专项验证。
 - `sandbox/draw_outputs_test.py`（2026-10-08）：`efmi_capture_draw_outputs` 与 `efmi_get_draw` 新字段的离线单元测试（伪探针），已纳入 `run_all.py`。沙盒程序的 `--state-pass` 多画一个所有固定管线状态都取非默认值的间接绘制和一个只写深度的绘制，供自测和端到端测试核对。
+- 内容相关（2026-10-08，探针 0.1.6）：`sandbox/contents_test.py`（真探针＋沙盒 `--content-pass`，逐字节核对每次调用的内容）、`sandbox/contents_parity_test.py`（`--content-static`，与私有副本 XXMI 的导出逐字节对照，并逐字比较 `efmi_dump_frame` 写出的 `.txt`）、`sandbox/contents_unit_test.py`（伪探针，离线）；三个都在 `run_all.py` 里。沙盒窗口默认开在副屏、不激活（`--primary-screen` 还原）。`prepare_run.py` 给私有 `d3dx.ini` 的 `analyse_options` 加了 `dds`，让 XXMI 把贴图都写成 DDS 以便比较。
 - 2026-10-06 晚：两组单元测试增至 27 / 46 项（新增探针按键路径与重载证据）；`reload_integration_test.py` 改为验证探针按键、证据与焦点还原，探针自己按键时不再因存在其他探针而拒绝。沙盒脚本可用 `EFMI_PROBE_DLL` 指定待测 DLL。以下为 0.1.3 时的说明。
 - `sandbox/reload_input_test.py`：21项固定F10/Win32 ABI/焦点/修饰键/状态观察/释放回归；`sandbox/reload_workflow_test.py`：32项MCP边界、缓存、目标、新帧及输入失败检查。本轮两组、既有MCP stdio私有沙盒39项及compileall通过；专项用fake输入/探针，不对用户游戏发键。
 - `sandbox/reload_integration_test.py`：单独运行的真实F10集成，聚焦私有沙盒，发现其他探针则拒绝；不纳入自动全套。历史0.1.2在hunting=0下验证skip规则只移除目标IB，证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`；本轮用户游戏运行时未重跑。沙盒处理SC_KEYMENU避免菜单模式阻塞，规则指定VS的checktextureoverride=ib及IB match_index_count。该历史结果不能替代当前实机失败结论。

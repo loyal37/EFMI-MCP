@@ -43,7 +43,8 @@ def patch_ini(text: str, exe_name: str) -> str:
                 elif key == "analyse_frame":
                     line = "analyse_frame = 0x87"
                 elif key == "analyse_options":
-                    line = "analyse_options = dump_rt dump_tex dump_cb dump_vb dump_ib buf txt"
+                    # dds: every texture as the bytes it holds (the default writes most as JPEG)
+                    line = "analyse_options = dump_rt dump_tex dump_cb dump_vb dump_ib buf txt dds"
                 elif SILENCED_KEYS.match(stripped):
                     line = ";sandbox: " + line
             elif section == "system" and key == "check_foreground_window":
