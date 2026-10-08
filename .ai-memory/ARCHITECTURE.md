@@ -58,6 +58,7 @@
 - 写前拷贝：钩子在放行前调 `cap_before_write`（CPU 侧写入和拷贝，带子资源和字节范围）、`cap_before_view_write`（经视图的清除、GenerateMips）、`cap_before_call_writes`（绘制／Dispatch 的输出，取自 `g_om_out`／`g_cs_out`，绑定变过才向运行时重查）、`cap_before_unknown_writes`（command list：置 `ct_unknown`）。Present 前 `cont_before_present` 处理交换链的后备缓冲。只在 `g_barrier`（有抓取在保留内容）时生效，`g_bar` 指向那次抓取。
 - 读回：`read_content`（任务类型 6）。贴图：有拷贝读拷贝，否则原地暂存一份。缓冲：`start_read_content` 选出版本号不小于所问版本的补丁（从新到旧），需要时再拷一份现在的缓冲；`finish_read_content_buffer` 按顺序盖上去。`release_content`（类型 7）只放内容。`stage_subresource` 是暂存一个子资源的公共入口（1D／2D／3D、块压缩取整、多重采样先解析），`read_texture` 也改用它。
 - 写入列表：`g_events` 置位的那一帧，各写入钩子调 `cap_event`／`cap_event_view`，记下种类、“在第几次调用之前”、目标和来源资源、四个数、清除值；序列化为 `ev`。
+- 状态：渲染线程每帧把保留内容的抓取的拷贝数、字节数、丢失数写进几个原子量（`cont_publish`），管道线程的状态命令只读这些量，不碰抓取对象。
 - 预算与内存：`ct_budget`（字节）；`memory_allows` 在分配大块前看空闲物理内存和提交量，低于 2 GiB 余量就不拷。丢失的项在读取时报原因（`k_cont_why`）。
 - 服务端：`slot_data.py`（槽位露出缓冲的哪一段、字节从哪来）、`contents.py`（抓取选项、写入的文字、`dump_frame` 导出）、`capture_model.py`（`content()`、`events()`、各绑定的 `content`、`viewports`）、`parity.compare_contents`（与 XXMI 导出逐字节比较）。
 - 线程：与原来一致，钩子、帧边界、读回任务都在使用即时上下文的线程上；序列化只读记录结束后不再变的字段（`cont` 表的资源／版本／子资源），状态类字段只在读回时给。

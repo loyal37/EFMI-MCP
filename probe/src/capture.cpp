@@ -896,6 +896,18 @@ static int32_t snapshot(Capture* c, ID3D11Buffer* buf, int32_t rid, uint32_t off
 // a static mesh or texture costs nothing however many draws use it, and
 // something that changes is copied once for every version that was used.
 static Capture* g_bar = nullptr;                       // the capture whose contents are being kept
+// What has been set aside for it so far, for the status: written by the render
+// thread once a frame, read by the pipe thread, which must not touch the capture.
+static volatile LONG64 g_kept_bytes = 0;
+static volatile LONG g_kept_copies = 0, g_kept_lost = 0, g_kept_frame = 0;
+
+static void cont_publish(const Capture* c)
+{
+	InterlockedExchange64(&g_kept_bytes, c ? (LONG64)c->ct_bytes : 0);
+	InterlockedExchange(&g_kept_copies, c ? (LONG)c->ct_copies : 0);
+	InterlockedExchange(&g_kept_lost, c ? (LONG)c->ct_lost : 0);
+	InterlockedExchange(&g_kept_frame, c ? (LONG)c->frame : 0);
+}
 static std::unordered_map<void*, uint32_t> g_mapped;   // what the game has mapped right now
 
 static bool memory_allows(uint64_t bytes)
@@ -1535,6 +1547,7 @@ static void cont_release(Capture* c)
 		g_bar = nullptr;
 		InterlockedExchange(&g_barrier, 0);
 		g_mapped.clear();
+		cont_publish(nullptr);
 	}
 }
 
@@ -2875,6 +2888,7 @@ void cap_on_frame_boundary()
 	if (g_bar) {
 		cont_before_present();
 		g_om_dirty = g_cs_dirty = true;      // a flip leaves the back buffer unbound
+		cont_publish(g_bar);
 	}
 	if (g_rec)
 		end_recording();
@@ -3082,11 +3096,12 @@ void cap_release(uint32_t timeout_ms)
 
 void cap_status_json(std::string* out)
 {
-	char b[256];
+	char b[384];
 	snprintf(b, sizeof(b), "\"tracking\":%s,\"recording\":%s,\"live\":%s,\"region_cache\":%zu,\"arena_chunks\":%zu,"
-	         "\"contents_kept\":%s",
+	         "\"contents_kept\":%s,\"contents_frame\":%ld,\"contents_bytes\":%lld,\"contents_copies\":%ld,\"contents_lost\":%ld",
 	         g_tracking ? "true" : "false", g_recording ? "true" : "false", g_live_on ? "true" : "false",
-	         g_rcache.size(), g_chunks.size(), g_barrier ? "true" : "false");
+	         g_rcache.size(), g_chunks.size(), g_barrier ? "true" : "false", (long)g_kept_frame, (long long)g_kept_bytes,
+	         (long)g_kept_copies, (long)g_kept_lost);
 	*out += b;
 }
 

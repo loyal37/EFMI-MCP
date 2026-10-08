@@ -322,7 +322,10 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                              f"0.1.6 (this is {st['probe']}). Restart the game to load {s.probe_dll}")
             elif cap.get("contents_kept"):
                 lines.append("contents: the probe is keeping what the calls of the latest capture saw (released by the next "
-                             "capture or after three minutes without a request)")
+                             "capture or after three minutes without a request)"
+                             + (f": {cap['contents_copies']} copies, {cap['contents_bytes'] / 1048576:.1f} MiB so far"
+                                + (f", {cap['contents_lost']} versions lost" if cap.get("contents_lost") else "")
+                                if "contents_bytes" in cap else ""))
             if "region_hash_per_object" not in st.get("features", ()):
                 lines.append(f"hashes: probe {st['probe']} can record a destroyed buffer's region hash for a new buffer "
                              "at the same address (mod buffers after a reload); read the buffer to be sure. "

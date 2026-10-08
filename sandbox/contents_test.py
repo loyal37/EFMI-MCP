@@ -216,6 +216,11 @@ def main() -> int:
         check("the vertex buffer itself has been rewritten since (the frame counter in it moved on)",
               later > fc + 5 and late_meta.get("unchanged_since_capture") is False, f"{later} vs {fc}, {late_meta}")
 
+        kept = client.status()["capture"]
+        check("the status says how much has been set aside so far",
+              kept.get("contents_frame") == f.frame and kept.get("contents_copies", 0) >= stats["ct_copies"]
+              and kept.get("contents_bytes", 0) >= stats["ct_bytes"] > 0 and kept.get("contents_lost") == 0, str(kept))
+
         print("== buffers")
         v1, v2 = fill(8192, 1, fc), fill(8192, 2, fc)
         v3 = patched(v2, 4096, fill(256, 3, fc))
@@ -361,7 +366,9 @@ def main() -> int:
             check("released contents say so", False)
         except ProbeError as exc:
             check("released contents say so", "released" in str(exc), str(exc))
-        check("nothing is being watched after the release", client.status()["capture"].get("contents_kept") is False)
+        after = client.status()["capture"]
+        check("nothing is being watched after the release", after.get("contents_kept") is False and after.get("contents_bytes") == 0,
+              str(after))
         meta, data = client.read_buffer(small.frame, small.calls[1]["ib"]["res"], 0, 6)
         check("the capture itself is still readable after its contents were released", data == struct.pack("<3H", 0, 1, 2))
 
