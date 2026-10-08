@@ -9,7 +9,7 @@ T-001 至 T-007 已完成。T-007 的原因是 UIPI；探针 0.1.2 / 服务 0.1.
 ### T-011：采集数据的三项完善（代码完成，沙盒通过，探针 0.1.5／服务 0.1.8 已就位；**实机待核对**，2026-10-08）
 
 - 做了清单里的 1、4、5，结果与验证范围见 CURRENT_STATE 首节。
-- **待办（需要用户重启游戏以加载 0.1.5，并重连 MCP 服务）**：① `efmi_status` 不再有“need probe 0.1.5”一行；② 角色在画面里时对它的一个绘制调 `efmi_get_draw`，看混合／深度／光栅化／采样器是否合理；③ `efmi_capture_draw_outputs hash=<角色某个网格的 ib 哈希>`：记录目标格式、拷贝的 MiB 数、`stats.record_ms`，看预览；再试 `depth=true` 和 `box`；④ 大世界里改一个 mod 文件后 `efmi_reload_and_capture`，看 `frames_looked_at`／`waited_for_xxmi_ms` 和 `reload_confirmed`。①–③不按键，④按一次 F10（事先告知）。
+- **待办（需要用户重启游戏以加载 0.1.5；服务端要用 0.1.8 的代码：新开会话，或在原会话里由 agent 用脚本加载当前代码）**：① `efmi_status` 不再有“need probe 0.1.5”一行；② 角色在画面里时对它的一个绘制调 `efmi_get_draw`，看混合／深度／光栅化／采样器是否合理；③ `efmi_capture_draw_outputs hash=<角色某个网格的 ib 哈希>`：记录目标格式、拷贝的 MiB 数、`stats.record_ms`，看预览；再试 `depth=true` 和 `box`；④ 大世界里改一个 mod 文件后 `efmi_reload_and_capture`，看 `frames_looked_at`／`waited_for_xxmi_ms` 和 `reload_confirmed`。①–③不按键，④按一次 F10（事先告知）。
 - 清单里没做的（用户未要求，按需再议）：
   - 2：`efmi_status` 提示“运行中的服务比磁盘上的代码旧”（仅服务端，很小）。
   - 3：绘制当时快照被游戏重写的顶点／索引范围（现在只有常量缓冲和间接参数是绘制当时的内容；动态合批、UI、粒子的索引读不到）。

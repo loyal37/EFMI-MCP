@@ -73,7 +73,13 @@
    args = ["F:\\EFMI MCP\\server\\run_server.py"]
    ```
 
-   服务只在启动时读取代码。更新服务端代码后要让它重新启动：在 Claude Code 的会话里输入 `/mcp`，选 `efmi` 后点 Reconnect；或者新开一个会话（每个会话各自启动一份服务）。其他客户端重启它的 MCP 服务或会话。游戏不用重启。
+   服务只在启动时读取代码，更新服务端代码后要让它重新启动。游戏不用重启。
+
+   - **Claude 桌面端（Code 标签页）**：新开一个会话，每个会话各自启动一份服务。`/mcp` 打开的 MCP servers 对话框只列出服务和状态，对已连接（✓）的服务没有重连按钮（2026-10-08 实测）。
+   - **终端里的 Claude Code**：输入 `/mcp`，选 `efmi` 后选 Reconnect；或者退出后重新运行 `claude`。
+   - 其他客户端：重启它的 MCP 服务或会话。
+
+   判断正在运行的是不是新代码：0.1.8 起工具列表里有 `efmi_capture_draw_outputs`，共 27 个工具（0.1.7 是 26 个）。
 
 4. 进游戏后让 agent 调用 `efmi_status`。应看到 `attached: True`、交换链已发现、帧号增长；再用 `efmi_capture_frame` 确认实际 draw 和资源非空。状态会显示采集目标的设备/上下文/交换链及所选上下文的 draw 计数，不能仅凭 `attached` 判断角色数据已采集成功。如果未加载、未挂接或持续空帧，看 `dist\efmi_probe.log`。
 
