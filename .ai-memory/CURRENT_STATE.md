@@ -15,6 +15,7 @@
 - 观测层边界：探针挂系统 D3D11，XXMI 完全 skip 的上游原始调用不存在；ShaderRegex 改写后 shader 不带原 hash 映射；XXMI 内部变量／命令／分支无法从最终绑定反推。这个边界必须独立于“增加资源接口”处理。
 - 审计发现需后续修正的状态说明：CB 快照预算或读回失败时 `get_draw.contents_captured` 仅判断 snap ID，可能误报 true；真正读取会标注晚读但不解释失败原因（见 BUG-006）。归档和桥接的两处 SRV FirstElement“未采集”文字已过时，0.1.5 已记录 view；不要据此误判探针能力。README 已补覆盖表，架构文档纠正多视口表述。
 - 离线工具复核新增发现：生产 `efmi_frame_dump_summary` 正确读到 776 次调用，但只识别 18,509 资源文件；157 个带 `!S!` 标记的 DDS/JPG 文件被 `_RE_FILE` 跳过（实际资源文件 18,666，另有 log.txt）。BUG-007、`offline-dump-check.json`、`parser-unmatched-files.json` 已记录，未修实现。
+- 交付：审计文档提交 `e68014d`，独立复核和 diff 检查通过。两次向 origin/main 推送都因 GitHub 网络连接失败而未完成（reset／443 无法连接），提交仍在本地，网络恢复后补推，不强制改远端历史。
 
 
 ## TangTang 的 INI 从 RabbitFX 改成槽位（2026-10-08 15:08–15:40，游戏 PID 34896，探针 0.1.5，服务 0.1.10）
