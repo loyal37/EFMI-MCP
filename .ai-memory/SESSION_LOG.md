@@ -319,3 +319,5 @@ F10 一次（事前告知）后实测：上色遍 `t70` 空、`t72` 是头发漫
 只读检查用户指定的 `D:\XXMI-Launcher-Portable-v2.1.6\ZZMI`。两份 XXMI DLL 版本与 SHA256 完全相同，探针没有 Endfield 进程名限制，基础 D3D11 采集可望复用；但目前无绝区零实测。看到 ZenlessZoneZero PID 18692，探针管道列表为空；没有注入、按键、重启或更改安装配置。
 
 用生产代码跑了只读 mod 扫描与按键配置预检：扫描规则正常（0 活动 mod），F10 两条绑定满足要求；模组开关因代码固定 EFMI 的路径／F11 而拒绝，ZZMI 实际为 F6／$costume_mods。另查明 track_region_hashes=0 与工具默认区域 hash 的呈现／匹配差异；LoyalTools 模型流程仍依赖 EFMI 布局与 merged-skeleton 工程。结论及范围同步 CURRENT_STATE／TASKS／KNOWN_ISSUES。用户只询问能力，未实施适配。仅更新项目记忆，原有未跟踪的 `pelican-bicycle.html` 未动。
+
+用户随后问“区域 hash 是什么”：核对 `hashes.py` 的 `index_region`／`vertex_region` 与探针范围裁剪，按“共享大缓冲中的一段数据”说明，与整资源标识区分；IB 范围精确，indexed VB 的哈希范围遵循 XXMI 的估算规则。参考上游 XXMI 区域哈希发布说明及 ZZMI 配置，未做游戏操作或代码／配置修改。

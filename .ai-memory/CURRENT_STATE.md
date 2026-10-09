@@ -9,6 +9,7 @@
 - **本机配置**：ZZMI `d3dx.ini` 的 target 为 `ZenlessZoneZero.exe`，shader_hash=3dmigoto、texture_hash=0、**track_region_hashes=0**；当前服务的 IB／VB 主 hash 使用绘制区域 CRC，同时另存 resource_hash。因此 ZZMI 的 INI 哈希与自动匹配需要按整资源口径适配，不能直接拿 EFMI 的区域 hash 写进去。安装扫描入口已执行，可读 Include／exclude 规则，本目录扫描到 0 个活动 mod／0 个引用 hash（不能据此验证非空模组匹配）。
 - **按键**：只调用服务的只读配置预检，两条 F10 重载绑定通过；没有发送 F10。ZZMI 的开关是 `Core\ZZMI\main.ini` 的 F6／`$costume_mods`，现有服务和探针固定检查 `Core\EFMI\KeyBindings.ini` 的 F11，预检会拒绝，须连同状态读取一起适配。上游 ZZMI 源码同样定义 F6：<https://raw.githubusercontent.com/leotorrez/ZZMI-Package/main/ZZMI/Core/ZZMI/main.ini>。
 - **模型流程**：`model_capture.instance_config` 固定用 VS t0、stride 16、实例 CB 的特定偏移；`loyal_bridge`／`model_workflow` 使用 EFMI merged-skeleton 工程与 LoyalTools 对应入口，不能当作通用的绝区零角色／骨骼／LOD／mod 导出流程。普通绑定与原始资源读取应和这些高级功能分开验收。用户本轮只是询问兼容性，未开始改造或安装。
+- 随后解释了“区域 hash”：对缓冲内按偏移和长度选出的一段字节算 CRC32C，用于区分共享大缓冲里的网格；不是屏幕区域。IB 范围由绑定偏移、first_index、index_count 和索引宽度决定；VB 对 indexed draw 按 XXMI 规则估算范围，不能当全网格逐字节验证。ZZMI 的哈希匹配口径与能否读取原始资源是两个问题，未要求开启其区域哈希或修改代码。
 
 ## Typhoeus 的头发描边：按用户要求在 mod 里修好（2026-10-09 17:27–17:35，真实游戏 PID 12176；F10 一次）
 
