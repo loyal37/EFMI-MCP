@@ -1,6 +1,16 @@
 # EFMI MCP — 当前开发状态
 
-> 最后更新：2026-10-09 17:20。服务 0.1.13，探针 0.1.6（游戏 PID 12176 已加载）。本轮按用户要求查了“RabbitFX 写法的角色头发有一层粗描边”的原因（首节）：RabbitFX 2.7 的主匹配式把头发描边上色着色器里的贴图认错了位置，描边大部分没上色、露出预写遍的黑色。没有修改产品代码、RabbitFX 或任何模组；修法等用户决定。TangTang 槽位转换仍只剩 LOD 距离没看。此前各节按时间倒序保留。
+> 最后更新：2026-10-09 17:35。服务 0.1.13，探针 0.1.6（游戏 PID 12176 已加载）。本轮查明了“RabbitFX 写法的角色头发有一层粗描边”的原因（第二节），并按用户要求在 `Typhoeus Luxuria 1.2 alpha` 里修好：修复逻辑单独一个 INI，主 INI 只改一行，F10 重载后实机通过（首节）。RabbitFX 和产品代码没有动。TangTang 槽位转换仍只剩 LOD 距离没看。此前各节按时间倒序保留。
+
+## Typhoeus 的头发描边：按用户要求在 mod 里修好（2026-10-09 17:27–17:35，真实游戏 PID 12176；F10 一次）
+
+- 用户看了下一节的结论后的要求：“不改rabbitfx,改mod的ini,然后你这样改，这部分代码单独写一个ini”。对象是屏上这个 mod（`Mods\Typhoeus Luxuria 1.2 alpha`），其他模组没有动。
+- **改动**（都在该 mod 目录内）：新增 `RabbitFX_HairOutlineFix.ini`（命名空间 `RabbitFXHairOutlineFix`，1780 字节）；`Typhoeus.ini` 只改第 601 行，头发段的 `run = CommandList\RabbitFx\SetTextures` 换成 `run = CommandList\RabbitFXHairOutlineFix\SetTextures`；改前备份为同目录的 `Typhoeus.ini.before-hair-outline-fix-20261009`（SHA256 `aa9b585e…`，文件名不以 `.ini` 结尾）。`RabbitFX.ini`、`Typhoeus_Interaction.ini` 没有动。副本和差异在 `captures/rabbitfx-hair-outline-20261009/`。
+- **做法**：新 INI 给两个认错的着色器（XXMI 原始哈希 `fadc3687dd18e11c`、`bff61f7703cd52ee`）各写一个 `[ShaderOverride]`，带自己的 `filter_index = 2718.1` 和 `post ps-t72 = null`。显式段的 `filter_index` 压过 ShaderRegex 给的标记（3DMigoto 源码里是“只有还没设过才用正则的”，这里实机证实），于是 RabbitFX 的 `SetTextures`（只认 `1718.1`／`1718.2`）不再往这一遍放贴图，透明度测试回到游戏自己的遮罩。新 INI 的 `[CommandListSetTextures]` 在 `ps == $outline` 时把 `Resource\RabbitFX\Diffuse` 绑到 `ps-t72`（改写后的着色器在这里取描边颜色）、清掉 `ps-t70`，然后照常调用 RabbitFX 的 `SetTextures`；其他遍完全走 RabbitFX 原来的路。
+- **实机验证**（F10 一次，事前告知；`reload_confirmed`；帧 398037／399679）：上色遍 `ps-t70` 为空、`ps-t72` 是头发漫反射 `0409102f`，紧随其后的绘制里 `ps-t72` 已清；外壳 5100 像素上色 5039（99%，修复前 5140／825，关掉 mod 的原版 4642／4569）；预写遍、另一上色变体和两遍主着色仍由 RabbitFX 照常绑 `t70`；头发漫反射只出现在头发自己的 6 次绘制里，没有漏到别的绘制。对比图 `head-before-vs-after-fix.png`。
+- **会影响到别的 mod 的地方**：`[ShaderOverride]` 按着色器哈希生效，所以这个 INI 一加载，其他 RabbitFX 写法角色的头发描边上色遍也不再收到 RabbitFX 贴图（黑线消失，描边颜色取游戏原来的头发贴图，和槽位写法一样）。那些 mod 没有改，也没有在屏上核对；要让它们的描边用自己的漫反射，各自头发段同样换那一行，需要用户点名。这个 INI 在 `Mods` 下只能有一份（同名命名空间和段会重复）。
+- **没验证的**：变体 `bff61f7703cd52ee`（本帧没用到，只做过离线重放）；换发色（`$haircolor` 1／2：按构造描边跟着当前漫反射走，没有按 mod 的换色键）；LOD 距离；XXMI 重载时有没有打印警告（没有日志可读，从绑定结果看两个段和命令列表都生效了）。
+- **撤销**：删掉 `RabbitFX_HairOutlineFix.ini`，把备份改回 `Typhoeus.ini`（或只把第 601 行换回去），F10。
 
 ## RabbitFX 写法的角色头发粗描边：原因已查明（2026-10-09 下午，真实游戏 PID 12176；只读，另按 F11 两次做对照）
 

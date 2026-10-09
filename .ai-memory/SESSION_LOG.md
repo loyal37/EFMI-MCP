@@ -297,3 +297,13 @@ LOD 入口的部署核对经用户当场同意后进行（两次询问：是否�
 顺带得到：探针报的改写后哈希可以用 `ShaderCache\<原始哈希>-ps_regex.bin` 的 FNV 对回 XXMI 的原始哈希，原始着色器探针里也取得到。记入 KNOWN_ISSUES 和 T-014，未实现。
 
 证据在被忽略的 `captures/rabbitfx-hair-outline-20261009/`（脚本、对比图）和 `captures/shaders/`。本轮只更新记录。本地 `main` 仍带着未推送的无关提交 `824079e`，本轮记录照前一轮的做法另行推送，不连带发布它；Git 结果以实际提交／推送为准。
+
+## 2026-10-09 傍晚：在 Typhoeus 的 mod 里修好头发描边
+
+用户的决定：“不改rabbitfx,改mod的ini,然后你这样改，这部分代码单独写一个ini”。先备份 `Typhoeus.ini`，在 mod 目录新增 `RabbitFX_HairOutlineFix.ini`，主 INI 只把头发段调用 RabbitFX `SetTextures` 的那一行换成调用新 INI 的同名命令列表。
+
+写法取自一个事实：显式 `[ShaderOverride]` 的 `filter_index` 压过 ShaderRegex 的标记（查了 3DMigoto 的 `ShaderRegex.cpp`；这个 mod 的 `Typhoeus_Interaction.ini` 注释里也提到）。给两个认错的着色器单独的编号，RabbitFX 自己就不再往那一遍放贴图；新命令列表再把漫反射绑到改写后的着色器取描边颜色的 `t72`，绘制后清掉。原先设想的按顶点着色器认遍数的写法分不开两个上色变体，没有用。
+
+F10 一次（事前告知）后实测：上色遍 `t70` 空、`t72` 是头发漫反射，下一次绘制已清；外壳 5100 像素上色 5039；其他遍照旧；头发漫反射没有漏到别的绘制。没实测的：第二个变体、换发色、LOD、其他角色。这个 INI 对别的 RabbitFX 角色的头发描边也生效（不再发黑，颜色取游戏原贴图），已告知用户。
+
+只更新记录，产品代码没有改。Git 同上一节：本地 `main` 仍带未推送的无关提交，记录另行推到分支。
