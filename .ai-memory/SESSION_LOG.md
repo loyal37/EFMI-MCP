@@ -312,4 +312,4 @@ F10 一次（事前告知）后实测：上色遍 `t70` 空、`t72` 是头发漫
 
 用户决定：“从本地 main 去掉再正常推”。本地 `main` 原来是 `acb0ad4` 之后接着无关的 `824079e`（pelican 动画）和三次记录提交；远端分支 `claude/rabbitfx-hair-outline-20261009` 上是同样三次记录、但不含 `824079e`，两者的文件只差 `pelican-bicycle.html`。把本地 `main` 指到那条线的末端 `1188552`（工作区文件没有动，原先“已删除未暂存”的 `pelican-bicycle.html` 随之不再出现），然后普通推送，`origin/main` 从 `acb0ad4` 快进到 `1188552`，没有强推。`824079e` 现在不在任何分支上。
 
-远端的 `codex/live-capture-verification-20261009` 和 `claude/rabbitfx-hair-outline-20261009` 的内容都已在 `main` 里，分支本身没有删。此后照常在 `main` 上提交并推送。
+远端的 `codex/live-capture-verification-20261009` 和 `claude/rabbitfx-hair-outline-20261009` 的内容都已在 `main` 里；随后用户说“删”，两个远端分支和本地同名的 `codex/…` 分支都已删除（删前确认过都是 `origin/main` 的祖先），远端现在只有 `main`。此后照常在 `main` 上提交并推送。
