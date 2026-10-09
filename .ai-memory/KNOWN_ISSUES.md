@@ -1,6 +1,13 @@
 # EFMI MCP — 已知问题
 
-> 最后更新：2026-10-08。
+> 最后更新：2026-10-09。
+
+## 限制-009：不能把 EFMI 全套工具原样当作 ZZMI 支持（2026-10-09 只读评估）
+
+- 通用探针工作在 D3D11 层，本机 EFMI／ZZMI 的 XXMI 1.2.2 DLL 相同，但没有绝区零注入／采集证据。`--efmi-root` 只配置服务的安装根，不负责加载探针，也不筛选自动连接的进程；多个游戏同时带探针时需要明确选择目标。
+- ZZMI 配置 `track_region_hashes=0`；目前 `Capture.draw()` 的 IB／VB `hash` 仍为绘制区域 CRC、另有 `resource_hash`。默认摘要／模组匹配依赖区域 hash，不能未经适配将它当作 ZZMI 的 INI hash。资源字节是否可读取与 INI hash 是否一致是两个验收项。
+- ZZMI 开关在 `Core/ZZMI/main.ini`，F6 修改 `$costume_mods`；现有服务与探针检查 EFMI 的路径／F11／命令列表及通知资源，直接调用会被预检拒绝。F10 配置预检通过不等于重载已实机验证。
+- 高级模型入口依赖 EFMI 的 VS t0／实例 CB／merged-skeleton 与 LoyalTools 对应规则；绝区零需要独立适配，不能仅改安装路径后承诺完整角色与骨架导出。
 
 ## 限制-008：调用当时的内容（探针 0.1.6）的边界
 

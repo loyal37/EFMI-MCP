@@ -1,6 +1,14 @@
 # EFMI MCP — 当前开发状态
 
-> 最后更新：2026-10-09 17:35。服务 0.1.13，探针 0.1.6（游戏 PID 12176 已加载）。本轮查明了“RabbitFX 写法的角色头发有一层粗描边”的原因（第二节），并按用户要求在 `Typhoeus Luxuria 1.2 alpha` 里修好：修复逻辑单独一个 INI，主 INI 只改一行，F10 重载后实机通过（首节）。RabbitFX 和产品代码没有动。TangTang 槽位转换仍只剩 LOD 距离没看。此前各节按时间倒序保留。
+> 最后更新：2026-10-09 晚。服务 0.1.13，探针 0.1.6。本轮只读评估 ZZMI 兼容性：底层采集具备复用条件，尚无绝区零实测，开关模组、哈希呈现和角色模型流程需适配（首节）。此前 Typhoeus 头发描边修复已实机通过（次节）；TangTang 槽位转换仍只剩 LOD 距离没看。此前各节按时间倒序保留。
+
+## ZZMI 兼容性只读评估（2026-10-09 晚；未适配、未注入）
+
+- 用户问本 MCP 能否用于 `D:\XXMI-Launcher-Portable-v2.1.6\ZZMI`。只读取安装与本项目代码；没有改 ZZMI／启动器／游戏文件，没有按键、注入或重启。看到 `ZenlessZoneZero.exe` PID **18692**，`find_probes()` 返回空，因此没有连接、采集或真实角色验证。
+- **复用依据**：本机 EFMI 与 ZZMI 的 `d3d11.dll` 版本均为 **1.2.2.0**、长度 3,192,832，SHA256 同为 `EA97846AF4610B9AF42BEDDCCD7F22A5E73E85B25669CD4391EA8000962FDD7D`。探针通过系统 D3D11 创建设备入口与上下文接口工作，不检查 Endfield 进程名；基础 draw／buffer／texture／shader／contents／RTV／UAV 采集可望复用，限 D3D11 路径，不能据 DLL 相同推断已在绝区零通过。服务可用现有 `--efmi-root` 指向 ZZMI，但这不会加载探针；当前自动连接也没有按这个根目录筛选游戏进程。
+- **本机配置**：ZZMI `d3dx.ini` 的 target 为 `ZenlessZoneZero.exe`，shader_hash=3dmigoto、texture_hash=0、**track_region_hashes=0**；当前服务的 IB／VB 主 hash 使用绘制区域 CRC，同时另存 resource_hash。因此 ZZMI 的 INI 哈希与自动匹配需要按整资源口径适配，不能直接拿 EFMI 的区域 hash 写进去。安装扫描入口已执行，可读 Include／exclude 规则，本目录扫描到 0 个活动 mod／0 个引用 hash（不能据此验证非空模组匹配）。
+- **按键**：只调用服务的只读配置预检，两条 F10 重载绑定通过；没有发送 F10。ZZMI 的开关是 `Core\ZZMI\main.ini` 的 F6／`$costume_mods`，现有服务和探针固定检查 `Core\EFMI\KeyBindings.ini` 的 F11，预检会拒绝，须连同状态读取一起适配。上游 ZZMI 源码同样定义 F6：<https://raw.githubusercontent.com/leotorrez/ZZMI-Package/main/ZZMI/Core/ZZMI/main.ini>。
+- **模型流程**：`model_capture.instance_config` 固定用 VS t0、stride 16、实例 CB 的特定偏移；`loyal_bridge`／`model_workflow` 使用 EFMI merged-skeleton 工程与 LoyalTools 对应入口，不能当作通用的绝区零角色／骨骼／LOD／mod 导出流程。普通绑定与原始资源读取应和这些高级功能分开验收。用户本轮只是询问兼容性，未开始改造或安装。
 
 ## Typhoeus 的头发描边：按用户要求在 mod 里修好（2026-10-09 17:27–17:35，真实游戏 PID 12176；F10 一次）
 

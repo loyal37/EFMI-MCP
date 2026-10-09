@@ -313,3 +313,9 @@ F10 一次（事前告知）后实测：上色遍 `t70` 空、`t72` 是头发漫
 用户决定：“从本地 main 去掉再正常推”。本地 `main` 原来是 `acb0ad4` 之后接着无关的 `824079e`（pelican 动画）和三次记录提交；远端分支 `claude/rabbitfx-hair-outline-20261009` 上是同样三次记录、但不含 `824079e`，两者的文件只差 `pelican-bicycle.html`。把本地 `main` 指到那条线的末端 `1188552`（工作区文件没有动，原先“已删除未暂存”的 `pelican-bicycle.html` 随之不再出现），然后普通推送，`origin/main` 从 `acb0ad4` 快进到 `1188552`，没有强推。`824079e` 现在不在任何分支上。
 
 远端的 `codex/live-capture-verification-20261009` 和 `claude/rabbitfx-hair-outline-20261009` 的内容都已在 `main` 里；随后用户说“删”，两个远端分支和本地同名的 `codex/…` 分支都已删除（删前确认过都是 `origin/main` 的祖先），远端现在只有 `main`。此后照常在 `main` 上提交并推送。
+
+## 2026-10-09 晚：回答本 MCP 能否用于绝区零／ZZMI
+
+只读检查用户指定的 `D:\XXMI-Launcher-Portable-v2.1.6\ZZMI`。两份 XXMI DLL 版本与 SHA256 完全相同，探针没有 Endfield 进程名限制，基础 D3D11 采集可望复用；但目前无绝区零实测。看到 ZenlessZoneZero PID 18692，探针管道列表为空；没有注入、按键、重启或更改安装配置。
+
+用生产代码跑了只读 mod 扫描与按键配置预检：扫描规则正常（0 活动 mod），F10 两条绑定满足要求；模组开关因代码固定 EFMI 的路径／F11 而拒绝，ZZMI 实际为 F6／$costume_mods。另查明 track_region_hashes=0 与工具默认区域 hash 的呈现／匹配差异；LoyalTools 模型流程仍依赖 EFMI 布局与 merged-skeleton 工程。结论及范围同步 CURRENT_STATE／TASKS／KNOWN_ISSUES。用户只询问能力，未实施适配。仅更新项目记忆，原有未跟踪的 `pelican-bicycle.html` 未动。
