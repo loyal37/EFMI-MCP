@@ -1,9 +1,11 @@
 """Does the probe hand back what a call saw? (probe 0.1.6, capture option "contents")
 
-The sandbox's content pass issues about thirty calls and rewrites something
+The sandbox's content pass issues about forty calls and rewrites something
 between each two of them: a dynamic vertex buffer, a pool a vertex shader
 reads, textures by map, update, copy, clear, GenerateMips and resolve, the
-targets of draws, the buffers and textures a compute and a pixel shader write.
+targets of draws, the buffers and textures a compute and a pixel shader write,
+and the same through the calls of ID3D11DeviceContext1 and the clears of
+unordered access views.
 Every byte it writes says in which frame and at which place in the frame it was
 written. This test records one frame, lets the program run on for many frames
 so that everything has been overwritten again, and then asks the probe for the
@@ -136,7 +138,10 @@ class Frame:
             self.calls = {tag: self.cap.draw(n) for tag, n in numbers.items()}
             vertices = self.calls[1].get("vb", {}).get(1, {}).get("content")
             if vertices is not None:      # the buffer says in which frame it was written
-                self.fc = struct.unpack("<I", client.read_content(self.frame, vertices, 0, 4)[1])[0]
+                try:
+                    self.fc = struct.unpack("<I", client.read_content(self.frame, vertices, 0, 4)[1])[0]
+                except ProbeError:
+                    pass                  # not kept (a test of a small budget): the caller asks for it and sees why
             return
         for d in self.cap.draws():
             cb = d.get("cb", {}).get("cs-cb2" if d["type"] >= 8 else "ps-cb2")
@@ -202,10 +207,10 @@ def main() -> int:
         print(f"capture {f.frame}: {len(cap)} calls, frame counter {fc}, stats "
               f"{ {k: v for k, v in stats.items() if k.startswith('ct_') or k in ('events', 'record_ms')} }")
         check("every call of the content pass is found by the constants it read",
-              sorted(f.calls) == list(range(1, 30)) and fc not in (None, -1, 0), str(sorted(f.calls)))
+              sorted(f.calls) == list(range(1, 38)) and fc not in (None, -1, 0), str(sorted(f.calls)))
         check("each call saw its own version of the constant buffer",
               all(data[:16] == struct.pack("<4f", *(c / 255 for c in colour(tag, fc))) for tag, data in f.constants.items())
-              and len({f.slot(tag, "cb", "cs-cb2" if tag in range(23, 28) else "ps-cb2") for tag in f.calls}) == 29)
+              and len({f.slot(tag, "cb", "cs-cb2" if tag in range(23, 28) else "ps-cb2") for tag in f.calls}) == 37)
         check("the probe says that contents are being kept", client.status()["capture"].get("contents_kept") is True)
 
         # Let the program run on: everything is overwritten many times before anything is asked for.
@@ -237,6 +242,11 @@ def main() -> int:
         for tag, pool, what in ((4, p4, "rewritten whole"), (5, p5, "after an update of bytes 64-127"),
                                 (6, p6, "after a copy into bytes 256-319"), (7, p7, "after an overlapping update of bytes 96-159")):
             expect(f, f"pool read by the vertex shader, {what}", tag, "tex", "vs-t9", pool)
+        p33 = patched(p7, 512, fill(64, 33, fc))
+        p34 = patched(p33, 640, fill(64, 34, fc))
+        expect(f, "pool after UpdateSubresource1", 33, "tex", "vs-t9", p33)
+        expect(f, "pool after CopySubresourceRegion1", 34, "tex", "vs-t9", p34)
+        expect(f, "pool as the draws before those two saw it", 32, "tex", "vs-t9", p7)
         meta, part = f.read(f.slot(5, "tex", "vs-t9"), 100, 40)
         check("a part of a buffer version", part == p5[100:140] and meta.get("offset") == 100 and meta.get("size") == 40, str(meta))
         check("calls between which nothing was written share one version",
@@ -278,6 +288,14 @@ def main() -> int:
             expect(f, f"texture a compute shader wrote, after dispatch {tag}", tag, "out", "u0", words,
                    format_name="R32_UINT", width=16, height=16)
         expect(f, "what draw 9 left in its render target", 9, "out", "o0", colour(9, fc) * 256)
+        expect(f, "render target cleared with ClearView, before its view was discarded", 30, "tex", "ps-t11", colour(30, fc) * 256)
+        expect(f, "the same target before the whole resource was discarded", 31, "tex", "ps-t11", colour(31, fc) * 256)
+        expect(f, "and after it was cleared again", 32, "tex", "ps-t11", colour(32, fc) * 256)
+        expect(f, "float texture cleared through its unordered access view", 35, "tex", "ps-t15", struct.pack("<64f", *[0.25] * 64),
+               format_name="R32_FLOAT")
+        expect(f, "the same texture after it was cleared to another value", 36, "tex", "ps-t15", struct.pack("<64f", *[0.75] * 64))
+        expect(f, "integer texture cleared through its unordered access view", 36, "tex", "ps-t16", struct.pack("<256I", *[5] * 256))
+        expect(f, "the same texture after it was cleared to another value", 37, "tex", "ps-t16", struct.pack("<256I", *[6] * 256))
         # The scene's own textures are still bound while the content pass draws.
         meta, data = f.read(f.slot(1, "tex", "ps-t0"))
         check("a texture nothing writes to is not copied: it is read where it is",
@@ -305,6 +323,12 @@ def main() -> int:
               len([e for e in events if e["type"] == "GenerateMips"]) == 2
               and len([e for e in events if e["type"] == "ResolveSubresource"]) == 2, str({e["type"] for e in events}))
         check("the events are in call order", [e["before_call"] for e in events] == sorted(e["before_call"] for e in events))
+        kinds = [e["type"] for e in events]
+        check("the calls of the newer context interface and the clears of unordered access views are listed",
+              kinds.count("ClearView") == 1 and kinds.count("DiscardView") == 1 and kinds.count("DiscardResource") == 1
+              and len(before(36, "ClearUnorderedAccessViewFloat")) == 1 and len(before(37, "ClearUnorderedAccessViewUint")) == 1
+              and [round(v, 2) for v in before(36, "ClearUnorderedAccessViewFloat")[0]["values"]] == [0.75, 0, 0, 0]
+              and before(37, "ClearUnorderedAccessViewUint")[0]["a"][0] == 6, str(sorted(set(kinds))))
 
         print("== state that came with 0.1.6")
         multi = next((d for d in cap.draws() if d.get("viewport_count", 0) == 2), None)
@@ -348,7 +372,7 @@ def main() -> int:
         except ProbeError as exc:
             check("the contents of the capture before are gone once a new one is taken", "capture again" in str(exc), str(exc))
 
-        small = Frame(client, inputs=INPUTS, budget_mb=0.004)      # 4 KiB: less than the vertex buffer
+        small = Frame(client, numbers=number, inputs=INPUTS, budget_mb=0.004)      # 4 KiB: less than the vertex buffer
         time.sleep(0.5)
         try:
             small.read(small.slot(1, "vb", 1))

@@ -142,7 +142,7 @@ def main() -> int:
         print("\n".join(res.messages))
         after = client.status()["frame"]
         print(f"\n{res.checks} comparisons, {res.mismatches} mismatches; asked {after - cap.frame} frames after the capture")
-        rc = 0 if res.mismatches == 0 and res.checks > 300 and len(calls) == len(game) == 34 else 1
+        rc = 0 if res.mismatches == 0 and res.checks > 300 and len(calls) == len(game) == 42 else 1
 
         # The same frame written out by efmi_dump_frame: its index, vertex and constant text against XXMI's.
         out = RUN / "mcp-out" / "contents-parity-dump"
@@ -153,7 +153,7 @@ def main() -> int:
               f"skipped {written.get('skipped', {})}")
         print(f"text files of XXMI: {same} identical to the ones written here, {different} different")
         print("\n".join(notes))
-        if different or same < 150 or written.get("problems"):
+        if different or same < 200 or written.get("problems"):
             rc = 1
         if not args.keep:
             shutil.rmtree(out, ignore_errors=True)

@@ -481,10 +481,10 @@ def main() -> int:
         for line in text.splitlines():
             if line.startswith("#") and "ic=294" in line and "vs=" in line:
                 by_vs.setdefault(line.split("vs=")[1].split()[0], []).append(int(line.split()[0][1:]))
-        content_draws = next((numbers for numbers in by_vs.values() if len(numbers) == 24), [])
-        check("the 24 draws of the content pass are listed", len(content_draws) == 24, text)
-        # In frame order: tags 1-19, then 28 and 29, then 20-22.
-        call = dict(zip(list(range(1, 20)) + [28, 29, 20, 21, 22], content_draws))
+        content_draws = next((numbers for numbers in by_vs.values() if len(numbers) == 32), [])
+        check("the 32 draws of the content pass are listed", len(content_draws) == 32, text)
+        # In frame order: tags 1-19, then 28 and 29, then 20-22, then 30-37.
+        call = dict(zip(list(range(1, 20)) + [28, 29, 20, 21, 22] + list(range(30, 38)), content_draws))
         time.sleep(0.7)             # many frames later: everything has been overwritten again
         if call:
             text, err, _ = mcp.call("efmi_read_buffer", draw=call[1], slot="vb1", whole=True, save=True)

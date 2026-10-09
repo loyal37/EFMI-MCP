@@ -303,7 +303,9 @@ struct Scene {
 	ID3D11ComputeShader* c_cs_fill = nullptr, *c_cs_tex = nullptr;
 	ID3D11Buffer* c_ib = nullptr, *c_k = nullptr, *c_dyn_vb = nullptr, *c_pool = nullptr, *c_ubuf = nullptr, *c_om_buf = nullptr;
 	ID3D11ShaderResourceView* c_pool_srv = nullptr;
-	ID3D11UnorderedAccessView* c_ubuf_uav = nullptr, *c_om_uav = nullptr, *c_utex_uav = nullptr;
+	ID3D11UnorderedAccessView* c_ubuf_uav = nullptr, *c_om_uav = nullptr, *c_utex_uav = nullptr, *c_ftex_uav = nullptr;
+	ID3D11Texture2D* c_ftex = nullptr;
+	ID3D11ShaderResourceView* c_ftex_srv = nullptr, *c_utex_srv = nullptr;
 	ID3D11Texture2D* c_dyn_tex = nullptr, *c_aux = nullptr, *c_aux2 = nullptr, *c_upd = nullptr, *c_gen = nullptr;
 	ID3D11Texture2D* c_arr = nullptr, *c_ms = nullptr, *c_res = nullptr, *c_utex = nullptr;
 	ID3D11ShaderResourceView* c_dyn_tex_srv = nullptr, *c_aux2_srv = nullptr, *c_upd_srv = nullptr, *c_gen_srv = nullptr;
@@ -890,6 +892,13 @@ static bool build_content_pass(Scene& s)
 		if (!content_tex(s, 16, 16, 1, 1, DXGI_FORMAT_R32_UINT, 1, D3D11_USAGE_DEFAULT,
 		                 D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE, 0, 0, &s.c_utex)) return false;
 		hr = s.dev->CreateUnorderedAccessView(s.c_utex, nullptr, &s.c_utex_uav); CHECK(hr, "c utex uav");
+		hr = s.dev->CreateShaderResourceView(s.c_utex, nullptr, &s.c_utex_srv); CHECK(hr, "c utex srv");
+	}
+	{   // a float texture that is only ever cleared through its unordered access view
+		if (!content_tex(s, 8, 8, 1, 1, DXGI_FORMAT_R32_FLOAT, 1, D3D11_USAGE_DEFAULT,
+		                 D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE, 0, 0, &s.c_ftex)) return false;
+		hr = s.dev->CreateUnorderedAccessView(s.c_ftex, nullptr, &s.c_ftex_uav); CHECK(hr, "c ftex uav");
+		hr = s.dev->CreateShaderResourceView(s.c_ftex, nullptr, &s.c_ftex_srv); CHECK(hr, "c ftex srv");
 	}
 	return true;
 }
@@ -1059,6 +1068,52 @@ static void render_content_pass(Scene& s)
 	content_draw(s, 22, fc);
 	s.ctx->OMSetRenderTargets(1, &s.c_aux_rtv, nullptr);
 	s.ctx->PSSetShader(s.c_ps_fill, nullptr, 0);
+
+	// 30-34: the calls of ID3D11DeviceContext1. A view is cleared, a view and then its resource are
+	// discarded (what they held before has to survive that), a pool is updated and copied into.
+	if (s.ctx1) {
+		colour_f(30, fc, cf);
+		s.ctx1->ClearView(s.c_aux2_rtv, cf, nullptr, 0);
+		content_draw(s, 30, fc);
+		s.ctx1->DiscardView(s.c_aux2_rtv);
+		colour_f(31, fc, cf);
+		s.ctx->ClearRenderTargetView(s.c_aux2_rtv, cf);
+		content_draw(s, 31, fc);
+		s.ctx1->DiscardResource(s.c_aux2);
+		colour_f(32, fc, cf);
+		s.ctx->ClearRenderTargetView(s.c_aux2_rtv, cf);
+		content_draw(s, 32, fc);
+		{
+			fill(bytes, 64, 33, fc);
+			D3D11_BOX box = { 512, 0, 0, 576, 1, 1 };
+			s.ctx1->UpdateSubresource1(s.c_pool, 0, &box, bytes, 0, 0, 0);
+		}
+		content_draw(s, 33, fc);
+		if (SUCCEEDED(s.ctx->Map(s.upload, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+			fill((uint8_t*)m.pData, 64, 34, fc);
+			s.ctx->Unmap(s.upload, 0);
+			D3D11_BOX box = { 0, 0, 0, 64, 1, 1 };
+			s.ctx1->CopySubresourceRegion1(s.c_pool, 0, 640, 0, 0, s.upload, 0, &box, 0);
+		}
+		content_draw(s, 34, fc);
+	}
+
+	// 35-38: textures cleared through an unordered access view between the draws that sample them
+	{
+		const float quarter[4] = { 0.25f, 0, 0, 0 }, most[4] = { 0.75f, 0, 0, 0 };
+		const UINT five[4] = { 5, 0, 0, 0 }, six[4] = { 6, 0, 0, 0 };
+		ID3D11ShaderResourceView* pair[2] = { s.c_ftex_srv, s.c_utex_srv };
+		s.ctx->ClearUnorderedAccessViewFloat(s.c_ftex_uav, quarter);
+		s.ctx->ClearUnorderedAccessViewUint(s.c_utex_uav, five);
+		s.ctx->PSSetShaderResources(15, 2, pair);
+		content_draw(s, 35, fc);
+		s.ctx->ClearUnorderedAccessViewFloat(s.c_ftex_uav, most);
+		content_draw(s, 36, fc);
+		s.ctx->ClearUnorderedAccessViewUint(s.c_utex_uav, six);
+		content_draw(s, 37, fc);
+		ID3D11ShaderResourceView* none2[2] = {};
+		s.ctx->PSSetShaderResources(15, 2, none2);      // the compute shader below writes one of them
+	}
 
 	// 23-25: a compute shader that rewrites one buffer three times; 26-27: a texture twice
 	s.ctx->CSSetShader(s.c_cs_fill, nullptr, 0);
