@@ -43,7 +43,9 @@
 
 ## 安装
 
-1. 构建（已构建过可跳过）：
+1. 从 [GitHub Releases](https://github.com/loyal37/EFMI-MCP/releases/latest) 下载 `EFMI-MCP-v<版本>-windows-x64.zip` 并解压。完整包包含 Python 服务、模型辅助脚本、`dist/efmi_probe.dll` 和可选的 `dist/efmi_crc32c.dll`，无需自己编译；保留包内目录结构，使用 64 位 Python（已验证 Python 3.12）。下文的本机路径示例请替换为自己的 Python、解压目录和 EFMI 安装目录；后者可通过服务参数 `--efmi-root` 指定。
+
+   已有源码目录时，也可以下载 Release 的两个独立 DLL 放入 `dist/`。需要从源码构建时执行：
 
    ```bash
    probe\build.bat
