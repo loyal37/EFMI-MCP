@@ -376,3 +376,12 @@ README 的历史结果：XXMI 三种加载顺序各 `69` 项一致、真实离�
 ## 恢复入口
 
 先读本文件与 `TASKS.md`；实现细节见 `ARCHITECTURE.md`，约束见根 `AGENTS.md` / `DECISIONS.md`，问题见 `KNOWN_ISSUES.md`。接续时先确认实际源码、产物和加载中的进程版本，不将 PID 或帧号当作永久配置。
+
+## GitHub Release v0.1.13 已发布（2026-10-10）
+
+- 用户明确要求发布带 DLL 的 Release。已发布正式 Latest：[v0.1.13](https://github.com/loyal37/EFMI-MCP/releases/tag/v0.1.13)，服务 0.1.13／探针 0.1.6／协议 1，tag 指向 `77c1dfd84721324f88ff9eb189930d00422e1e17`。该提交只补 README 的预编译包安装说明；未改产品代码或重建探针。
+- 四个附件：`EFMI-MCP-v0.1.13-windows-x64.zip`（457,933 字节）、`efmi_probe.dll`（456,192）、`efmi_crc32c.dll`（102,912）和 `SHA256SUMS.txt`。完整包含已提交的 Python 服务／四个运行辅助脚本、两个 DLL、中文快速开始、BUILD_INFO 与内部逐文件校验，共 37 个文件；不含捕获、游戏／模组资源、项目记忆或本地计划书。
+- 探针 SHA256 `fffa1315b5f16b2e55efc249741b77f1d21d777214723cf6888902ae5d1f5c1b`，与此前已实机通过的文件相同；包 SHA256 `ed48f3d84a91f534adae3e7bbf48497cbc98f3499c7e18ddded0db461088a757`。两个 DLL 均核对为 x64；CRC DLL 由 Python 服务加载，不注入游戏。
+- 本轮用发布暂存的探针跑私有沙盒：selftest 143、contents 73、MCP 102 全通过；CRC 加速库 8 项通过。解压包的完整性、逐文件哈希、Python 编译、真实 stdio initialize／tools/list（29 工具）／ping、原生 CRC 加载均通过。未新增实机测试，未向用户游戏注入／发送按键／重启；ZZMI 仍未适配或实测。
+- GitHub 发布后重新下载四个附件，字节与本地全部一致，GitHub SHA256 与校验清单均通过；核对非 draft、非 prerelease、Latest、tag 和源码提交一致。发布说明及记录在 `captures/release-v0.1.13-20261010/`，附件在 `dist/releases/v0.1.13/`（均忽略）。
+- Git 传输遇连接重置／443 连接失败，README 提交已通过 Git Data API 上传同一 blob／tree／commit SHA，再以 `force=false` 快进 main；未改写历史。保留本轮开始时已有的艾尔黛拉记忆改动，本轮暂存只含发布记录。发版事项无剩余。

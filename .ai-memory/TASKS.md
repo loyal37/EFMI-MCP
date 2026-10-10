@@ -155,3 +155,9 @@ MCP服务0.1.3增加 `key_down_observed`：按住期间未观察到高位就返�
 ### T-005：当前梨诺的合并骨骼提取（已完成，2026-10-06）
 
 按原LoyalTools算法生成目标workplace及liimo merge.blend，18组件/79044顶点/94051三角，696组槽/512canonical来源。三独立采样、完整几何逐字节核对和Blender真实导入均通过；预览与说明随成品保存。EFMI/LoyalTools只读；静态编辑与材质边界见CURRENT_STATE。
+
+### GitHub Release v0.1.13（已完成，2026-10-10）
+
+- 用户要求带 DLL 的 Release：已发布 [v0.1.13](https://github.com/loyal37/EFMI-MCP/releases/tag/v0.1.13)，对应源码 `77c1dfd`，服务 0.1.13／探针 0.1.6。
+- 完整 Windows x64 包、独立探针 DLL、CRC 加速 DLL、SHA256SUMS 四个附件齐全，发布后下载逐字节核对通过。README 已补预编译包安装入口。
+- 本轮沙盒 143＋73＋102 项、CRC 8 项和解压后的 29 工具 stdio 启动检查通过；没有新增实机测试或 ZZMI 支持。证据与边界见 CURRENT_STATE 的同名节；无发版待办。

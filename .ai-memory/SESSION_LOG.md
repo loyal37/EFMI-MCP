@@ -321,3 +321,11 @@ F10 一次（事前告知）后实测：上色遍 `t70` 空、`t72` 是头发漫
 用生产代码跑了只读 mod 扫描与按键配置预检：扫描规则正常（0 活动 mod），F10 两条绑定满足要求；模组开关因代码固定 EFMI 的路径／F11 而拒绝，ZZMI 实际为 F6／$costume_mods。另查明 track_region_hashes=0 与工具默认区域 hash 的呈现／匹配差异；LoyalTools 模型流程仍依赖 EFMI 布局与 merged-skeleton 工程。结论及范围同步 CURRENT_STATE／TASKS／KNOWN_ISSUES。用户只询问能力，未实施适配。仅更新项目记忆，原有未跟踪的 `pelican-bicycle.html` 未动。
 
 用户随后问“区域 hash 是什么”：核对 `hashes.py` 的 `index_region`／`vertex_region` 与探针范围裁剪，按“共享大缓冲中的一段数据”说明，与整资源标识区分；IB 范围精确，indexed VB 的哈希范围遵循 XXMI 的估算规则。参考上游 XXMI 区域哈希发布说明及 ZZMI 配置，未做游戏操作或代码／配置修改。
+
+## 2026-10-10：发布首个带 DLL 的 GitHub Release
+
+用户要求在 GitHub 发布带 DLL 的版本。已将 README 的 Release 安装说明提交为 `77c1dfd` 并同步 main，发布正式 Latest `v0.1.13`，tag 精确指向该提交：[Release](https://github.com/loyal37/EFMI-MCP/releases/tag/v0.1.13)。服务 0.1.13／探针 0.1.6；复用此前实机验证且校验值相同的 DLL，没有产品代码或探针构建变化。
+
+附件为 Windows x64 完整包（含 Python 服务／四个运行辅助脚本／两个 DLL／中文快速开始／BUILD_INFO／内部校验）、独立 `efmi_probe.dll`、`efmi_crc32c.dll` 和 `SHA256SUMS.txt`。从确定的 Git 提交取源码打包，不包含工作区未提交内容、捕获、游戏资源或本地计划书。使用暂存探针完成 selftest 143／contents 73／MCP 102 项及 CRC 8 项回归；解压后校验、Python 编译和 stdio 初始化／29 工具／ping 通过。发布后下载四个附件与本地逐字节相同，GitHub digest、清单、tag、Latest 与发布状态核对通过。证据 `captures/release-v0.1.13-20261010/release-verification.json`，其余测试日志同目录。
+
+Git 传输失败，使用 Git Data API 上传精确相同的 Git 对象，并以 `force=false` 快进 main；未覆盖远端历史。本轮开始已有的艾尔黛拉记忆改动保留，只暂存本轮发布记录。没有操作用户游戏或安装目录，也没有新增实机验证；发布说明明确 ZZMI 尚未适配／实测。发版已完成。
