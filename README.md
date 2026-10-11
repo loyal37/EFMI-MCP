@@ -1,73 +1,73 @@
 # EFMI MCP
 
-让 agent 在《明日方舟：终末地》运行时，实时拿到以往要靠 EFMI/XXMI 抓帧（frame analysis dump）才能得到的数据：每个绘制调用用了哪个索引/顶点缓冲、哪些着色器、哪些贴图和常量缓冲，以及它们的哈希和内容。
+Lets an agent obtain, live while Arknights: Endfield is running, the data that used to require an EFMI/XXMI frame analysis dump: which index/vertex buffers, which shaders, which textures and constant buffers each draw call uses, together with their hashes and contents.
 
-工具不直接修改原版文件：XXMI 的 `d3d11.dll`、`d3dx.ini`、`Core\`、XXMI Launcher、现有 mod 均只读。`efmi_reload_and_capture` 会发送正常 F10 重载请求，因此会产生 XXMI 原有的运行时副作用，包括保存持久变量配置。
+The tool does not modify original files directly: XXMI's `d3d11.dll`, `d3dx.ini`, `Core\`, XXMI Launcher and existing mods are all read-only. `efmi_reload_and_capture` sends a normal F10 reload request and therefore has XXMI's usual run-time side effects, including the saving of its persistent variable configuration.
 
-## 状态
+## Status
 
-| 项目 | 状态 |
+| Item | Status |
 |---|---|
-| 与 XXMI 1.2.0 的哈希一致性 | 沙盒中已验证，三种加载顺序各 69 项对比零差异 |
-| 用真实抓帧离线验算区域哈希 | 586 个 IB/VB 全部一致（`E:\ssmt4e\EFMI` 下的抓帧） |
-| 探针功能自测 / MCP 端到端 | 0.1.5：143 项 / 68 项全部通过（沙盒，含连续采集停止/重启/重连隔离、缓冲销毁后在原地址重建时哈希仍属于新缓冲，以及固定管线状态、视图参数、间接绘制参数和绘制前后的渲染目标拷贝） |
-| 多 D3D11 设备 | 0.1.1 按交换链所属设备选择采集上下文；辅助设备先建/后建、带/不带 XXMI，共 192 项通过 |
-| **在真实游戏中运行** | **0.1.1 已在伊冯画面验证**：非空帧、连续摘要、角色 IB/VB/CB、纹理与着色器读回成功；细节见项目记忆。0.1.4 于 2026-10-07 由重启后的游戏加载：采集和进程内 F10 正常，重载前后 mod 缓冲区域的哈希与读回的内容相符，把部署的导出换成同样大小、内容不同的另一份之后也是如此。0.1.5 于 2026-10-08 由重启后的游戏加载（PID 9736），采集、F10 重载和下一行的新功能都正常 |
-| 模型提取 → Blender → 导出 → 游戏内核对 | MCP 服务 0.1.5 接入 LoyalTools 的提取、LOD 匹配、导入和原生导出。**2026-10-07 实机验证通过**（伊冯：关 mod 提取、JSON LOD、Blender 导入、导出、部署→F10→逐组件核对）；同日又在 Blender 里移动顶点后导出，部署重载后游戏画出的 40 个缓冲与修改后的导出逐字节相同。同日晚在大世界的 LOD 距离实机通过：用探针现采的一帧完成 LOD 帧匹配，导出的 LOD 入口替换了游戏的 LOD 网格，LOD 专用的缓冲被绑定且内容一致 |
-| 自动 F10 后重新采集 | 探针 0.1.2 在游戏进程内按 F10 并给出重载证据，MCP 服务 0.1.4。0.1.3 实机失败的原因是游戏以管理员运行，Windows（UIPI）丢弃普通权限进程发来的按键。**2026-10-06 实机验证通过**，游戏在前台和在后台各一次：移出伊冯 mod 后由工具重载，XXMI 的 93 次替换绘制消失，游戏原始的 30 次绘制出现；游戏在后台时探针把它切到前台，按键后把焦点还给原窗口 |
-| 开关全部 mod（F11） | 探针 0.1.3 在游戏进程内按 EFMI 的 F11，MCP 服务 0.1.6 从 EFMI 的提示文字读回开／关状态。**2026-10-07 实机验证通过**：关闭后伊冯的原始网格由游戏画出、XXMI 的 93 次替换绘制消失，打开后恢复 |
-| 管线状态、某个绘制画了什么 | 探针 0.1.5 / MCP 服务 0.1.8 起：`efmi_get_draw` 多给出混合、深度模板、光栅化状态、裁剪矩形、采样器、视图参数和间接绘制读到的实际参数；`efmi_capture_draw_outputs` 在选中的绘制前后各拷贝一次渲染目标，报告它改了哪些像素。**2026-10-08 实机验证通过**（大世界，4 个带 mod 的角色）：同一个网格的 G-buffer 遍和描边遍读出的状态不同且合理（剔除背面／剔除正面等）；它的 3 个颜色遍分别改了 7242、2881、100 个像素，位置一致，HDR 目标和阴影图都出了图 |
+| Hash agreement with XXMI 1.2.0 | Verified in the sandbox: zero differences in 69 comparisons for each of three load orders |
+| Region hashes re-computed offline from real frame dumps | All 586 IB/VB agree (the dumps under `E:\ssmt4e\EFMI`) |
+| Probe self-test / MCP end to end | 0.1.5: all 143 / 68 checks pass (sandbox; includes isolation of continuous capture across stop/restart/reconnect, the hash belonging to the new buffer when a buffer is destroyed and re-created at the same address, and fixed pipeline state, view parameters, indirect draw arguments and render target copies before and after a draw) |
+| Several D3D11 devices | 0.1.1 selects the capture context by the device the swap chain belongs to; auxiliary device created first/later, with/without XXMI: 192 checks pass |
+| **Running in the real game** | **0.1.1 was verified on a screen showing Yvonne**: non-empty frames, continuous summaries, read-back of the character's IB/VB/CB, textures and shaders; details are in the project memory. 0.1.4 was loaded by the restarted game on 2026-10-07: capture and the in-process F10 work, the hashes of mod buffer regions agree with the content read back before and after a reload, also after the deployed export was swapped for another one of the same size with different content. 0.1.5 was loaded by the restarted game on 2026-10-08 (PID 9736); capture, F10 reload and the new functions of the next row all work |
+| Model extraction → Blender → export → check in the game | MCP server 0.1.5 integrates LoyalTools' extraction, LOD matching, import and native export. **Passed in the real game on 2026-10-07** (Yvonne: extraction with mods off, JSON LOD, Blender import, export, deploy → F10 → check per component); the same day an export after moving vertices in Blender was deployed, and after the reload the 40 buffers the game draws are byte-identical to the modified export. That evening it passed at LOD distance in the open world: LOD frame matching with a frame freshly captured by the probe, the exported LOD entry points replacing the game's LOD mesh, and the LOD-specific buffers bound with matching content |
+| Capture again after an automatic F10 | Probe 0.1.2 presses F10 inside the game process and gives evidence of the reload; MCP server 0.1.4. 0.1.3 failed in the real game because the game runs as administrator and Windows (UIPI) drops key presses from processes with ordinary rights. **Passed in the real game on 2026-10-06**, once with the game in the foreground and once in the background: after the Yvonne mod was moved out, the tool reloaded, XXMI's 93 replacement draws disappeared and the game's original 30 draws appeared; with the game in the background the probe brings it to the front and gives the focus back to the original window after the key press |
+| Switching all mods (F11) | Probe 0.1.3 presses EFMI's F11 inside the game process, and MCP server 0.1.6 reads the on / off state back from EFMI's notification text. **Passed in the real game on 2026-10-07**: after switching off, Yvonne's original mesh is drawn by the game and XXMI's 93 replacement draws disappear; after switching on they are back |
+| Pipeline state, and what a draw painted | From probe 0.1.5 / MCP server 0.1.8: `efmi_get_draw` additionally gives blend, depth-stencil and rasterizer state, scissor rectangles, samplers, view parameters and the actual arguments an indirect draw read; `efmi_capture_draw_outputs` copies the render target once before and once after each selected draw and reports which pixels it changed. **Passed in the real game on 2026-10-08** (open world, 4 modded characters): the states read for the G-buffer pass and the outline pass of the same mesh differ and make sense (back-face culling / front-face culling and so on); its 3 colour passes changed 7242, 2881 and 100 pixels respectively, at matching positions, and pictures were produced for HDR targets and shadow maps |
 
-沙盒是一个按 Unity/终末地方式使用 D3D11 的测试程序，配上一份 XXMI 运行时的私有拷贝。它能验证探针与真正的 XXMI DLL 共存、哈希一致、不卡顿，但验证不了游戏本身的行为，尤其是反作弊。
+The sandbox is a test program that uses D3D11 the way Unity/Endfield does, together with a private copy of the XXMI runtime. It can verify that the probe coexists with the real XXMI DLL, that hashes agree and that nothing stutters, but it cannot verify the behaviour of the game itself, anti-cheat in particular.
 
-## 风险
+## Risk
 
-游戏带 ACE 内核反作弊。探针是一个额外注入游戏进程的未签名 DLL，做的事情和 XXMI 同类（拦截 D3D11 调用）。目前仅确认一次真实游戏中注入、挂接和通信成功，长期运行兼容性仍未验证。账号风险需要你自己判断；建议先用小号试。
+The game has the ACE kernel anti-cheat. The probe is an additional unsigned DLL injected into the game process, doing the same kind of thing as XXMI (intercepting D3D11 calls). So far only injection, hooking and communication in the real game have been confirmed; long-term compatibility is not verified. The risk to your account is yours to judge; trying it on a secondary account first is recommended.
 
-## 组成
+## Components
 
 ```
-游戏进程                                        游戏外
+Game process                                    Outside the game
 ┌───────────────────────────────────┐          ┌──────────────────────────┐
-│ Endfield.exe                      │          │ MCP 服务 (Python, stdio) │
-│   XXMI d3d11.dll   （原版，未改） │  命名管道 │   server\efmi_mcp        │◄── agent
-│   efmi_probe.dll   （探针）       │◄────────►│                          │
-│     挂在系统 D3D11 对象上         │          │ 导出文件 -> captures\    │
+│ Endfield.exe                      │          │ MCP server (Python,stdio)│
+│   XXMI d3d11.dll   (original)     │  named   │   server\efmi_mcp        │◄── agent
+│   efmi_probe.dll   (probe)        │◄─pipe───►│                          │
+│     hooks system D3D11 objects    │          │ exports -> captures\     │
 └───────────────────────────────────┘          └──────────────────────────┘
 ```
 
-- **探针** `dist\efmi_probe.dll`：由启动器在游戏启动时一并注入。它只替换系统 D3D11/DXGI 对象的虚表指针，不改 XXMI 模块，也不改游戏模块。哈希按 XXMI 公开源码中的算法重算。
-- **MCP 服务** `server\`：以 Python 标准库实现，无必需 pip 依赖；可选游戏外 CRC32C 辅助 DLL 加速大缓冲校验（贴图预览用到本机已有的 Pillow/numpy，没有也能运行）。
+- **Probe** `dist\efmi_probe.dll`: injected by the launcher when the game starts. It only replaces vtable pointers of system D3D11/DXGI objects and changes neither the XXMI module nor the game's modules. Hashes are re-computed with the algorithms in XXMI's public sources.
+- **MCP server** `server\`: implemented with the Python standard library, with no required pip dependency; an optional CRC32C helper DLL outside the game speeds up checks of large buffers (texture previews use Pillow/numpy when present and work without them).
 
-探针平时什么都不采集。agent 连接后才开始跟踪缓冲写入；请求一帧时记录下一帧并立即返回；开启连续模式后每帧自动记录摘要并保留最近若干帧。全部在内存里，不按帧写盘。
+The probe normally captures nothing. It starts tracking buffer writes only once an agent connects; when a frame is requested it records the next frame and returns at once; in continuous mode it records a summary of every frame automatically and keeps the most recent ones. Everything stays in memory; nothing is written to disk per frame.
 
-## 安装
+## Installation
 
-1. 从 [GitHub Releases](https://github.com/loyal37/EFMI-MCP/releases/latest) 下载 `EFMI-MCP-v<版本>-windows-x64.zip` 并解压。完整包包含 Python 服务、模型辅助脚本、`dist/efmi_probe.dll` 和可选的 `dist/efmi_crc32c.dll`，无需自己编译；保留包内目录结构，使用 64 位 Python（已验证 Python 3.12）。下文的本机路径示例请替换为自己的 Python、解压目录和 EFMI 安装目录；后者可通过服务参数 `--efmi-root` 指定。
+1. Download `EFMI-MCP-v<version>-windows-x64.zip` from [GitHub Releases](https://github.com/loyal37/EFMI-MCP/releases/latest) and unpack it. The complete package contains the Python server, the model helper scripts, `dist/efmi_probe.dll` and the optional `dist/efmi_crc32c.dll`, so nothing has to be compiled; keep the directory structure of the package and use a 64-bit Python (verified with Python 3.12). Replace the example paths below with your own Python, unpack directory and EFMI installation directory; the latter can be given with the server argument `--efmi-root`.
 
-   已有源码目录时，也可以下载 Release 的两个独立 DLL 放入 `dist/`。需要从源码构建时执行：
+   If you already have a source tree, you can also download the two separate DLLs of the release and put them into `dist/`. To build from source run:
 
    ```bash
    probe\build.bat
    ```
 
-   可选的 CRC32C 加速库独立构建：`server\native\build.bat`。生成 `dist\efmi_crc32c.dll`，仅由 Python 服务加载，无需注入游戏；不存在、加载不兼容或 CPU 不支持 SSE4.2 时自动使用 Python 校验。构建后新启动的采集脚本自动使用；已运行的 MCP 服务需重启服务，游戏无需重启。此库不改变 `efmi_probe.dll`。
+   The optional CRC32C acceleration library is built separately: `server\native\build.bat`. It produces `dist\efmi_crc32c.dll`, which is loaded only by the Python server and does not have to be injected into the game; when it does not exist, cannot be loaded or the CPU does not support SSE4.2, the Python check is used automatically. Capture scripts started after the build use it automatically; a running MCP server has to be restarted, the game does not. This library does not change `efmi_probe.dll`.
 
-2. 让启动器在开游戏时加载探针。打开 XXMI Launcher → 设置 → 高级设置 → 勾选 **注入库（Inject Libraries）**，在列表里加一行：
+2. Have the launcher load the probe when the game starts. Open XXMI Launcher → Settings → Advanced → tick **Inject Libraries** and add one line to the list:
 
    ```
    F:\EFMI MCP\dist\efmi_probe.dll
    ```
 
-   这一项带签名，只能在启动器界面里设置，不能直接改它的配置文件。之后照常从启动器启动游戏。
+   This setting is signed and can only be set in the launcher's interface, not by editing its configuration file. Then start the game from the launcher as usual.
 
-3. 把 MCP 服务注册给 agent。本目录下的 `.mcp.json` 已对在此目录启动的 Claude Code 生效；要在别的项目里也能用：
+3. Register the MCP server with the agent. The `.mcp.json` in this directory already works for a Claude Code started in this directory; to use it from other projects as well:
 
    ```bash
    claude mcp add --scope user efmi -- "D:\Python312\python.exe" "F:\EFMI MCP\server\run_server.py"
    ```
 
-   Codex 在 `%USERPROFILE%\.codex\config.toml` 里加：
+   For Codex add to `%USERPROFILE%\.codex\config.toml`:
 
    ```toml
    [mcp_servers.efmi]
@@ -75,332 +75,332 @@
    args = ["F:\\EFMI MCP\\server\\run_server.py"]
    ```
 
-   服务只在启动时读取代码，更新服务端代码后要让它重新启动。游戏不用重启。
+   The server reads its code only at start-up, so after updating the server code it has to be restarted. The game does not have to be restarted.
 
-   - **Claude 桌面端（Code 标签页）**：新开一个会话，每个会话各自启动一份服务。`/mcp` 打开的 MCP servers 对话框只列出服务和状态，对已连接（✓）的服务没有重连按钮（2026-10-08 实测）。
-   - **终端里的 Claude Code**：输入 `/mcp`，选 `efmi` 后选 Reconnect；或者退出后重新运行 `claude`。
-   - 其他客户端：重启它的 MCP 服务或会话。
+   - **Claude desktop app (Code tab)**: open a new session; every session starts its own server. The MCP servers dialog opened by `/mcp` only lists servers and their state and has no reconnect button for a connected (✓) server (observed on 2026-10-08).
+   - **Claude Code in a terminal**: type `/mcp`, choose `efmi`, then Reconnect; or quit and run `claude` again.
+   - Other clients: restart their MCP server or session.
 
-   判断正在运行的是不是新代码：0.1.8 起工具列表里有 `efmi_capture_draw_outputs`，共 27 个工具（0.1.7 是 26 个）。
+   To tell whether the new code is running: from 0.1.8 the tool list contains `efmi_capture_draw_outputs`, 27 tools in all (0.1.7 has 26).
 
-4. 进游戏后让 agent 调用 `efmi_status`。应看到 `attached: True`、交换链已发现、帧号增长；再用 `efmi_capture_frame` 确认实际 draw 和资源非空。状态会显示采集目标的设备/上下文/交换链及所选上下文的 draw 计数，不能仅凭 `attached` 判断角色数据已采集成功。如果未加载、未挂接或持续空帧，看 `dist\efmi_probe.log`。
+4. Once in the game, have the agent call `efmi_status`. It should show `attached: True`, a swap chain found and a growing frame number; then confirm with `efmi_capture_frame` that actual draws and resources are non-empty. The status shows the device/context/swap chain of the capture target and the draw count of the selected context; `attached` alone does not mean that character data is being captured. If the probe is not loaded, not attached or frames stay empty, look at `dist\efmi_probe.log`.
 
-更新探针后需要退出并重新启动游戏；游戏进程中的 DLL 不会随磁盘文件变化而更新。旧 DLL 仍被游戏占用时，用 `probe\build.bat "F:\EFMI MCP\dist\candidate"` 构建到另一个目录，沙盒脚本通过环境变量 `EFMI_PROBE_DLL` 指向它即可测试。验证后把 `dist\efmi_probe.dll` 改名（被占用的 DLL 可以改名，不能覆盖），再把新 DLL 放到原注入路径，下次启动游戏生效。
+After updating the probe the game has to be quit and started again; the DLL in the game process does not change with the file on disk. While the old DLL is still in use by the game, build into another directory with `probe\build.bat "F:\EFMI MCP\dist\candidate"`, and point the sandbox scripts at it with the environment variable `EFMI_PROBE_DLL` to test. After verification rename `dist\efmi_probe.dll` (a DLL in use can be renamed but not overwritten) and put the new DLL at the original injection path; it takes effect at the next game start.
 
-**探针 0.1.2 / MCP 服务 0.1.4**：自动重载改由探针在游戏进程内按键，需要重启游戏加载新探针，并重启 MCP 服务。游戏里还是 0.1.1 时，`efmi_reload_and_capture` 仍会失败并提示重启游戏；普通采集不受影响。
+**Probe 0.1.2 / MCP server 0.1.4**: the automatic reload is now a key press by the probe inside the game process; the game has to be restarted to load the new probe, and the MCP server restarted. While the game still has 0.1.1, `efmi_reload_and_capture` still fails and says to restart the game; ordinary capture is not affected.
 
-**MCP 服务 0.1.5**：增加模型流程的工具，只需重启 MCP 服务；探针仍是 0.1.2。需要本机有 Blender 并已安装 LoyalTools 插件，默认使用 `D:\blender4,5\blender.exe`，可用 `--blender`／`EFMI_BLENDER` 或工具参数 `blender_path` 指定。
+**MCP server 0.1.5**: adds the tools of the model workflow; only the MCP server has to be restarted, the probe is still 0.1.2. Blender with the LoyalTools add-on installed is needed on the machine; `D:\blender4,5\blender.exe` is used by default and can be set with `--blender` / `EFMI_BLENDER` or the tool argument `blender_path`.
 
-**探针 0.1.3 / MCP 服务 0.1.6**：增加 `efmi_toggle_mods`（F11 开关全部 mod）。需要重启游戏加载新探针，并重启 MCP 服务；游戏里还是 0.1.2 时该工具会提示重启游戏，其余工具照常。0.1.2 的 DLL 留在 `dist\backup-0.1.2\`。
+**Probe 0.1.3 / MCP server 0.1.6**: adds `efmi_toggle_mods` (F11 switch for all mods). The game has to be restarted to load the new probe, and the MCP server restarted; while the game still has 0.1.2 this tool says to restart the game, and the other tools work as usual. The 0.1.2 DLL is kept in `dist\backup-0.1.2\`.
 
-**探针 0.1.4**：修正区域哈希缓存把已销毁缓冲的哈希记给同地址新缓冲的问题（见“探针边界”）。需要重启游戏加载；游戏里还是 0.1.3 或更早版本时一切照常工作，`efmi_status` 和重载结果会提示重载后 mod 缓冲的哈希可能是旧值。0.1.3 的 DLL 留在 `dist\backup-0.1.3\`。2026-10-07 已在真实游戏中加载并核对：把部署的导出换成同样大小、内容不同的另一份再重载，有一块新缓冲建在此前另一块同样大小的缓冲的地址上，记录的哈希是新内容的（见“探针边界”）。
+**Probe 0.1.4**: fixes the region hash cache attributing the hash of a destroyed buffer to a new buffer at the same address (see "Limits of the probe"). The game has to be restarted to load it; while the game still has 0.1.3 or earlier everything works as usual, and `efmi_status` and the reload result point out that the hash of a mod buffer may be an old value after a reload. The 0.1.3 DLL is kept in `dist\backup-0.1.3\`. Loaded and checked in the real game on 2026-10-07: the deployed export was swapped for another of the same size with different content and reloaded; one new buffer was created at the address of an earlier buffer of the same size, and the recorded hash is that of the new content (see "Limits of the probe").
 
-**MCP 服务 0.1.7**：模型流程可以用在大世界的画面上（归档只保留含 GPU 蒙皮网格的对象，场景物件和游戏的动态合批不再让整帧失败）；`efmi_map_lod method=capture` 在帧落盘后就让出探针，匹配期间可以先把 mod 开回去；部署核对在最终判定的那一帧上确认重载。只需重启 MCP 服务，探针不用换。
+**MCP server 0.1.7**: the model workflow can be used on open-world screens (the archive keeps only objects with GPU-skinned meshes; scene objects and the game's dynamic batching no longer fail the whole frame); `efmi_map_lod method=capture` hands the probe back as soon as the frames are on disk, so the mods can be switched back on while matching runs; the deployment check confirms the reload on the frame that is finally judged. Only the MCP server has to be restarted, the probe stays.
 
-**探针 0.1.5 / MCP 服务 0.1.8**（2026-10-08）：三处完善。① `efmi_reload_and_capture` 在重载后的第一帧里还看不到 mod 重新画出来时，会继续看后面的帧（最多 `confirm_wait_ms`，默认 3 秒），返回 mod 已经重新绘制的那一帧；这一项只需重启 MCP 服务。② `efmi_get_draw` 对完整抓取多给出混合、深度模板、光栅化状态、裁剪矩形、采样器、视图参数和间接绘制读到的实际参数。③ 新工具 `efmi_capture_draw_outputs`：在选中的绘制前后各拷贝一次渲染目标，报告它改了哪些像素（见下文“看某个绘制画了什么”）。②③ 需要重启游戏加载新探针，并重启 MCP 服务；游戏里还是 0.1.4 时，`efmi_status` 会提示，`efmi_get_draw` 的结果里注明这部分没有记录，`efmi_capture_draw_outputs` 报错并提示重启游戏，其余工具照常。0.1.4 的 DLL 留在 `dist\backup-0.1.4\`。
+**Probe 0.1.5 / MCP server 0.1.8** (2026-10-08): three improvements. (1) When the first frame after a reload does not show the mods drawn again yet, `efmi_reload_and_capture` goes on looking at later frames (for at most `confirm_wait_ms`, 3 seconds by default) and returns the frame in which the mods are drawn again; this item needs only a restart of the MCP server. (2) For a full capture `efmi_get_draw` additionally gives blend, depth-stencil and rasterizer state, scissor rectangles, samplers, view parameters and the actual arguments an indirect draw read. (3) New tool `efmi_capture_draw_outputs`: copies the render target once before and once after each selected draw and reports which pixels it changed (see "Seeing what a draw painted" below). (2) and (3) need a game restart to load the new probe and a restart of the MCP server; while the game still has 0.1.4, `efmi_status` says so, the result of `efmi_get_draw` notes that this part was not recorded, `efmi_capture_draw_outputs` reports an error and says to restart the game, and the other tools work as usual. The 0.1.4 DLL is kept in `dist\backup-0.1.4\`.
 
-**MCP 服务 0.1.9**（2026-10-08，实机核对之后）：`efmi_capture_draw_outputs` 的结果按绘制分组并给出这一帧在游戏内的记录耗时；游戏主深度缓冲的格式（32 位深度＋8 位模板）现在能出图，`efmi_read_texture` 同样受益；转不成图片的格式前后两份都存 DDS；`efmi_get_draw` 的混合状态只列出实际绑定的颜色目标，各目标相同时合并成一条。只需让服务用上新代码（桌面端新开会话），探针不用换。
+**MCP server 0.1.9** (2026-10-08, after the check in the real game): the result of `efmi_capture_draw_outputs` is grouped by draw and gives the in-game record time of the frame; the format of the game's main depth buffer (32-bit depth + 8-bit stencil) can now be turned into a picture, which `efmi_read_texture` benefits from as well; for formats that cannot be converted to a picture both copies are saved as DDS; the blend state of `efmi_get_draw` lists only the colour targets actually bound and merges them into one entry when they are the same. Only the server has to pick up the new code (a new session in the desktop app); the probe stays.
 
-**MCP 服务 0.1.10**（2026-10-08）：`efmi_reload_and_capture` 改为等到“mod 画的量不再增长”才取返回的那一帧。此前的标准是“看到 XXMI 在按键后新建的对象被用到”，而实机上按键后第 3 帧就满足了，那时只恢复了一半的 mod 绘制（见“重载之后返回哪一帧”）。只需让服务用上新代码，探针不用换。
+**MCP server 0.1.10** (2026-10-08): `efmi_reload_and_capture` now takes the returned frame only when "what the mods draw has stopped growing". The criterion before was "objects XXMI created after the key press are seen in use", which in the real game was met by the 3rd frame after the key press, when only half of the mods' draws were back (see "Which frame is returned after a reload"). Only the server has to pick up the new code; the probe stays.
 
-**MCP 服务 0.1.11**（2026-10-08，T-013 的第一步，只需让服务用上新代码）：`efmi_read_buffer` 现在接受绘制的每一种缓冲槽位——除了 `ib`、`vbN`、常量缓冲，还有绑成着色器资源的缓冲（`vs-t0` 这类骨骼／实例池，按视图的元素逐行给出）和无序访问视图（`u0`，计算着色器或绘制写出的内容）；`whole=true` 读整块缓冲而不是绑定露出的那一段（常量池、整块网格堆）。每个结果都带 `source` 和 `exact`：字节来自抓取自身的快照，还是现在才读、读之前有没有被写过。间接绘制的索引按它从参数缓冲读到的数量解码。两处修正：常量缓冲快照没留下时 `efmi_get_draw` 不再报 `contents_captured: true`（另给 `contents_missing`）；帧分析目录的读取器不再漏掉带 `=!S!=` 这类标记和没有哈希的文件（用户那份目录 18,666 个资源文件现在全部认得，标记保留在结果里）。调用当时的内容（动态缓冲、UAV、贴图）要等探针 0.1.6。
+**MCP server 0.1.11** (2026-10-08, the first step of T-013; only the server has to pick up the new code): `efmi_read_buffer` now accepts every kind of buffer slot of a draw: besides `ib`, `vbN` and constant buffers also buffers bound as shader resources (bone / instance pools such as `vs-t0`, given row by row per element of the view) and unordered access views (`u0`, what a compute shader or a draw writes); `whole=true` reads the whole buffer instead of the part the binding exposes (constant pools, whole mesh heaps). Every result carries `source` and `exact`: whether the bytes come from the capture's own snapshot or are read now, and whether anything wrote to them before the read. The indices of an indirect draw are decoded with the count it read from its argument buffer. Two corrections: when the snapshot of a constant buffer was not kept, `efmi_get_draw` no longer reports `contents_captured: true` (it gives `contents_missing` instead); the reader for frame analysis directories no longer misses files with markers such as `=!S!=` or without a hash (all 18,666 resource files of the user's directory are now recognised, and the markers are kept in the result). Contents as they were at the call (dynamic buffers, UAVs, textures) need probe 0.1.6.
 
-**探针 0.1.6 / MCP 服务 0.1.12**（2026-10-08，T-013 的主体；**要重启游戏加载新探针**；沙盒验证通过，2026-10-09 已在实机核对）：抓取可以保留“每次调用当时的内容”。`efmi_capture_frame contents=inputs` 让探针记住每次绘制／计算读到的索引、顶点、常量缓冲和绑成着色器资源的缓冲与贴图，`contents=outputs` 再加上调用写出的渲染目标和无序访问视图。之后 `efmi_read_buffer`、`efmi_read_texture` 返回的就是那次调用看到的字节，而不是读取时的内容；`efmi_list_writes` 列出调用之间的 Map／Update／Copy／Clear；`efmi_dump_frame` 把一帧按帧分析目录的格式写到文件夹。另外补上了：图形绘制的 UAV 绑定（`u1` 等）、全部视口、三维贴图和多重采样颜色贴图的读回。做法和边界见下面“调用当时的内容”。
+**Probe 0.1.6 / MCP server 0.1.12** (2026-10-08, the main body of T-013; **the game has to be restarted to load the new probe**; verified in the sandbox, and checked in the real game on 2026-10-09): a capture can keep "the contents as they were at each call". `efmi_capture_frame contents=inputs` has the probe remember the index, vertex and constant buffers and the buffers and textures bound as shader resources that each draw / compute call read; `contents=outputs` adds the render targets and unordered access views the calls wrote. `efmi_read_buffer` and `efmi_read_texture` then return the bytes that call saw rather than the content at the time of reading; `efmi_list_writes` lists the Map / Update / Copy / Clear between calls; `efmi_dump_frame` writes a frame to a folder in the format of a frame analysis directory. Also added: UAV bindings of graphics draws (`u1` and so on), all viewports, and read-back of 3D textures and multisampled colour textures. Approach and limits are under "Contents as they were at the call" below.
 
-**MCP 服务 0.1.13**（2026-10-09，只需让服务用上新代码）：`efmi_capture_frame` 多一档 `contents=buffers`，只保留缓冲（索引、顶点、常量、绑成着色器资源的缓冲），不含贴图，是最省的一档，几何和蒙皮数据够用。`efmi_list_writes bindings=true` 另外列出每次调用相对于上一次同类调用改绑了什么（着色器、缓冲、常量缓冲窗口、贴图、目标、状态），`efmi_dump_frame` 的 `log.txt` 里也有这些 `bind` 行：这就是帧分析日志里那些 Set* 调用给出的信息，只不过是由各次调用的绑定比较出来的，不是逐条记录的调用。任何完整抓取都能用，不需要带内容。
+**MCP server 0.1.13** (2026-10-09; only the server has to pick up the new code): `efmi_capture_frame` gets one more level, `contents=buffers`, which keeps buffers only (index, vertex, constant, and buffers bound as shader resources) without textures; it is the cheapest level and enough for geometry and skinning data. `efmi_list_writes bindings=true` additionally lists what each call has bound differently from the previous call of its kind (shaders, buffers, constant buffer windows, textures, targets, state), and `log.txt` of `efmi_dump_frame` has these `bind` lines too: this is the information the Set* calls of a frame analysis log give, except that it is worked out by comparing the bindings of the calls and is not a record of individual calls. It works with any full capture, contents are not needed.
 
-卸载：在启动器里取消"注入库"即可；探针不会在别处留下东西。
+Uninstalling: untick "Inject Libraries" in the launcher; the probe leaves nothing elsewhere.
 
-## 工具
+## Tools
 
-| 工具 | 作用 |
+| Tool | Purpose |
 |---|---|
-| `efmi_status` | 游戏和探针是否就绪、分辨率、已见到的资源数、已安装 mod |
-| `efmi_capture_frame` | 记录下一帧（`full` 含全部绑定；`cb_data=true` 连同每个 draw 当时的常量缓冲窗口；`contents=buffers`／`inputs`／`outputs` 让探针保留每次调用当时读到／写出的内容，探针 0.1.6） |
-| `efmi_reload_and_capture` | 改完 mod 后让 XXMI 重载并记录新帧：探针在游戏内按一次无修饰键 F10（必要时先把游戏切到前台，按完把焦点还回去），并返回重载是否发生的证据；会停止 live 并清除旧捕获 |
-| `efmi_toggle_mods` | 用 EFMI 自带的 F11 关掉或打开全部 mod 并记录新帧，用来对比游戏的原始绘制和 mod 的绘制；返回 EFMI 自己报告的开／关状态 |
-| `efmi_list_draws` | 按哈希、调用类型、来源等过滤列出绘制调用 |
-| `efmi_get_draw` | 单个绘制调用绑定的全部内容：参数、IB/VB、输入布局、着色器、常量缓冲、贴图、渲染目标、视口；完整抓取还有混合、深度模板、光栅化状态、裁剪矩形、采样器、视图参数、间接绘制读到的实际参数（探针 0.1.5） |
-| `efmi_find_hash` | 某个哈希在这一帧里以什么角色出现，以及哪些 mod 的 ini 引用了它 |
-| `efmi_read_buffer` | 读索引、顶点（按输入布局解码）、常量缓冲、绑成着色器资源的缓冲（`vs-t0` 等）或无序访问视图（`u0`）；`whole=true` 读整块；结果说明字节的来源和是否确切（`source`、`exact`） |
-| `efmi_read_texture` | 读贴图、渲染目标或贴图 UAV，存 DDS/PNG 并返回预览图；抓取保留了内容时给出的是调用当时的贴图；支持三维贴图和多重采样颜色贴图（解析后） |
-| `efmi_capture_draw_outputs` | 某个绘制画了什么：记录新的一帧，在选中的绘制前后各拷贝一次渲染目标，报告改动的像素数和范围，保存前、后、改动三张图并返回预览（探针 0.1.5） |
-| `efmi_list_writes` | 调用之间的写入：Map、UpdateSubresource、Copy、Clear、GenerateMips、Resolve，按顺序列出改了哪个资源的哪一段（需要带内容的抓取）；`bindings=true` 再列出每次调用改绑了什么（任何完整抓取） |
-| `efmi_dump_frame` | 把抓取的若干次调用写成与 XXMI 帧分析目录同样布局的文件夹：BUF／TXT／DDS、`deduped` 去重、`log.txt` |
-| `efmi_get_shader` | 着色器反汇编 |
-| `efmi_export_mesh` | 导出某个 draw 的网格（OBJ + 原始缓冲 + 描述） |
-| `efmi_live_start` / `efmi_live_now` / `efmi_watch_hash` / `efmi_live_stop` | 连续模式：当前画了什么、某个哈希逐帧是否出现 |
-| `efmi_diff_captures` | 两次抓取之间多了/少了哪些网格 |
-| `efmi_list_mods` | EFMI 目录里会被加载的 mod 及其引用的哈希（不需要游戏） |
-| `efmi_frame_dump_summary` | 读已有的抓帧目录（不需要游戏） |
-| `efmi_verify_against_dump` | 自检：把一次抓取和 XXMI 的抓帧对比，看哈希是否仍一致 |
-| `efmi_list_models` / `efmi_extract_model` / `efmi_map_lod` | 模型流程：识别角色、提取为 LoyalTools 工程、LOD 映射（见下文“模型流程”） |
-| `efmi_export_mod` / `efmi_verify_exported_mod` | 模型流程：用插件原生导出模组；部署、刷新并核对实际绘制 |
-| `efmi_model_project` / `efmi_model_job` | 模型流程：项目现状；跟进或取消任务 |
+| `efmi_status` | Whether game and probe are ready, resolution, number of resources seen, installed mods |
+| `efmi_capture_frame` | Records the next frame (`full` contains all bindings; `cb_data=true` also the constant buffer window of every draw as it was then; `contents=buffers` / `inputs` / `outputs` has the probe keep what each call read / wrote at the time, probe 0.1.6) |
+| `efmi_reload_and_capture` | After changing a mod, has XXMI reload and records a new frame: the probe presses one unmodified F10 inside the game (bringing the game to the front first if needed and giving the focus back afterwards) and returns evidence of whether the reload happened; stops live mode and clears old captures |
+| `efmi_toggle_mods` | Switches all mods off or on with EFMI's own F11 and records a new frame, to compare the game's original draws with the mods' draws; returns the on / off state EFMI itself reports |
+| `efmi_list_draws` | Lists draw calls, filtered by hash, call type, origin and so on |
+| `efmi_get_draw` | Everything bound for one draw call: arguments, IB/VB, input layout, shaders, constant buffers, textures, render targets, viewport; for a full capture also blend, depth-stencil and rasterizer state, scissor rectangles, samplers, view parameters and the actual arguments an indirect draw read (probe 0.1.5) |
+| `efmi_find_hash` | In which roles a hash occurs in this frame, and which mods' ini files refer to it |
+| `efmi_read_buffer` | Reads indices, vertices (decoded with the input layout), constant buffers, buffers bound as shader resources (`vs-t0` and so on) or unordered access views (`u0`); `whole=true` reads the whole buffer; the result says where the bytes come from and whether they are exact (`source`, `exact`) |
+| `efmi_read_texture` | Reads a texture, a render target or a texture UAV, saves DDS/PNG and returns a preview; when the capture kept contents it gives the texture as it was at the call; supports 3D textures and multisampled colour textures (resolved) |
+| `efmi_capture_draw_outputs` | What a draw painted: records a new frame, copies the render target once before and once after each selected draw, reports the number and area of changed pixels, saves the before, after and changed pictures and returns previews (probe 0.1.5) |
+| `efmi_list_writes` | Writes between calls: Map, UpdateSubresource, Copy, Clear, GenerateMips, Resolve, listing in order which part of which resource was changed (needs a capture with contents); `bindings=true` also lists what each call has bound differently (any full capture) |
+| `efmi_dump_frame` | Writes a number of calls of a capture as a folder with the same layout as an XXMI frame analysis directory: BUF / TXT / DDS, de-duplication in `deduped`, `log.txt` |
+| `efmi_get_shader` | Shader disassembly |
+| `efmi_export_mesh` | Exports the mesh of a draw (OBJ + raw buffers + description) |
+| `efmi_live_start` / `efmi_live_now` / `efmi_watch_hash` / `efmi_live_stop` | Continuous mode: what is being drawn right now, whether a hash appears frame by frame |
+| `efmi_diff_captures` | Which meshes were added/removed between two captures |
+| `efmi_list_mods` | The mods in the EFMI directory that will be loaded and the hashes they refer to (works without the game) |
+| `efmi_frame_dump_summary` | Reads an existing frame dump directory (works without the game) |
+| `efmi_verify_against_dump` | Self-check: compares a capture with an XXMI frame dump to see whether the hashes still agree |
+| `efmi_list_models` / `efmi_extract_model` / `efmi_map_lod` | Model workflow: recognise characters, extract as a LoyalTools project, LOD mapping (see "Model workflow" below) |
+| `efmi_export_mod` / `efmi_verify_exported_mod` | Model workflow: export a mod with the add-on's native export; deploy, refresh and check what is actually drawn |
+| `efmi_model_project` / `efmi_model_job` | Model workflow: state of the project; follow or cancel a job |
 
-`ib` 哈希就是 mod 里 `[TextureOverride] hash =` 用的区域哈希。
+The `ib` hash is the region hash that mods use in `[TextureOverride] hash =`.
 
-### 实时采集与 FrameAnalysis 的覆盖情况
+### Coverage of live capture compared with FrameAnalysis
 
-用户给的 `FrameAnalysis-2026-10-07-123937` 是对照样本：776 次调用（715 次 Draw、61 次 Dispatch），18,666 个资源文件加 `log.txt`，去重后 38 份缓冲（314.6 MiB）、417 份 DDS、343 份 JPG。它包含的每一类数据，现在的获取方式如下（探针 0.1.6／服务 0.1.13）。与 XXMI 的导出逐字节一致是在沙盒里验证的；2026-10-09 在实机（大世界，每帧约 1600 次调用）核对了功能和开销，见本节末尾：
+`FrameAnalysis-2026-10-07-123937`, provided by the user, is the reference sample: 776 calls (715 Draw, 61 Dispatch), 18,666 resource files plus `log.txt`, and after de-duplication 38 buffers (314.6 MiB), 417 DDS and 343 JPG. Every kind of data it contains can now be obtained as follows (probe 0.1.6 / server 0.1.13). Byte-for-byte agreement with XXMI's dump was verified in the sandbox; function and cost were checked in the real game on 2026-10-09 (open world, about 1600 calls per frame), see the end of this section:
 
-| 帧分析目录里的数据 | 现在怎么拿 | 与 XXMI 导出的差别 |
+| Data in a frame analysis directory | How to get it now | Difference from XXMI's dump |
 |---|---|---|
-| 调用顺序、参数、着色器、IB/VB 绑定、输入布局 | `efmi_capture_frame`、`efmi_list_draws`、`efmi_get_draw`、`efmi_get_shader` | 记录的是实际发到系统 D3D11 的调用：被 XXMI 整个跳过的原始调用不存在，ShaderRegex 改写后的着色器不带原哈希 |
-| `ib`／`vbN` 的 BUF 和 TXT | 带内容的抓取之后 `efmi_read_buffer`（解码或 `whole=true`），或 `efmi_dump_frame` | BUF 逐字节、TXT 逐字与 XXMI 相同（沙盒对照） |
-| `vs-cbN`／`ps-cbN`／`cs-cbN` | 同上；整块常量池也在（`whole=true`） | BUF 相同；TXT 在缓冲不超过 64 KiB 时与 XXMI 相同（写整块），更大的常量池只写绑定的那一段寄存器 |
-| `vs-tN`／`ps-tN`／`cs-tN` 的缓冲（骨骼池等） | 同上，按视图的元素读或整块读 | 相同 |
-| `ps-tN` 等贴图 | 带内容的抓取之后 `efmi_read_texture`，或 `efmi_dump_frame` 写 DDS | 给的是视图显示的那一个子资源（XXMI 一律写资源的第 0 个）；一个绑定只保留视图的第一个 mip／切片，其余是晚读；不写 JPG |
-| `oN` 渲染目标（每次绘制之后） | `contents=outputs`（对选中的调用，或全部调用）；也可用 `efmi_capture_draw_outputs` 看前后差异 | 相同；整帧每次绘制都留一份是几个 GiB，要选调用或给够预算 |
-| `uN`：计算着色器和像素着色器写出的缓冲／贴图 | `contents=outputs` 之后 `efmi_read_buffer`／`efmi_read_texture` | 相同；同一个 `u0` 被连续几次调用改写，各次的内容分别保留 |
-| 管线状态、采样器、视口、裁剪、间接参数 | `efmi_get_draw` | 全部视口都有；Stream Output 和 UAV 计数器的值没有 |
-| `log.txt` 里的 Map／Update／Copy／Clear 等，以及 Set* 调用 | `efmi_list_writes`（`bindings=true` 时含改绑）、`efmi_dump_frame` 的 `log.txt` | 写入类调用是下游实际看到的；改绑是比较相邻调用的绑定得出的（`bind` 行），不是逐条记录的 Set* 调用，它们在同一次调用之前的先后顺序不知道；deferred command list 里的调用看不到 |
-| `log.txt` 里 XXMI 的命令、变量、分支 | **拿不到** | 探针在 XXMI 下游，XXMI 内部的执行过程不经过 D3D11。能看到的只有它的结果：mod 发出的绘制、绑定的资源，以及着色器可见的 IniParams（`t120` 那张一维贴图，每次调用当时的值可读） |
+| Call order, arguments, shaders, IB/VB bindings, input layout | `efmi_capture_frame`, `efmi_list_draws`, `efmi_get_draw`, `efmi_get_shader` | What is recorded are the calls that actually reach the system D3D11: original calls that XXMI skips entirely do not exist, and shaders rewritten by ShaderRegex do not carry their original hash |
+| BUF and TXT of `ib` / `vbN` | `efmi_read_buffer` after a capture with contents (decoded or `whole=true`), or `efmi_dump_frame` | BUF byte for byte and TXT character for character the same as XXMI's (sandbox comparison) |
+| `vs-cbN` / `ps-cbN` / `cs-cbN` | As above; the whole constant pool is there too (`whole=true`) | BUF the same; TXT the same as XXMI's (which writes the whole block) for buffers up to 64 KiB, while for larger constant pools only the bound stretch of registers is written |
+| Buffers at `vs-tN` / `ps-tN` / `cs-tN` (bone pools and so on) | As above, read by elements of the view or whole | The same |
+| Textures at `ps-tN` and so on | `efmi_read_texture` after a capture with contents, or DDS written by `efmi_dump_frame` | Gives the one subresource the view shows (XXMI always writes subresource 0 of the resource); per binding only the first mip / slice of the view is kept, the rest is read late; no JPG is written |
+| `oN` render targets (after each draw) | `contents=outputs` (for selected calls, or all calls); `efmi_capture_draw_outputs` shows the before/after difference | The same; keeping one for every draw of a whole frame is several GiB, so select calls or give enough budget |
+| `uN`: buffers / textures written by compute and pixel shaders | `efmi_read_buffer` / `efmi_read_texture` after `contents=outputs` | The same; when the same `u0` is rewritten by several consecutive calls, the content of each is kept separately |
+| Pipeline state, samplers, viewports, scissors, indirect arguments | `efmi_get_draw` | All viewports are there; the values of Stream Output and UAV counters are not |
+| Map / Update / Copy / Clear and the like in `log.txt`, and the Set* calls | `efmi_list_writes` (with rebinds when `bindings=true`), `log.txt` of `efmi_dump_frame` | Write-type calls are those actually seen downstream; rebinds are worked out by comparing the bindings of neighbouring calls (`bind` lines) and are not individually recorded Set* calls, so their order before the same call is not known; calls in deferred command lists cannot be seen |
+| XXMI's commands, variables and branches in `log.txt` | **Not available** | The probe is downstream of XXMI, and XXMI's internal execution does not pass through D3D11. Only its results can be seen: the draws the mods issue, the resources bound, and the IniParams visible to shaders (the 1D texture at `t120`, whose values at each call can be read) |
 
-沙盒里的验收（`sandbox/contents_parity_test.py`）：同一个场景，探针先带内容抓一帧，再让私有副本里的 XXMI 自己导出一帧，然后把 XXMI 为每次调用写出的每个 `.buf` 和 `.dds` 与探针给出的内容逐字节比较。42 次调用的 565 个文件里 546 个可比，全部相同（259 个缓冲、287 个贴图）；另外 19 个是视图显示的不是第 0 个子资源，两边写的本来就不是同一块。探针是在抓取之后约 900 帧才被问的，中间这些资源都被改写过很多次。同一次测试还把这一帧用 `efmi_dump_frame` 写出来，把 XXMI 写的 223 个 `.txt`（索引、顶点、常量）与导出的对应文件逐字比较，全部相同。
+Acceptance in the sandbox (`sandbox/contents_parity_test.py`): for the same scene the probe first captures a frame with contents, then XXMI in the private copy dumps a frame itself, and every `.buf` and `.dds` XXMI wrote for each call is compared byte for byte with the content the probe gives. Of the 565 files of 42 calls, 546 are comparable and all are identical (259 buffers, 287 textures); for the other 19 the view shows a subresource other than 0, so the two sides do not write the same block in the first place. The probe was asked only about 900 frames after the capture, by which time all these resources had been rewritten many times. The same test also writes that frame with `efmi_dump_frame` and compares the 223 `.txt` files XXMI wrote (indices, vertices, constants) with the exported counterparts character for character; all are identical.
 
-实机核对（2026-10-09，大世界，2560×1600，约 70 帧，每帧 1586–1668 次调用，只读采集、不按键）：图形绘制写的 UAV 现在看得到（各帧 10–68 次绘制）；按像素着色器选出 12 次连续改写同一个 65,536 字节 `u0` 的绘制，读回前 8 次各自留下的内容，有 5 种不同的内容且都标为确切，而此时直接读这块缓冲已是另一份；一次蒙皮绘制的索引、顶点、骨骼池、常量，一张 8192×8192 的贴图和 XXMI 的 IniParams 读回的都是调用当时的内容。开销：`contents=buffers` 抓取后 0.25 秒内拷完约 206 MiB，`contents=inputs` 约 624 MiB（0.75 秒内），这两档在 0.25 秒的粒度上看不出帧率变化；`contents=outputs`（6 次绘制、各 5 个目标）之后的第一个 0.25 秒里帧率从约 70 掉到 60。带内容的抓取记录那一帧的耗时与普通完整抓取相同（5–17 毫秒，取决于区域哈希缓存是否已热）。实机上没有做的：与 XXMI 自己的导出逐字节对照（要按它的帧分析键）和整帧导出。
+Check in the real game (2026-10-09, open world, 2560×1600, about 70 fps, 1586–1668 calls per frame, read-only capture, no key press): UAVs written by graphics draws are now visible (10–68 draws per frame); 12 draws that rewrite the same 65,536-byte `u0` in a row were selected by pixel shader, and the content each of the first 8 left behind was read back: there are 5 different contents, all marked exact, while a direct read of the buffer at that time gives yet another one; the indices, vertices, bone pool and constants of a skinned draw, an 8192×8192 texture and XXMI's IniParams all read back as they were at the call. Cost: after a `contents=buffers` capture about 206 MiB are copied within 0.25 seconds, with `contents=inputs` about 624 MiB (within 0.75 seconds); for these two levels no change of the frame rate is visible at a granularity of 0.25 seconds; in the first 0.25 seconds after `contents=outputs` (6 draws with 5 targets each) the frame rate drops from about 70 to 60. Recording the frame of a capture with contents takes as long as an ordinary full capture (5–17 ms, depending on whether the region hash cache is warm). Not done in the real game: a byte-for-byte comparison with XXMI's own dump (it needs its frame analysis key) and a whole-frame export.
 
-### 调用当时的内容（探针 0.1.6）
+### Contents as they were at the call (probe 0.1.6)
 
-**用法。** `efmi_capture_frame contents=inputs` 记录一帧并让探针保留每次调用读到的东西（`contents=buffers` 只留缓冲、不留贴图，最省）；`contents=outputs` 另外保留调用写出的东西，用 `hash`／`draws`（同 `efmi_capture_draw_outputs`）或 `first`／`last`（新帧里的调用编号）限定是哪些调用，不限定就是全部。之后照常用 `efmi_read_buffer`／`efmi_read_texture`，结果里的 `source`／`exact` 说明这是调用当时的字节。`efmi_get_draw` 的 `contents_kept` 列出这次调用哪些槽位有保留。内容保留到下一次抓取、或三分钟没有请求为止。
+**Usage.** `efmi_capture_frame contents=inputs` records a frame and has the probe keep what each call read (`contents=buffers` keeps buffers only, no textures, and is the cheapest); `contents=outputs` additionally keeps what calls wrote, with `hash` / `draws` (as in `efmi_capture_draw_outputs`) or `first` / `last` (call numbers in the new frame) limiting which calls; without a limit it is all of them. Afterwards use `efmi_read_buffer` / `efmi_read_texture` as usual; `source` / `exact` in the result say that these are the bytes from the time of the call. `contents_kept` of `efmi_get_draw` lists which slots of that call have kept contents. Contents are kept until the next capture, or until three minutes pass without a request.
 
-**做法。** 记录那一帧时不为此拷贝任何东西，只记下“这次调用看到的是资源的哪个版本”。凡是会改写资源的路径（Map、UpdateSubresource、CopyResource／CopySubresourceRegion、Clear、GenerateMips、Resolve、Discard，以及绘制写它绑定的渲染目标／深度／UAV／流输出、Dispatch 写它的 UAV、Present 换掉后备缓冲）都经过探针的钩子，探针在把调用交给运行时之前，先把“还有调用引用着的旧版本”存下来：缓冲只存将被覆盖的那一段，贴图存那个子资源。没有再被写的资源不拷贝，要读时原地读。所以静态的网格和贴图不花拷贝，会变的东西每个被用到的版本只拷一次；拷贝大多发生在抓取之后的几帧里（游戏下一次改写它们的时候）。
+**How it works.** Nothing is copied for this while the frame is recorded; only "which version of the resource this call saw" is noted. Every path that rewrites a resource (Map, UpdateSubresource, CopyResource / CopySubresourceRegion, Clear, GenerateMips, Resolve, Discard, as well as a draw writing its bound render targets / depth / UAVs / stream output, a Dispatch writing its UAVs, and Present replacing the back buffer) passes through the probe's hooks, and before handing the call to the runtime the probe sets aside "the old version that calls still refer to": for a buffer only the stretch about to be overwritten, for a texture that subresource. Resources that are not written again are not copied and are read in place when asked for. So static meshes and textures cost no copy, and things that change are copied once per version that was used; most copies happen in the few frames after the capture (the next time the game rewrites them).
 
-**边界。**
+**Limits.**
 
-- 用 `D3D11_MAP_WRITE_NO_OVERWRITE` 追加数据的缓冲：这种写法承诺不动正在使用的部分，探针照此处理，不为它另起版本。调用读到的字节是确切的；它没读的部分可能已经带上了之后追加的数据。
-- 贴图每个绑定只保留视图的第一个 mip／切片；别的子资源仍是晚读，结果会写明。多重采样贴图给的是解析后的像素，多重采样的深度读不了。
-- 整帧每次绘制之后的渲染目标是几个 GiB：`contents=outputs` 要限定调用或提高 `budget_mb`（默认 1024）。超出预算或内存吃紧（机器空闲内存低于 2 GiB）时不再拷贝，读到那一项时明确报错，不拿别的字节顶替。
-- deferred command list 执行过之后，原地读的内容标 `exact=false`（它写了什么看不到）。视频解码、别的设备经共享句柄写入的贴图，探针也看不到写入。
-- 一次只保留一次抓取的内容；拷贝占的是游戏进程的内存，`efmi_status` 显示到目前为止拷了多少份、多少 MiB（实机大世界：`buffers` 约 200 MiB，`inputs` 约 620 MiB）。保留期间每次绘制多几次查表，沙盒和实机都量不出帧率差别；游戏改写被引用资源的那几帧会多出拷贝，实机上只在带输出的抓取之后看到过一次 0.25 秒内约 10 帧的下降，单帧卡顿没有细量。
+- Buffers that append data with `D3D11_MAP_WRITE_NO_OVERWRITE`: this way of writing promises not to touch the part in use, and the probe takes it at its word and starts no new version for it. The bytes a call read are exact; the part it did not read may already carry data appended later.
+- For textures only the first mip / slice of the view is kept per binding; other subresources are still read late, which the result states. Multisampled textures are given as resolved pixels; multisampled depth cannot be read.
+- The render targets after every draw of a whole frame are several GiB: with `contents=outputs` limit the calls or raise `budget_mb` (1024 by default). When the budget is exceeded or memory is tight (less than 2 GiB of free memory on the machine) nothing more is copied, and reading such an item gives an explicit error rather than other bytes in its place.
+- After a deferred command list has executed, content read in place is marked `exact=false` (what it wrote cannot be seen). The probe cannot see writes by video decoding or by another device writing a texture through a shared handle either.
+- The contents of only one capture are kept at a time; the copies take memory of the game process, and `efmi_status` shows how many copies and how many MiB have been made so far (open world in the real game: about 200 MiB for `buffers`, about 620 MiB for `inputs`). While contents are kept each draw costs a few more table lookups, and neither the sandbox nor the real game shows a measurable difference of the frame rate; the frames in which the game rewrites referenced resources have the extra copies, and in the real game a drop of about 10 fps within 0.25 seconds was seen only once, after a capture with outputs; single-frame stutter was not measured in detail.
 
-**导出文件夹。** `efmi_dump_frame` 按 `NNNNNN-<槽位>=<哈希>-vs=…-ps=….buf／.txt／.dds` 命名，内容相同的只存一份在 `deduped\`，其余是硬链接；`log.txt` 列出调用和调用之间的写入。调用编号是抓取里的编号（从 0 开始，包含 mod 发出的绘制），不是 XXMI 的编号。只写“确实是调用当时”的字节；从不带内容的抓取导出时，只有能证明没变过的缓冲会被写出。整帧很大，用 `first`／`last`／`kinds` 选，超过 `max_mb` 或 `max_seconds` 时结果会告诉从哪里接着导。
+**Export folder.** `efmi_dump_frame` names files `NNNNNN-<slot>=<hash>-vs=…-ps=….buf / .txt / .dds`; identical content is stored once in `deduped\` and the rest are hard links; `log.txt` lists the calls and the writes between calls. The call numbers are those of the capture (starting at 0 and including draws issued by mods), not XXMI's. Only bytes that "really are from the time of the call" are written; when exporting from a capture without contents, only buffers that can be shown not to have changed are written. A whole frame is large: select with `first` / `last` / `kinds`, and when `max_mb` or `max_seconds` is exceeded the result says where to continue.
 
-### 修改 mod 后自动重载和采集
+### Automatic reload and capture after changing a mod
 
-`efmi_reload_and_capture` 执行“把游戏切到前台 → 探针在游戏进程内按 F10 → 把焦点还给原窗口 → 等待 → 抓取新帧 → 判断重载证据”。只想获取当前画面时，直接用 `efmi_capture_frame`；普通采集和连续采集无需 F10 或狩猎模式。
+`efmi_reload_and_capture` performs "bring the game to the front → the probe presses F10 inside the game process → give the focus back to the original window → wait → capture a new frame → evaluate the reload evidence". To get just the current picture use `efmi_capture_frame` directly; ordinary and continuous capture need neither F10 nor hunting mode.
 
-**为什么由探针按键。** `Endfield.exe` 的清单要求管理员权限，MCP 服务是普通权限。Windows 的 UIPI 会丢弃低完整性级别进程发给高完整性级别窗口的输入，而 `SendInput` 照样返回成功、没有错误码。这就是 0.1.3 实机测试里“API 接受、始终观察不到 F10 按下、模组也没有刷新”的原因。探针本来就在游戏进程内，由它发出的按键与手按 F10 等价：不修改 XXMI 或游戏的任何代码，探针只有两个固定动作（重载按 F10，开关 mod 按 F11，见下文），客户端无法指定别的键，也只在游戏自己的窗口处于前台时才发。
+**Why the probe presses the key.** The manifest of `Endfield.exe` requires administrator rights, and the MCP server has ordinary rights. Windows' UIPI drops input sent by a process of lower integrity level to a window of higher integrity level, while `SendInput` returns success as usual, without an error code. That is the reason for "accepted by the API, F10 never observed as pressed, and the mod not refreshed" in the real-game test of 0.1.3. The probe is inside the game process anyway, and a key pressed by it is equivalent to pressing F10 by hand: no code of XXMI or the game is modified, the probe has only two fixed actions (F10 for reload, F11 for switching mods, see below), the client cannot name another key, and it is sent only when the game's own window is in the foreground.
 
-| 参数 | 默认值与范围 |
+| Parameter | Default and range |
 |---|---|
-| `detail` | `"full"`；也可设为 `"light"` |
-| `cb_data` | `true`，保存 draw 当时的常量缓冲 |
-| `settle_ms` | `2000`；250–10000 毫秒，F10 释放后等待 |
-| `timeout_ms` | `15000`；1000–30000 毫秒，仅为后续捕获超时，不包含等待时间 |
-| `focus_game` | `true`，把游戏窗口切到前台；`false` 要求它已在前台 |
-| `restore_focus` | `true`，松开 F10 后把前台还给原来的窗口；游戏本来就在前台时无效 |
-| `confirm_wait_ms` | `3000`；0–15000 毫秒。最多花多久看 mod 是否已经恢复完（见下）；`0` 只取 `settle_ms` 之后的第一帧，那一帧里 mod 可能一个都没有，或者只有一部分 |
+| `detail` | `"full"`; can also be `"light"` |
+| `cb_data` | `true`, keeps the constant buffers as they were at the draws |
+| `settle_ms` | `2000`; 250–10000 ms, the wait after F10 is released |
+| `timeout_ms` | `15000`; 1000–30000 ms, only the timeout of the subsequent capture, not including the wait |
+| `focus_game` | `true`, brings the game window to the foreground; `false` requires it to be there already |
+| `restore_focus` | `true`, gives the foreground back to the original window after F10 is released; no effect when the game was in the foreground anyway |
+| `confirm_wait_ms` | `3000`; 0–15000 ms. How long at most to look at whether the mods have fully recovered (see below); `0` takes only the first frame after `settle_ms`, in which there may be no mod at all, or only some |
 
-**前置检查。** 服务端核对同一管道/PID、XXMI 安装路径、渲染设备，以及本安装 `d3dx.ini` 的 `[Hunting]` 中 `reload_config`、`reload_fixes` 各有一条 `no_modifiers VK_F10`（不自动改自定义按键）。探针再独立核对这两项绑定、游戏窗口未最小化、Ctrl/Alt/Shift/Win/F10 均未按住。游戏不在前台且 `focus_game=true` 时先正常请求前台，被 Windows 拒绝再借用当前前台线程的输入状态切换，回执的 `focus_method` 为 `direct` 或 `attach_input`；仍失败则返回 `focus_refused`，不发送按键。随后停止 live、释放资源、清除旧捕获与 mod 索引。live 保持停止。
+**Pre-checks.** The server checks the same pipe/PID, the XXMI installation path, the render device, and that `[Hunting]` in this installation's `d3dx.ini` has one `no_modifiers VK_F10` each for `reload_config` and `reload_fixes` (custom keys are not changed automatically). The probe independently checks these two bindings, that the game window is not minimised, and that none of Ctrl/Alt/Shift/Win/F10 is held. When the game is not in the foreground and `focus_game=true`, the foreground is requested normally first, and if Windows refuses, the switch borrows the input state of the current foreground thread; `focus_method` in the receipt is `direct` or `attach_input`; if that fails too, `focus_refused` is returned and no key is sent. Then live mode is stopped, resources are released, and old captures and the mod index are cleared. Live mode stays stopped.
 
-**按键过程。** 探针先确认游戏在前台连续画出 3 帧，再按下 F10，并从“确实读到按下状态”那一刻开始计帧：`SendInput` 要等系统里所有键盘钩子处理完才返回，这段时间里画出的帧不算数。XXMI 在每次 Present 之前轮询按键，所以按下后的第二个 Present、或距按下超过 10 毫秒才到来的第一个 Present，之前必然有过一次完整轮询；探针在那个 Present 处松开，尽量不让 XXMI 下一帧再重载一次（重载很快时仍可能发生两次）。按住期间失去前台或出现修饰键会立即松开并报错，上限 3 秒。回执包含 `frames_while_held`、`released_on`、`hold_ms`、`focus_restored` 等。
+**The key press.** The probe first makes sure the game has presented 3 consecutive frames in the foreground, then presses F10 and counts frames from the moment "the pressed state was really read": `SendInput` returns only after all keyboard hooks in the system have finished, and frames presented during that time do not count. XXMI polls keys before every Present, so before the second Present after the press, or before the first Present that arrives more than 10 ms after it, there has necessarily been one complete poll; the probe releases at that Present, to keep XXMI from reloading once more in the next frame as far as possible (with a very fast reload it can still happen twice). Losing the foreground or a modifier key appearing during the hold releases at once with an error; the upper limit is 3 seconds. The receipt contains `frames_while_held`, `released_on`, `hold_ms`, `focus_restored` and so on.
 
-**重载之后返回哪一帧。** 重载之后 mod 是分几帧回来的：资源在第一次用到时才创建，所以先是一个 mod 都不画（原始网格已被跳过），然后一部分，最后全部；大的重载还会先让游戏停顿几秒。工具在 `settle_ms` 之后每隔 0.25 秒看一帧（轻量抓取，不再按键），数这一帧用到了多少 XXMI 在按键之后新建的缓冲和着色器；这个数出现并且连续两次不再增长，就认为 mod 恢复完了，再按所要的 `detail` 抓一帧作为结果。最多看 `confirm_wait_ms`。结果里：`frames_looked_at` 是看了几帧（mod 早已恢复完时是 3：两帧轻量加返回的那一帧），`waited_for_xxmi_ms` 是花在看上的时间，`mods_settled` 为 `true` 表示已不再增长，`false` 表示时间用完时还在增长——这时返回的帧可能只有一部分 mod，用 `efmi_capture_frame` 再抓，不要再按 F10；`null` 表示始终没出现（画面里没有 mod 内容，结果照旧是 `reload_confirmed=false`）或者没有看（`confirm_wait_ms=0`）。返回的帧是最后才抓的，因为探针只能读最近一次抓取的资源。
+**Which frame is returned after a reload.** After a reload the mods come back over several frames: resources are created only when first used, so at first no mod draws at all (the original meshes are already skipped), then some, finally all; a large reload also pauses the game for a few seconds first. After `settle_ms` the tool looks at a frame every 0.25 seconds (a light capture, no further key press) and counts how many buffers and shaders that XXMI created after the key press this frame uses; once this number has appeared and has not grown twice in a row, the mods are taken to have recovered, and one more frame is captured with the requested `detail` as the result. It looks for at most `confirm_wait_ms`. In the result: `frames_looked_at` is how many frames were looked at (3 when the mods had long recovered: two light frames plus the one returned), `waited_for_xxmi_ms` the time spent looking, `mods_settled` is `true` when the number no longer grew and `false` when it was still growing when time ran out; in that case the returned frame may have only some of the mods: capture again with `efmi_capture_frame`, do not press F10 again; `null` means it never appeared (no mod content in view; the result is `reload_confirmed=false` as before) or nothing was looked at (`confirm_wait_ms=0`). The returned frame is captured last because the probe can only read the resources of the latest capture.
 
-为什么是“不再增长”而不是“开始画了”：2026-10-08 实机（大世界，9 个 mod）把 `settle_ms` 调到 250 再按一次 F10，游戏 3.8 秒后恢复，拿到的是按键后的第 3 帧，其中 XXMI 的绘制只有 272 次，稍后稳定下来是 508 次，而那一帧已经用到 49 个新建资源和 28 个着色器，按当时的标准算“已确认”并直接返回了。同日早些时候用默认的 `settle_ms=2000` 按的那一次，拿到的帧里 mod 已经在画（按键后新建的 94 个资源和 38 个着色器被用到）。新标准的验证：单元测试，私有沙盒里真实探针、真实 F10 的集成测试（看了 3 帧，`mods_settled=true`），以及 2026-10-08 下午实机一次普通重载（默认 `settle_ms`：看了 3 帧、0.36 秒、`mods_settled=true`，返回帧里 XXMI 的绘制数与重载前相同）。“第一帧只恢复一部分”的情形在改完之后没有再专门跑。
+Why "no longer growing" rather than "started drawing": in the real game on 2026-10-08 (open world, 9 mods), F10 was pressed once more with `settle_ms` set to 250; the game recovered after 3.8 seconds, and the frame obtained was the 3rd after the key press, in which XXMI drew only 272 times, settling at 508 a little later, while that frame already used 49 newly created resources and 28 shaders, counted as "confirmed" by the criterion of the time and was returned directly. In the press earlier that day with the default `settle_ms=2000`, the mods were already drawing in the frame obtained (94 resources and 38 shaders created after the key press were in use). Verification of the new criterion: unit tests, an integration test with the real probe and a real F10 in the private sandbox (3 frames looked at, `mods_settled=true`), and one ordinary reload in the real game on the afternoon of 2026-10-08 (default `settle_ms`: 3 frames looked at, 0.36 seconds, `mods_settled=true`, and the number of XXMI draws in the returned frame equals the one before the reload). The case "the first frame has only part of them back" was not run again specifically after the change.
 
-**重载证据。** XXMI 自己不提供回执，但重载会销毁所有 mod 资源和自定义着色器，mod 下次绘制时再由 XXMI 创建。探针记录每个资源和着色器的创建帧，服务端检查新帧实际用到的对象里有多少是 XXMI 在按键之后创建的。有，则 `reload_confirmed=true`，`reload_evidence` 给出数量和示例；没有则为 `false`，画面上没有 mod 内容时这属于正常，需要自己核对改动的 draw 和资源。如果 XXMI 绘制所用的 mod 缓冲早于按键，说明文字会指出重载可能没有生效。`reload_confirmed=true` 也不代表每个 INI 都解析无误。
+**Reload evidence.** XXMI itself provides no receipt, but a reload destroys all mod resources and custom shaders, and XXMI creates them again when the mods next draw. The probe records the creation frame of every resource and shader, and the server checks how many of the objects the new frame actually uses were created by XXMI after the key press. If there are any, `reload_confirmed=true` and `reload_evidence` gives the numbers and examples; if not it is `false`, which is normal when no mod content is in view, and the changed draws and resources have to be checked by yourself. If the mod buffers used by XXMI's draws are older than the key press, the explanatory text points out that the reload may not have taken effect. `reload_confirmed=true` does not mean that every INI parsed without errors either.
 
-失败结果保留输入未发送、已发送或状态未知。任何情况下都不自动重发 F10，需要更多画面时使用普通 `efmi_capture_frame`。正常 F10 可能保存持久变量，不能把此操作当作纯只读。从切到前台到还回焦点（通常几十到几百毫秒，取决于重载耗时），键盘输入会落到游戏里。
+A failure result keeps whether the input was not sent, was sent, or is unknown. F10 is never resent automatically under any circumstances; use an ordinary `efmi_capture_frame` when more pictures are needed. A normal F10 may save persistent variables, so this operation cannot be regarded as purely read-only. From switching to the foreground until the focus is given back (usually tens to hundreds of milliseconds, depending on how long the reload takes), keyboard input lands in the game.
 
-游戏里的探针早于 0.1.2 时，服务端退回从外部发送按键的旧路径。游戏以管理员运行时它必然失败，错误信息会提示重启游戏以加载新探针。
+When the probe in the game is older than 0.1.2, the server falls back to the old path of sending the key from outside. With the game running as administrator this necessarily fails, and the error message says to restart the game to load the new probe.
 
-**验证范围。** `sandbox/run_all.py` 包含无系统输入的单元检查。`python sandbox/reload_integration_test.py` 用一份新的 XXMI 私有副本做真实按键测试：写入新的 mod 文件，由工具重载，核对新规则生效（指定 IB 的 draw 消失，其余不变）、重载证据为真、焦点已还回。它会把沙盒窗口短暂切到前台并发送一次真实 F10；探针只在自己的窗口处于前台时按键，旁边运行的游戏不受影响。前台是管理员窗口（例如正在玩游戏）时，普通权限的沙盒抢不到前台，测试会以 `focus_refused` 结束而不发送按键。沙盒不是管理员进程，UIPI 本身只能在真实游戏里验证。
+**Scope of verification.** `sandbox/run_all.py` contains unit checks without system input. `python sandbox/reload_integration_test.py` does a test with a real key press on a fresh private copy of XXMI: it writes new mod files, has the tool reload, and checks that the new rule takes effect (the draws of the specified IB disappear, the rest is unchanged), that the reload evidence is true, and that the focus was given back. It brings the sandbox window to the foreground briefly and sends one real F10; the probe presses the key only when its own window is in the foreground, so a game running next to it is not affected. When the foreground is an administrator window (for example while a game is being played), the sandbox with ordinary rights cannot take the foreground, and the test ends with `focus_refused` without sending a key. The sandbox is not an administrator process, so UIPI itself can only be verified in the real game.
 
-**实机（2026-10-06）。** PID 43816 报告探针 0.1.2、进程 elevated（完整性 0x3000）。用户移出伊冯 mod 后由工具重载：按键在进程内发出并被读到，持续 1 帧（21696→21697），重载那一帧耗时 92.7ms（平时约 8ms）；重载前 367 次绘制中 XXMI 120 次（93 DrawIndexed + 27 Dispatch），重载后 277 次全部来自游戏，XXMI 的 93 次/18 个网格消失，游戏原始的 30 次/6 个网格出现；`reload_confirmed=true`（XXMI 在按键后创建了新帧所用的 27 个着色器）。游戏继续运行。证据 `captures/verify-reload-inprocess-43816/`。同日 20:51 第二次实机，游戏在后台（前台是 Claude 窗口）：探针以 `direct` 方式取得前台，按键持续 1 帧（91844→91845，重载帧 79.8ms），随后把前台还给原窗口（前后为同一 hwnd）；移出的伊冯 mod 同样消失（XXMI 120→0 次绘制，游戏原始 30 次绘制出现），`reload_confirmed=true`。`attach_input` 这条备用取前台路径在实机上没有用到，只在沙盒验证。目录内 `background-result.json` / `background-comparison.json` 是第二次的结果；第一次的 JSON 被第二次运行覆盖，保留了它的控制台输出 `foreground-run-console.txt`。
+**Real game (2026-10-06).** PID 43816 reports probe 0.1.2, process elevated (integrity 0x3000). After the user moved the Yvonne mod out, the tool reloaded: the key was pressed inside the process and was read, held for 1 frame (21696→21697), and the reload frame took 92.7 ms (about 8 ms normally); of 367 draws before the reload 120 were XXMI's (93 DrawIndexed + 27 Dispatch), after the reload all 277 came from the game, XXMI's 93 draws / 18 meshes were gone and the game's original 30 draws / 6 meshes appeared; `reload_confirmed=true` (XXMI created, after the key press, 27 shaders that the new frame uses). The game kept running. Evidence `captures/verify-reload-inprocess-43816/`. Second real-game run the same day at 20:51, with the game in the background (the Claude window in front): the probe took the foreground by the `direct` method, the key was held for 1 frame (91844→91845, reload frame 79.8 ms), then the foreground was given back to the original window (the same hwnd before and after); the Yvonne mod that had been moved out disappeared likewise (XXMI draws 120→0, the game's original 30 draws appear), `reload_confirmed=true`. The fallback path for taking the foreground, `attach_input`, was not used in the real game and is verified only in the sandbox. `background-result.json` / `background-comparison.json` in that directory are the results of the second run; the JSON of the first run was overwritten by the second, and its console output is kept as `foreground-run-console.txt`.
 
-0.1.3 及之前的实机失败证据保留在 `captures/verify-reload-*`。
+The evidence of the real-game failures of 0.1.3 and before is kept in `captures/verify-reload-*`.
 
-### 开关全部 mod，对比原始绘制（F11）
+### Switching all mods to compare with the original draws (F11)
 
-`efmi_toggle_mods` 让探针在游戏进程内按一次 EFMI 自带的 F11（`Core\EFMI\KeyBindings.ini` 的 `[KeyToggleMods]`），并把按键后的下一帧保存为 `latest`。用它可以在不移动 mod 文件、不重载的情况下，随时看游戏自己画的是什么。
+`efmi_toggle_mods` has the probe press EFMI's own F11 once inside the game process (`[KeyToggleMods]` in `Core\EFMI\KeyBindings.ini`) and saves the next frame after the key press as `latest`. With it you can see at any time what the game draws by itself, without moving mod files and without reloading.
 
-**它做了什么。** F11 翻转 EFMI 核心的 `$enable_mods`。它为 0 时，核心不再让每次绘制去匹配 IB 哈希，所有按 IB 哈希触发的 `TextureOverride` 都不执行：游戏画回自己的网格，这些绘制在采集里以 `game` 来源出现；mod 仍然加载着。自己挂着色器（`ShaderOverride`／`ShaderRegex`）的 mod 不归这个开关管。这个变量不持久：F10 重载或重启游戏后回到开启。
+**What it does.** F11 flips `$enable_mods` of the EFMI core. While it is 0 the core no longer has each draw match IB hashes, and no `TextureOverride` triggered by IB hash runs: the game draws its own meshes again, and these draws appear in a capture with origin `game`; the mods stay loaded. Mods that hook shaders on their own (`ShaderOverride` / `ShaderRegex`) are not governed by this switch. The variable is not persistent: after an F10 reload or a game restart it is back on.
 
-**怎么知道现在是开还是关。** XXMI 不提供读取变量的途径。EFMI 在每次按键后的 1.5 秒内显示 “Mods Display: Enabled／Disabled”，这段文字所在的缓冲就绑定在打印它的那次绘制上；工具在按键后立刻采集一帧并读出这个缓冲，与本机 `Core\EFMI\main.ini` 里定义的两段文字比对，结果写在 `mods_enabled` 和 `state_evidence`。读不到时 `mods_enabled` 为 `null`，表示未知，此时不会再按键。
+**How to know whether it is on or off.** XXMI offers no way of reading variables. For 1.5 seconds after each key press EFMI shows "Mods Display: Enabled / Disabled", and the buffer holding this text is bound to the draw that prints it; the tool captures a frame right after the key press, reads that buffer and compares it with the two texts defined in the local `Core\EFMI\main.ini`; the result is in `mods_enabled` and `state_evidence`. When it cannot be read, `mods_enabled` is `null`, meaning unknown, and no further key is pressed.
 
-| 参数 | 默认值与含义 |
+| Parameter | Default and meaning |
 |---|---|
-| `state` | `"toggle"`：按一次。`"on"`／`"off"`：按一次，EFMI 报告的若是另一个状态再按一次，最多两次；本服务上次读到的提示已是目标状态、且现采一帧的绘制与之相符时，不按键 |
-| `cb_data` | `false`；为 `true` 时保存这一帧每个 draw 当时的常量缓冲 |
-| `timeout_ms` | `8000`；1000–30000，只是采集超时，超时不重按 |
-| `focus_game`、`restore_focus` | 同 `efmi_reload_and_capture` |
+| `state` | `"toggle"`: press once. `"on"` / `"off"`: press once, and once more if EFMI reports the other state, at most twice; no key press when the notification this server last read was already the target state and the draws of a freshly captured frame agree with it |
+| `cb_data` | `false`; with `true` the constant buffers of every draw of this frame are kept as they were |
+| `timeout_ms` | `8000`; 1000–30000, only the capture timeout; no second press on a timeout |
+| `focus_game`, `restore_focus` | As for `efmi_reload_and_capture` |
 
-**对比的做法。** `efmi_capture_frame`（mod 开着）→ `efmi_toggle_mods state=off` → `efmi_diff_captures a=<第一帧>` 看哪些网格从 XXMI 换回了游戏 → 读原始的缓冲或贴图 → `efmi_toggle_mods state=on`。较早的抓取仍保留绘制列表可供比较，但只有最近一次抓取的缓冲和贴图可读。结果里的 `drawn` 给出这一帧中“被 mod 覆盖的网格由游戏画了多少次”。关闭期间，被 mod 替换的角色可以直接用 `efmi_list_models`／`efmi_extract_model`，`efmi_capture_frame` 的摘要会提醒 mod 处于关闭。
+**How to compare.** `efmi_capture_frame` (mods on) → `efmi_toggle_mods state=off` → `efmi_diff_captures a=<first frame>` to see which meshes went back from XXMI to the game → read the original buffers or textures → `efmi_toggle_mods state=on`. Earlier captures keep their draw lists for comparison, but only the buffers and textures of the latest capture can be read. `drawn` in the result gives "how many times the game drew the meshes that mods override" in this frame. While mods are off, a character replaced by a mod can be used with `efmi_list_models` / `efmi_extract_model` directly, and the summary of `efmi_capture_frame` reminds you that mods are off.
 
-**前置检查。** 按键方式与 F10 相同（游戏内发送、帧边界松开、必要时取前台并还回），键固定为 F11，客户端不能指定别的键。服务端和探针各自核对 `[KeyToggleMods]` 是 `Key = no_modifiers VK_F11`、`run = CommandListToggleMods`，并且 `d3dx.ini` 的 `[Hunting]` 里没有不带修饰键就绑在 F11 上的功能（默认的 `show_original` 要 Ctrl、`analyse_frame` 要 Shift）；不符合就不发送。Ctrl／Alt／Shift／Win／F11 被按住时不发送，按住期间出现修饰键立即松开。mod 自己绑在 F11 上的 `[Key…]` 段会像手按时一样被触发，结果里列在 `other_f11_bindings`。失败的按键不重试。
+**Pre-checks.** The key is pressed the same way as F10 (sent inside the game, released at a frame boundary, taking the foreground and giving it back if needed); the key is fixed to F11 and the client cannot name another. Server and probe each check that `[KeyToggleMods]` is `Key = no_modifiers VK_F11`, `run = CommandListToggleMods`, and that `[Hunting]` in `d3dx.ini` has no function bound to F11 without a modifier (by default `show_original` needs Ctrl and `analyse_frame` needs Shift); otherwise nothing is sent. Nothing is sent while Ctrl / Alt / Shift / Win / F11 is held, and a modifier appearing during the hold releases at once. `[Key…]` sections that mods bind to F11 themselves are triggered just as with a manual press and are listed in `other_f11_bindings` of the result. A failed key press is not retried.
 
-**用完恢复。** mod 会一直关着，直到下一次 F11、F10 重载或重启游戏。对比结束后调用 `state=on`；做不到时要告诉用户。
+**Restore afterwards.** The mods stay off until the next F11, an F10 reload or a game restart. Call `state=on` when the comparison is done; when that is not possible, tell the user.
 
-**验证范围。** 单元测试 25 项（伪探针，不发键）。私有的 XXMI＋EFMI 核心副本里用真实按键验证通过（`sandbox/mods_toggle_integration_test.py`，27 项）：只靠 EFMI 核心规则生效的测试 mod 在关闭后被游戏画回、打开后再次被替换；`on`／`off` 在第一次按键走到相反状态时补按一次；F10 重载后自动回到开启；绕过服务端直接让探针按键时，绑定被改动或 `[Hunting]` 里有功能单独绑在 F11 上，探针自己也会拒绝。
+**Scope of verification.** 25 unit tests (fake probe, no key sent). Verified with real key presses in the private copy of XXMI + the EFMI core (`sandbox/mods_toggle_integration_test.py`, 27 checks): a test mod that takes effect only through the rules of the EFMI core is drawn by the game again after switching off and replaced again after switching on; `on` / `off` press once more when the first press lands in the opposite state; after an F10 reload mods are automatically on again; when the server is bypassed and the probe is asked to press directly, the probe itself also refuses if the binding was changed or `[Hunting]` has a function bound to F11 alone.
 
-**实机（2026-10-07，PID 18776，探针 0.1.3）。** 伊冯在画面中、`Yvonne Ensnared Heart 1.6` 生效。关：按键 1 次，EFMI 打印 “Mods Display: Disabled”（从 `cs-t113` 的缓冲读出），XXMI 的绘制由 122 次降到 2 次（只剩打印提示的那两次），伊冯的 6 个被覆盖的网格由游戏画出共 30 次；`efmi_diff_captures` 列出的 25 项全部带该 mod 的标注。开：按键 1 次，XXMI 的 93 次网格绘制恢复，与关闭前的那一帧相比游戏绘制无新增。已知开着时再要求 `on`：0 次按键。第一次按键时 Windows 拒绝了直接切前台，探针改用 `attach_input` 成功（这条路径此前只在沙盒走过），之后各次为 `direct`；焦点每次都还回。每次开关 0.14–0.42 秒。证据 `captures/verify-toggle-18776/`。
+**Real game (2026-10-07, PID 18776, probe 0.1.3).** Yvonne in view, with `Yvonne Ensnared Heart 1.6` active. Off: 1 key press, EFMI prints "Mods Display: Disabled" (read from the buffer at `cs-t113`), XXMI's draws go from 122 down to 2 (only the two that print the notification), and Yvonne's 6 overridden meshes are drawn by the game 30 times in all; all 25 items listed by `efmi_diff_captures` carry the label of that mod. On: 1 key press, XXMI's 93 mesh draws are back, and compared with the frame before switching off the game draws nothing new. Asking for `on` while known to be on: 0 key presses. At the first key press Windows refused the direct switch to the foreground, and the probe succeeded with `attach_input` instead (a path that had only been exercised in the sandbox before); the later ones were `direct`; the focus was given back every time. Each switch takes 0.14–0.42 seconds. Evidence `captures/verify-toggle-18776/`.
 
-### 看某个绘制画了什么
+### Seeing what a draw painted
 
-一次抓取列出上千个绘制和各自绑定的东西，但看不出其中某一个往画面上画了什么。`efmi_read_texture` 读渲染目标只能得到“读取那一刻”的内容，通常已是整帧画完之后。`efmi_capture_draw_outputs` 记录新的一帧，并让探针在选中的绘制**之前**和**之后**各拷贝一次它的渲染目标，然后报告两份拷贝之间变了多少像素、在哪个矩形里，保存 `前`、`后` 和“只保留改动处、其余压暗”的三张 PNG（`captures\frame-N\draw-outputs\`），并返回改动区域的预览图。
+A capture lists over a thousand draws and what each has bound, but does not show what any one of them paints on the picture. Reading a render target with `efmi_read_texture` gives only the content "at the moment of reading", usually after the whole frame is finished. `efmi_capture_draw_outputs` records a new frame and has the probe copy the render target of each selected draw once **before** and once **after** it, then reports how many pixels differ between the two copies and inside which rectangle, saves three PNGs, `before`, `after` and one that "keeps only the changed places and dims the rest" (`captures\frame-N\draw-outputs\`), and returns previews of the changed areas.
 
-| 参数 | 默认值与含义 |
+| Parameter | Default and meaning |
 |---|---|
-| `hash` | 8 位：`efmi_list_draws` 里的 `ib` 哈希，选中画这个网格的每一遍绘制（阴影、深度、颜色、描边等各算一个）；16 位：顶点或像素着色器哈希，选中用它的全部绘制 |
-| `draws` | 某次抓取里的绘制编号列表，按索引缓冲对象、索引范围和 VS/PS 在新的一帧里重新找到同一个绘制 |
-| `capture` | `"latest"`；`hash`（8 位）和 `draws` 从哪次抓取里查。只用着色器哈希时不需要已有抓取 |
-| `max_draws` | `8`，1–32。按帧内顺序只拷贝前这么多个；匹配到的总数会报告 |
-| `before` | `true`；为 `false` 时只拷贝绘制之后的那一份（没有“改了哪些像素”） |
-| `targets` | `"first"`：第一个颜色目标；`"all"`：全部颜色目标（G-buffer 类的通道） |
-| `depth` | `false`；为 `true` 时连深度模板目标一起拷贝。没有颜色目标的通道（阴影、深度预通道）只有这样才会被拷贝，否则只报告数量、不占名额 |
-| `box` | `[左, 上, 右, 下]`（目标的像素坐标），只拷贝这一块，大目标上省内存；改动范围仍按整个目标的坐标给出 |
-| `preview` | `true`，返回改动区域的预览图（最多 6 张） |
+| `hash` | 8 digits: an `ib` hash from `efmi_list_draws`, selecting every pass that draws this mesh (shadow, depth, colour, outline and so on each count as one); 16 digits: a vertex or pixel shader hash, selecting all draws that use it |
+| `draws` | A list of draw numbers of some capture; the same draws are found again in the new frame by index buffer object, index range and VS/PS |
+| `capture` | `"latest"`; the capture in which `hash` (8 digits) and `draws` are looked up. With a shader hash alone no existing capture is needed |
+| `max_draws` | `8`, 1–32. Only the first this many are copied, in frame order; the total number matched is reported |
+| `before` | `true`; with `false` only the copy after the draw is made (no "which pixels changed") |
+| `targets` | `"first"`: the first colour target; `"all"`: all colour targets (G-buffer-like passes) |
+| `depth` | `false`; with `true` the depth-stencil target is copied as well. Passes without a colour target (shadow, depth prepass) are copied only then; otherwise they are only counted and take no quota |
+| `box` | `[left, top, right, bottom]` (pixel coordinates of the target); only this block is copied, which saves memory on large targets; the changed area is still given in coordinates of the whole target |
+| `preview` | `true`, returns previews of the changed areas (at most 6) |
 
-要点：
+Points to note:
 
-- 新记录的这一帧会成为 `latest`（完整抓取，不含常量缓冲内容），可以接着用 `efmi_get_draw` 看结果里列出的绘制编号。
-- 选中的网格必须还在画面里。绘制是按“同一个索引缓冲对象 + 同样的索引范围”找回来的；游戏每帧重写的动态缓冲里同一位置可能已是别的网格，这时结果里该绘制下会有一行 `NOTE`，说明它的索引数据哈希和选择时不同。重载之后缓冲对象都换了，要重新抓取再选。
-- 图片是那一刻渲染目标的内容，不是最终画面：HDR 目标按 0–1 截断并做伽马，深度图按各自的数值范围拉伸，只能看形状。判断“改没改”用的是原始字节；绘制写入的值与原值相同的像素不算改动。
-- 间接绘制（`DrawIndexedInstancedIndirect`）没有区域哈希（发出时还不知道索引数量），用绘制编号或着色器哈希选。
-- 游戏把离屏目标上下颠倒着存（实机所见：场景目标里角色头朝下），图片和矩形用的都是目标自己的行，没有替你翻转；最终的后备缓冲是正的。
-- `depth=true` 代价大：`box` 对深度目标无效，而阴影图是 4096×4096（`D16_UNORM`，一份 32 MiB）。实机上一个网格 6 遍、连深度一起拷贝是 224 MiB。
-- 多重采样的目标不拷贝，结果里会注明。拷贝的像素总量有上限（512 MiB）；超出的拷贝被略过并在结果里注明，“之前”的那一份只有在“之后”的也放得下时才做。拷贝放在游戏进程的内存里，服务端读完立即让探针释放。
-- 每个拷贝都是显卡上的一次整块复制，并要新建一块暂存纹理，所以被记录的那一帧会比平时慢一些；只影响这一帧。
+- The newly recorded frame becomes `latest` (a full capture, without constant buffer contents), so `efmi_get_draw` can be used right away on the draw numbers listed in the result.
+- The selected mesh has to be in view still. Draws are found again by "the same index buffer object + the same index range"; in a dynamic buffer that the game rewrites every frame the same position may already hold a different mesh, in which case the draw gets a `NOTE` line in the result saying that the hash of its index data differs from the selection. After a reload all buffer objects are replaced, so capture again and select anew.
+- The pictures are the content of the render target at that moment, not the final picture: HDR targets are clamped to 0–1 with gamma applied, and depth pictures are stretched to their own value range, good only for seeing shapes. Whether something "changed" is judged on raw bytes; pixels a draw writes with the value they already had do not count as changed.
+- Indirect draws (`DrawIndexedInstancedIndirect`) have no region hash (the number of indices is not known when they are issued); select them by draw number or shader hash.
+- The game stores off-screen targets upside down (as seen in the real game: characters head down in scene targets); pictures and rectangles use the target's own rows and are not flipped for you; the final back buffer is upright.
+- `depth=true` is expensive: `box` has no effect on depth targets, and shadow maps are 4096×4096 (`D16_UNORM`, 32 MiB per copy). In the real game one mesh with 6 passes copied including depth is 224 MiB.
+- Multisampled targets are not copied, which the result notes. The total amount of copied pixels is limited (512 MiB); copies beyond the limit are skipped and noted in the result, and the "before" copy is made only if the "after" copy fits as well. The copies are held in the memory of the game process, and the server has the probe release them as soon as it has read them.
+- Every copy is a whole-block copy on the graphics card and needs a new staging texture, so the recorded frame is somewhat slower than usual; only this frame is affected.
 
-**实机（2026-10-08，PID 9736，探针 0.1.5，分辨率 2560×1600、内部渲染 1484×928）。** 大世界里 4 个带 mod 的角色。完整抓取 1097 次绘制（游戏 577、XXMI 520），游戏内记录耗时 8.1 毫秒。选一个 mod 网格 `4bef9522`（6 遍：3 遍阴影，3 遍颜色）：`efmi_get_draw` 读到 G-buffer 遍是 5 个颜色目标、不混合、深度 `greater_equal` 并写入、模板恒通过写 36、剔除背面；描边遍是剔除正面、深度 `greater`，多一个采阴影图的比较采样器；深度目标是 `R32G8X24_TYPELESS`，视图注明按 `D32_FLOAT_S8X24_UINT` 读。`efmi_capture_draw_outputs hash=4bef9522`：匹配 6 个，3 个只有深度的不占名额，拷贝 3 个共 31.5 MiB，三遍分别改动 7242、2881、100 个像素，矩形都在同一个角色身上；`R11G11B10_FLOAT` 的目标能出图。加 `depth=true` 后 6 个都拷贝，共 224.3 MiB：阴影图是 4096×4096 和 4096×2048 的 `D16_UNORM`，只能整块拷贝。实机看到的两点已写进上面的要点和工具说明：离屏目标是上下颠倒存放的；`depth=true` 很占内存。带拷贝的那一帧的耗时同日下午量到了：16 份拷贝（94.6 MiB）时游戏内记录耗时 7.37 毫秒，同场景不带拷贝的完整抓取是 7.28 毫秒；显卡一侧的耗时没有量。
+**Real game (2026-10-08, PID 9736, probe 0.1.5, resolution 2560×1600, internal rendering 1484×928).** Four modded characters in the open world. A full capture has 1097 draws (577 game, 520 XXMI) with an in-game record time of 8.1 ms. For one mod mesh, `4bef9522` (6 passes: 3 shadow, 3 colour), `efmi_get_draw` reads: the G-buffer pass has 5 colour targets, no blending, depth `greater_equal` with writes, stencil always passing and writing 36, back-face culling; the outline pass has front-face culling, depth `greater`, and one more comparison sampler for the shadow map; the depth target is `R32G8X24_TYPELESS`, with the view noted as read as `D32_FLOAT_S8X24_UINT`. `efmi_capture_draw_outputs hash=4bef9522`: 6 matched, the 3 depth-only ones take no quota, 3 copied with 31.5 MiB in all, the three passes changing 7242, 2881 and 100 pixels, all rectangles on the same character; pictures can be produced for `R11G11B10_FLOAT` targets. With `depth=true` all 6 are copied, 224.3 MiB in all: the shadow maps are `D16_UNORM` of 4096×4096 and 4096×2048 and can only be copied whole. Two things seen in the real game are written into the points above and the tool description: off-screen targets are stored upside down, and `depth=true` takes a lot of memory. The time of a frame with copies was measured that afternoon: with 16 copies (94.6 MiB) the in-game record time is 7.37 ms, against 7.28 ms for a full capture of the same scene without copies; the time on the graphics card side was not measured.
 
-**验证范围（2026-10-08）。** 沙盒：探针自测里逐项核对了沙盒设置的混合、深度模板、光栅化状态、两个裁剪矩形和视口、三个采样器、贴图数组/缓冲/某一级 mip 的视图和间接绘制的参数；渲染目标拷贝核对了改动矩形与网格位置一致、绘制前仍是清屏颜色、此前画的内容两份拷贝里都在、`box`、深度目标、只有深度的通道、数量上限、像素预算、读完释放后抓取其余部分仍可读。MCP 端到端 68 项、不需要游戏的单元测试 38 项（`sandbox/draw_outputs_test.py`，含旧探针提示、超预算、多重采样、索引数据已变等沙盒走不到的分支）。实机结果见上一段。
+**Scope of verification (2026-10-08).** Sandbox: the probe self-test checks item by item the blend, depth-stencil and rasterizer state set by the sandbox, two scissor rectangles and viewports, three samplers, views of a texture array / a buffer / one mip level, and the arguments of an indirect draw; for render target copies it checks that the changed rectangle agrees with the position of the mesh, that before the draw the clear colour is still there, that what was drawn earlier is in both copies, `box`, depth targets, depth-only passes, the quota, the pixel budget, and that the rest of the capture can still be read after the copies were read and released. 68 MCP end-to-end checks and 38 unit tests that need no game (`sandbox/draw_outputs_test.py`, including branches the sandbox cannot reach such as the hint for an old probe, over budget, multisampling, and index data that has changed). The real-game result is in the previous paragraph.
 
-## 模型流程：提取 → Blender → 导出 → 游戏内核对
+## Model workflow: extraction → Blender → export → check in the game
 
-把游戏里的角色变成可编辑的 LoyalTools 骨骼合并工程，改完再导出成模组并在游戏里核对。分组、骨骼合并、LOD 匹配和 INI／BUF 生成全部由 LoyalTools 完成；本工具采集数据、调用它的入口、检查结果。默认使用所选 Blender 里已安装的那份插件，所以更新插件后这里自动用新版，不需要改 MCP。
+Turns a character in the game into an editable LoyalTools merged-skeleton project, and after editing exports it as a mod and checks it in the game. Grouping, skeleton merging, LOD matching and INI / BUF generation are all done by LoyalTools; this tool captures the data, calls its entry points and checks the results. By default the copy of the add-on installed in the selected Blender is used, so after updating the add-on the new version is used here automatically and the MCP does not have to change.
 
-| 步骤 | 工具 | 说明 |
+| Step | Tool | Notes |
 |---|---|---|
-| 看画面里有哪些角色 | `efmi_list_models` | 采一帧，列出 LoyalTools 识别出的对象、组件和截图 |
-| 提取 | `efmi_extract_model` | 三次独立采样（几何必须一致、骨组来源必须一致），生成 `workplace`，后台 Blender 导入为 `<项目>.blend`，材质只连漫射贴图 |
-| LOD 映射 | `efmi_map_lod` | `json`：复用 JSON 里已有的映射；`frame`：用帧分析目录或探针归档做帧匹配；`capture`：现采一帧 LOD 状态再匹配（角色须由游戏自己画出，被 mod 替换时先关 mod；帧落盘后任务的 `probe_in_use` 变为 false，匹配约一分钟，期间可以把 mod 开回去） |
-| 编辑 | （你在 Blender 里改并保存） | 导出读取的是磁盘上保存的 `.blend` |
-| 导出 | `efmi_export_mod` | 后台 Blender 运行插件自己的“生成 Mod”，产物在 `exports/<export_id>/mod`，并检查文件引用、尺寸、绘制范围和入口 |
-| 部署并核对 | `efmi_verify_exported_mod` | 把这次导出复制到 `Mods\EFMI-MCP\<项目>`，游戏内 F10 一次，再把 XXMI 实际绘制的缓冲与导出文件按内容比较 |
-| 查看项目／任务 | `efmi_model_project`、`efmi_model_job` | 项目现状；跟进或取消耗时任务 |
+| See which characters are in view | `efmi_list_models` | Captures a frame and lists the objects and components LoyalTools recognises, with a screenshot |
+| Extract | `efmi_extract_model` | Three independent samples (geometry must agree, bone group sources must agree), generates `workplace`, a background Blender imports it as `<project>.blend`, with materials connecting only the diffuse texture |
+| LOD mapping | `efmi_map_lod` | `json`: re-uses a mapping that exists in a JSON; `frame`: frame matching with frame analysis directories or probe archives; `capture`: captures a frame of the LOD state now and matches (the character has to be drawn by the game itself; switch mods off first if a mod replaces it; once the frames are on disk the job's `probe_in_use` turns false, matching takes about a minute, and the mods can be switched back on meanwhile) |
+| Edit | (you edit in Blender and save) | The export reads the `.blend` saved on disk |
+| Export | `efmi_export_mod` | A background Blender runs the add-on's own mod generation; the output is in `exports/<export_id>/mod`, and file references, sizes, draw ranges and entry points are checked |
+| Deploy and check | `efmi_verify_exported_mod` | Copies this export to `Mods\EFMI-MCP\<project>`, presses F10 once in the game, and compares the buffers XXMI actually draws with the exported files by content |
+| Look at the project / jobs | `efmi_model_project`, `efmi_model_job` | State of the project; follow or cancel long-running jobs |
 
-要点：
+Points to note:
 
-- **项目目录就是 LoyalTools 的自定义工作空间根目录**，目录名即模组名（插件用它给蓝图和 INI 命名），布局见本节末尾。
-- **被模组替换的角色提取不了**：游戏对它的原始绘制没有发出。先用 `efmi_toggle_mods state=off` 关掉全部 mod，提取完再 `state=on`；或者停用该模组并刷新。
-- **主控与 LOD 共用一份编辑网格**。LOD 入口、LOD 布局的缓冲变体和骨索引重映射由插件在导出时按 `workplace/EFMI_MergedSkeleton.json` 里的映射生成；没有采集过、JSON 里也没有的 LOD 不会被推算出来。该角色以前做过 LOD 映射时，提取时用 `lod_json` 指向旧项目即可，不用再采远景帧。
-- **Blender 里只连漫射贴图**（Base Color，以及插件原生连接的同图 Alpha）。法线等其他贴图仍留在工作空间里供导出使用。
-- **部署只写一个目录**：`<EFMI>\Mods` 下由本工具创建并带 `efmi-mcp-deployment.json` 标记的那个。别的模组不会被移动或停用；引用相同哈希的会列为可能的冲突。`action="remove"` 删除已部署的文件并刷新。
-- **结果分开报告**：`export_valid`、`deployment_verified`、刷新（已请求／已确认）、`fresh_capture`、`target_mod_status`（`passed`／`failed`／`inconclusive`／`not_run`）以及覆盖与未覆盖的组件。刷新成功不等于这个模组生效；缓冲一致也不等于外观正确，报告里附前后截图。
-- 耗时步骤以任务运行：在 `wait_s` 内完成就直接返回结果，否则返回任务 ID。
+- **The project directory is the root of a LoyalTools custom workspace**, and the directory name is the mod name (the add-on names the blueprint and the INI after it); the layout is at the end of this section.
+- **A character replaced by a mod cannot be extracted**: the game's original draws for it are not issued. Switch all mods off with `efmi_toggle_mods state=off` first and back with `state=on` after extraction; or disable that mod and refresh.
+- **Main model and LOD share one edited mesh.** LOD entry points, the buffer variants with the LOD layout and the bone index remaps are generated by the add-on at export from the mapping in `workplace/EFMI_MergedSkeleton.json`; LODs that were neither captured nor are in the JSON are not inferred. When the character had an LOD mapping made before, point `lod_json` at the old project during extraction and no distant frame has to be captured again.
+- **Blender connects only the diffuse texture** (Base Color, and the Alpha of the same image that the add-on connects natively). Other textures such as normal maps stay in the workspace for the export to use.
+- **Deployment writes only one directory**: the one under `<EFMI>\Mods` that this tool created and that carries the `efmi-mcp-deployment.json` marker. Other mods are not moved or disabled; those referring to the same hashes are listed as possible conflicts. `action="remove"` deletes the deployed files and refreshes.
+- **Results are reported separately**: `export_valid`, `deployment_verified`, the refresh (requested / confirmed), `fresh_capture`, `target_mod_status` (`passed` / `failed` / `inconclusive` / `not_run`) and the components covered and not covered. A successful refresh does not mean this mod is in effect; matching buffers do not mean the look is right either, and the report includes before and after screenshots.
+- Long-running steps run as jobs: when they finish within `wait_s` the result is returned directly, otherwise a job ID.
 
-- **CPU 姿态的组件**（例如伊冯的 `ba957493`）：它的顶点位置由游戏在 CPU 上算好，放在一组轮换使用的动态缓冲里，写入后只保持几帧。完整采集的回包来不及读它，所以归档在最后另采一帧轻量帧并立刻读取所需范围，用探针的写入记录和那一帧绘制时的哈希证明“读到的就是那次绘制用的数据”，被改写了就整份重采（最多 6 次）。这些顶点因此是同一网格在稍后几帧的姿态，不是主帧的；三次采样之间只比较它的大小和布局。画面里有几个角色时，它们的这类数据在同一块缓冲里，一次读回。
-- **画面里会动的物体**不影响归档：两次采集之间只要求每个网格的骨骼缓冲没换，实例常量（开头是世界矩阵）变化只作记录。
-- **大世界的画面**里，带每对象常量和骨骼缓冲的绘制大多是场景物件（一帧五百多次里角色只占两百多次），其中游戏的动态合批连索引都放在每帧重写的缓冲里。归档只保留“至少有一个网格在 GPU 上蒙皮”的对象，其余略过并在 `left_out` 里给出数量。这样的对象里若有绘制的索引数据被游戏重写，这次绘制读不回来：它会被略过并列出，`efmi_list_models` 把该对象标为不完整，提取它会被拒绝。
-- **骨骼合并逐帧略有不同是正常的**：LoyalTools 把矩阵逐位相等的骨头合并，而游戏给同一根骨头在不同组件里算出的矩阵有时差最后一位，所以每帧合并出的数量会差一两根（伊冯三帧为 38／37／35）。核对的是“首帧的每个合并在所有采样里都是同一根骨头”（数值容差 1e-5）：只是碰巧重合的两根不同骨头会被拒绝，少合并几根只是多出重复的顶点组。
-- **部署核对取哪一帧**：加载较大的模组会让游戏停顿几秒，等待时间从游戏重新出帧时算起；模组刚重载时可能先隐藏原始网格、过几帧才开始画，所以它还没画出任何东西时会再看后面的帧（最多 6 次）。重载证据也在最终判定的那一帧上再取一次：重载后的头几帧可能没有任何 mod 在画，只看第一帧会把已经发生的重载报成未确认。同角色已有别的模组生效时两者会叠画，工具只列出冲突，不会停用别人的模组。
-- **哈希对不上时按内容裁决**：0.1.3 及更早的探针记录的区域哈希可能不是该缓冲的（见“探针边界”），所以大小等于某个导出文件、哈希却对不上的索引或顶点缓冲会被整个读回再比较，内容确实不同才算数；这种情况列在 `recorded_hash_disagreements`。
+- **CPU-posed components** (for example Yvonne's `ba957493`): their vertex positions are computed by the game on the CPU and placed in a set of dynamic buffers used in rotation, where they stay for only a few frames after being written. The reply of a full capture is too late to read them, so the archive captures one more light frame at the end and reads the needed ranges at once, using the probe's write records and the draw-time hash of that frame to prove that "what was read is the data that draw used"; if it was rewritten the whole thing is sampled again (at most 6 times). These vertices are therefore the pose of the same mesh a few frames later, not that of the main frame; between the three samples only their size and layout are compared. With several characters in view, this kind of data of all of them is in the same buffer and read back in one go.
+- **Moving objects in view** do not affect the archive: between two captures only the bone buffer of each mesh must not have been swapped, and changes of the instance constants (which begin with the world matrix) are merely recorded.
+- **On open-world screens** most draws with per-object constants and a bone buffer are scene objects (of over five hundred per frame, characters account for only a little over two hundred), and the game's dynamic batching even keeps the indices in buffers rewritten every frame. The archive keeps only objects with "at least one mesh skinned on the GPU", skips the rest and gives their number in `left_out`. If such an object has a draw whose index data the game rewrites, that draw cannot be read back: it is skipped and listed, `efmi_list_models` marks the object as incomplete, and extracting it is refused.
+- **Bone merging differing slightly from frame to frame is normal**: LoyalTools merges bones whose matrices are bit-identical, and the matrices the game computes for the same bone in different components sometimes differ in the last digit, so the number merged differs by one or two per frame (38 / 37 / 35 for three frames of Yvonne). What is checked is that "every merge of the first frame is the same bone in all samples" (numeric tolerance 1e-5): two different bones that merely coincide by chance are rejected, and merging a few less only produces duplicate vertex groups.
+- **Which frame the deployment check takes**: loading a large mod pauses the game for a few seconds, and the wait counts from the game presenting frames again; a mod that was just reloaded may hide the original mesh first and start drawing a few frames later, so while it has not drawn anything yet later frames are looked at (at most 6 times). The reload evidence is also taken again on the frame that is finally judged: in the first frames after a reload no mod may be drawing at all, and looking only at the first frame would report a reload that did happen as unconfirmed. When another mod for the same character is in effect, both are drawn on top of each other; the tool only lists the conflict and does not disable other people's mods.
+- **When hashes do not match, content decides**: the region hash recorded by probe 0.1.3 and earlier may not be that of the buffer in question (see "Limits of the probe"), so an index or vertex buffer whose size equals that of an exported file but whose hash does not match is read back whole and compared, and only really different content counts; such cases are listed in `recorded_hash_disagreements`.
 
-**验证范围（2026-10-07）。** 不需要游戏的部分已用真实的 LoyalTools 1.6.8（Blender 4.5.7 中已安装的插件）验证：仅漫射的 Blender 导入、LOD 的 JSON 匹配与帧匹配（两侧为帧分析目录）、插件原生导出及产物检查、在 Blender 里移动全部网格并保存后再次导出（只有顶点缓冲随之整体平移同样的距离，索引缓冲和其余文件不变）；部署规则、绘制对照、任务管理以及“用哪个 Blender、哪份插件”的选择有 56 项单元测试（含被游戏重写的顶点数据、三采样核对、取帧时机和大世界画面里绘制的取舍）。
+**Scope of verification (2026-10-07).** The parts that do not need the game were verified with the real LoyalTools 1.6.8 (the add-on installed in Blender 4.5.7): the diffuse-only Blender import, JSON matching and frame matching of LODs (both sides being frame analysis directories), the add-on's native export and the output checks, and exporting again after moving all meshes in Blender and saving (only the vertex buffers follow, translated as a whole by the same distance; index buffers and the other files are unchanged); the deployment rules, draw comparison, job management and the choice of "which Blender, which copy of the add-on" have 56 unit tests (including vertex data rewritten by the game, the three-sample check, the timing of taking the frame, and the selection of draws on open-world screens).
 
-**实机（2026-10-07，伊冯）。** 先用 `efmi_toggle_mods state=off` 关掉 mod，`efmi_list_models` 识别出 “Character 71189”（11 个组件、71189 个顶点）；`efmi_extract_model` 用 13.5 秒完成三采样、工作空间、JSON LOD 和 Blender 导入：骨骼 374 根，与用户此前用帧分析做的同角色工程一致（各组件 `vg_count`、`vg_offset` 相同）；LOD 从旧工程复用，10／11 个组件匹配，`ba957493` 被 LoyalTools 判为不兼容；`.blend` 中 11 个对象、9 个连了漫射贴图。恢复 mod 后 `efmi_export_mod` 导出 78 个文件，检查通过。mod 关闭的时间约 20 秒。随后按用户的要求临时停用其同角色 mod，`efmi_verify_exported_mod` 部署并刷新：10 个组件由导出的网格替换（游戏原始绘制消失），41–45 次绘制的参数与 INI 一致，40 个导出缓冲逐字节相同，14 张贴图相同，第 11 个组件（CPU 姿态）按插件的设计仍由游戏绘制；截图为完整的原版外观。之后移除部署、恢复用户的 mod，XXMI 的 93 次网格绘制回到原样。证据 `captures/verify-model-18776/`、`captures/verify-deploy-18776/` 和项目内 `verification/`。
+**Real game (2026-10-07, Yvonne).** Mods were switched off with `efmi_toggle_mods state=off` first, and `efmi_list_models` recognised "Character 71189" (11 components, 71189 vertices); `efmi_extract_model` completed the three samples, the workspace, the JSON LOD and the Blender import in 13.5 seconds: 374 bones, in agreement with the project the user had made of the same character from a frame analysis (the same `vg_count` and `vg_offset` for every component); the LOD was re-used from the old project, with 10 / 11 components matching and `ba957493` judged incompatible by LoyalTools; the `.blend` has 11 objects, 9 of them with a diffuse texture connected. After the mods were restored, `efmi_export_mod` exported 78 files and the checks passed. The mods were off for about 20 seconds. Then, at the user's request, their mod for the same character was disabled temporarily, and `efmi_verify_exported_mod` deployed and refreshed: 10 components are replaced by the exported meshes (the game's original draws are gone), the arguments of 41–45 draws agree with the INI, the 40 exported buffers are byte-identical, 14 textures are the same, and the 11th component (CPU-posed) is still drawn by the game, as the add-on intends; the screenshot shows the complete original look. Afterwards the deployment was removed and the user's mod restored, and XXMI's 93 mesh draws were back as before. Evidence `captures/verify-model-18776/`, `captures/verify-deploy-18776/` and `verification/` inside the project.
 
-**修改后的模型（2026-10-07，伊冯）。** 在工作空间的副本上导入并导出一次（A，与上面核对过的导出逐字节相同），再用脚本在 Blender 里把全部网格移动 2 厘米、保存、导出（B：文件和大小不变，10 个 Position 缓冲内容不同）。按用户的要求临时停用其同角色 mod 后依次部署 A、B 并各重载一次：两次都是 `passed`，41 次绘制、40 个缓冲与所部署的导出逐字节相同，B 那次被改的 10 个顶点缓冲记录的哈希都是 B 文件的；随后移除部署、恢复用户的 mod（其文件夹前后内容相同）。这说明 Blender 里的改动经插件导出后确实到了游戏里。改动是脚本做的整体平移，观感没有另行评判。
+**A modified model (2026-10-07, Yvonne).** On a copy of the workspace one import and export was made (A, byte-identical to the export checked above), then a script moved all meshes by 2 cm in Blender, saved and exported (B: files and sizes unchanged, the content of 10 Position buffers different). After the user's mod for the same character was disabled temporarily at their request, A and B were deployed in turn with one reload each: both times `passed`, with 41 draws and 40 buffers byte-identical to the deployed export, and for B the hashes recorded for the 10 changed vertex buffers are all those of B's files; then the deployment was removed and the user's mod restored (the content of its folder is the same before and after). This shows that changes made in Blender really reach the game through the add-on's export. The change was a scripted translation of everything, and the look was not judged separately.
 
-**LOD 距离（2026-10-07 晚，伊冯，大世界，画面里 4 个角色）。** 关掉 mod 后，游戏在远处画的 7 个 LOD 网格的哈希和索引数与工程里的 LOD 入口一致。`efmi_map_lod method=capture`：mod 关闭 5.3 秒（两次 F11），归档 3.9 秒（保留 263 次绘制、92 MiB 缓冲、101 张贴图，略过 341 次场景绘制），匹配约 38 秒，在 mod 重新打开的状态下跑完；LoyalTools 在 4 个角色里认出 LOD 对象 `Character 36804`，11 个组件全部匹配。与用户工程里已有的映射（JSON 复用自帧分析）相比：10 个组件的 LOD 网格条目完全相同；第 11 个（CPU 姿态的 `ba957493`）在工程里标为回退，这次匹配到游戏在远处实际画的 `01b00fec`——用户更早的工程 `yvonne test` 里本来有这一条，是按 JSON 复用到新提取的工程时被 LoyalTools 的检查去掉的：这个组件没有顶点组（`vg_count=0`），而匹配器给它的 LOD 条目写了 40 项顶点组映射，复用时被判为“LOD 顶点组映射超出当前组件的顶点组范围”。所以这个角色的映射只要按 JSON 复用，这一条都会丢，要靠帧匹配补回（CPU 姿态组件按用户的做法从不修改，删掉后由游戏自己画，所以缺这一条不影响成品）；骨索引重映射 368 项中有 7 项选了另一根 LOD 骨头，其中 2 项两根骨头的矩阵相同；另外 5 项不同，把近景网格按两种映射分别用那一帧的 LOD 骨骼矩阵蒙皮，再与游戏自己的 LOD 网格比较：受影响的顶点（`d160fb72` 286 个、`28ab9d1b` 82 个）两种结果相距中位 0.48 厘米／0.07 厘米，离游戏的 LOD 网格都在 2 毫米左右（前者新映射略近，后者旧映射略近）。游戏的 LOD 网格在这些位置本来就由相邻的几根骨头混合加权，映射到其中哪一根都只是近似，两种都可用。随后按用户的要求临时停用其同角色 mod，把两种映射的导出各部署一次，都是 `passed`：10 个组件被替换，游戏自己的 LOD 网格不再画出，40 个缓冲与导出逐字节相同，其中 7 个是 LOD 专用的 `Texcoord-LOD1`（近景时绑定的是普通 `Texcoord`）；9 个 LOD 骨索引重映射缓冲都已由 XXMI 加载、内容一致，绑定在骨骼合并的计算着色器上。用新映射的导出时，CPU 姿态组件的 LOD 网格 `01b00fec` 也有了入口，游戏对它的 3 次绘制不再出现（替换它的绘制不使用导出的缓冲，没有进一步核对）；用旧映射时这部分在远处仍由游戏自己画。截图里远处的模型完整。其间有一次 F10 因 Windows 拒绝把游戏切到前台而没有发出（用户当时在别的窗口操作）：工具没有重按，先恢复了磁盘上的文件并说明游戏里仍是上一份导出，由用户决定后继续。结束后用户的 mod 恢复原样。证据 `captures/verify-lod-3468/`。
+**LOD distance (evening of 2026-10-07, Yvonne, open world, 4 characters in view).** With mods off, the hashes and index counts of the 7 LOD meshes the game draws at a distance agree with the LOD entry points in the project. `efmi_map_lod method=capture`: mods off for 5.3 seconds (two F11 presses), archive 3.9 seconds (263 draws kept, 92 MiB of buffers, 101 textures, 341 scene draws skipped), matching about 38 seconds, which ran with the mods switched back on; among the 4 characters LoyalTools recognised the LOD object `Character 36804`, and all 11 components matched. Compared with the mapping already in the user's project (re-used by JSON from a frame analysis): the LOD mesh entries of 10 components are exactly the same; the 11th (the CPU-posed `ba957493`) is marked as a fallback in the project and this time matched `01b00fec`, which the game actually draws at a distance. The user's earlier project `yvonne test` did have this entry, and it was removed by a LoyalTools check when re-using by JSON into the newly extracted project: this component has no vertex groups (`vg_count=0`), while the matcher wrote 40 vertex group mappings into its LOD entry, which on re-use is judged as "the LOD vertex group mapping exceeds the vertex group range of the current component". So for this character the entry is lost whenever the mapping is re-used by JSON and has to be restored by frame matching (CPU-posed components are never modified in the user's practice, they are deleted and drawn by the game itself, so the missing entry does not affect the finished mod); in 7 of the 368 items of the bone index remap the other LOD bone was chosen, in 2 of which the matrices of the two bones are the same; for the other 5 they differ, and the close-view mesh was skinned with the LOD bone matrices of that frame under each of the two mappings and compared with the game's own LOD mesh: for the affected vertices (286 of `d160fb72`, 82 of `28ab9d1b`) the two results are a median 0.48 cm / 0.07 cm apart, and both are about 2 mm from the game's LOD mesh (for the former the new mapping is slightly closer, for the latter the old one). The game's LOD mesh blends several neighbouring bones at these places anyway, so mapping to any one of them is only an approximation, and both are usable. Then, with the user's mod for the same character disabled temporarily at their request, the exports with both mappings were each deployed once, both `passed`: 10 components are replaced, the game's own LOD meshes are no longer drawn, and 40 buffers are byte-identical to the export, 7 of them the LOD-specific `Texcoord-LOD1` (in the close view the ordinary `Texcoord` is bound); all 9 LOD bone index remap buffers have been loaded by XXMI with matching content and are bound to the compute shader of the skeleton merge. With the export using the new mapping, the LOD mesh `01b00fec` of the CPU-posed component has an entry point too, and the game's 3 draws of it no longer appear (the draws replacing it do not use exported buffers and were not checked further); with the old mapping this part is still drawn by the game itself at a distance. The distant model is complete in the screenshots. During this, one F10 was not sent because Windows refused to bring the game to the foreground (the user was working in another window at the time): the tool did not press again, first restored the files on disk and explained that the game still had the previous export, and continued after the user decided. At the end the user's mod was restored as it was. Evidence `captures/verify-lod-3468/`.
 
-**尚未实机验证**：手工修改的模型在游戏里的观感；比 LOD1 更远的级别（这次画面里只有 LOD1）；在大世界里做三采样提取。
+**Not yet verified in the real game**: the look of a manually modified model in the game; levels farther than LOD1 (only LOD1 was in view this time); a three-sample extraction in the open world.
 
-项目目录的内容：
+Contents of the project directory:
 
 ```text
-<项目>/                         # 名字即模组名
-  workplace/                    # LoyalTools 原生工作空间（含 live-bridge-report.json）
-  <项目>.blend                  # 可编辑工程；<项目>.verification.json 是导入检查报告
-  source/sample-1..n/           # 三份独立采样及来源记录
-  source/lod-<时间>/            # 现采的 LOD 帧（如有）
+<project>/                      # the name is the mod name
+  workplace/                    # LoyalTools native workspace (with live-bridge-report.json)
+  <project>.blend               # editable project; <project>.verification.json is the import check report
+  source/sample-1..n/           # the three independent samples and their provenance
+  source/lod-<time>/            # freshly captured LOD frames (if any)
   exports/<export_id>/
-    mod/                        # 插件导出的模组
-    export-manifest.json        # 文件清单与 SHA256、入口、绘制命令
-    export-report.json          # 后台 Blender 的导出报告；.log.txt 为插件导出日志
-  verification/<run_id>/        # 部署记录、刷新回执、绘制对照、前后截图、被替换下来的旧部署文件
-  efmi-model-project.json       # 做过什么、用的哪些版本
+    mod/                        # the mod exported by the add-on
+    export-manifest.json        # file list with SHA256, entry points, draw commands
+    export-report.json          # export report of the background Blender; .log.txt is the add-on's export log
+  verification/<run_id>/        # deployment record, refresh receipt, draw comparison, before/after screenshots, old deployed files that were replaced
+  efmi-model-project.json       # what was done and with which versions
 ```
 
-**LOD 映射的两种来源。** 帧匹配：拿一帧近景（主控）和一帧远景（LOD）交给 LoyalTools 的匹配器，两帧各自可以是帧分析目录，也可以是本工具采集的归档；`method=capture` 就是现采一帧远景再匹配。JSON 匹配：同一角色以前做过映射时，直接从那份 `EFMI_MergedSkeleton.json`（或其所在项目）复用，不需要游戏。映射写进 `workplace/EFMI_MergedSkeleton.json`，没有对应 LOD 网格的组件标为回退。`method=capture` 需要游戏自己画出远处的角色（被 mod 替换时先用 `efmi_toggle_mods` 关掉）；它只在抓帧的几秒里占用探针，之后任务状态里的 `probe_in_use` 变为 false，匹配（约一分钟）期间就可以把 mod 开回去。现采的映射可能比复用的旧映射更全：伊冯的 CPU 姿态组件在旧映射里没有 LOD 网格，现采时匹配到了。
+**The two sources of an LOD mapping.** Frame matching: a close-view frame (main model) and a distant frame (LOD) are handed to LoyalTools' matcher; each of the two frames can be a frame analysis directory or an archive captured by this tool; `method=capture` captures a distant frame now and then matches. JSON matching: when the same character had a mapping made before, it is re-used directly from that `EFMI_MergedSkeleton.json` (or the project containing it), without the game. The mapping is written into `workplace/EFMI_MergedSkeleton.json`, and components without a corresponding LOD mesh are marked as fallback. `method=capture` needs the game itself to draw the distant character (switch mods off with `efmi_toggle_mods` first if a mod replaces it); it uses the probe only during the few seconds of capturing, after which `probe_in_use` in the job state turns false, and the mods can be switched back on during the matching (about a minute). A freshly captured mapping can be more complete than a re-used old one: Yvonne's CPU-posed component has no LOD mesh in the old mapping and was matched in the fresh capture.
 
-## 已知限制
+## Known limits
 
-### 合并骨骼工作空间提取（命令行）
+### Merged-skeleton workspace extraction (command line)
 
-上面的 `efmi_extract_model` 把下面三步合在一起；脚本仍可单独使用。导入脚本默认只连漫射贴图，`--materials native` 恢复插件带法线的材质。
+`efmi_extract_model` above combines the following three steps; the scripts can still be used on their own. The import script connects only the diffuse texture by default; `--materials native` restores the add-on's materials with normal maps.
 
-可把实时采集的数据交给本机 LoyalTools 原算法，生成其 `workplace` 工作空间，再用后台 Blender 导入并保存 `.blend`。默认只读引用 Blender 中已安装的 LoyalTools 插件（`--blender` 指定用哪个 Blender 的，`--loyaltools-root` 改用别处的源码），不修改 EFMI 或参考工具。此流程当前针对游戏原始 `DrawIndexedInstanced` 角色绘制；先在画面中显示目标角色。
+Data captured live can be handed to the original algorithm of the local LoyalTools to generate its `workplace` workspace, which a background Blender then imports and saves as a `.blend`. By default the LoyalTools add-on installed in Blender is referenced read-only (`--blender` selects which Blender's, `--loyaltools-root` uses sources elsewhere instead), and neither EFMI nor the reference tool is modified. This flow currently targets the game's original `DrawIndexedInstanced` character draws; show the target character on screen first.
 
 ```powershell
-& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <游戏PID> --archive captures/sample-a --deferred-skeleton
-& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <游戏PID> --archive captures/sample-b --deferred-skeleton
-& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <游戏PID> --archive captures/sample-c --deferred-skeleton
-& 'D:\Python312\python.exe' scripts/export_merged_workspace.py captures/sample-a 'E:\输出目录\workplace' --validation-archive captures/sample-b --validation-archive captures/sample-c
-& 'D:\blender4,5\blender.exe' --background --factory-startup --python-exit-code 1 --python scripts/verify_merged_workspace_blender.py -- --workspace 'E:\输出目录' --output 'E:\输出目录\角色.blend'
+& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <game PID> --archive captures/sample-a --deferred-skeleton
+& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <game PID> --archive captures/sample-b --deferred-skeleton
+& 'D:\Python312\python.exe' scripts/capture_merged_source.py --pid <game PID> --archive captures/sample-c --deferred-skeleton
+& 'D:\Python312\python.exe' scripts/export_merged_workspace.py captures/sample-a 'E:\output\workplace' --validation-archive captures/sample-b --validation-archive captures/sample-c
+& 'D:\blender4,5\blender.exe' --background --factory-startup --python-exit-code 1 --python scripts/verify_merged_workspace_blender.py -- --workspace 'E:\output' --output 'E:\output\character.blend'
 ```
 
-静态几何要求完整资源自捕获后未变化（游戏自己重写的 CPU 姿态顶点流除外，见上文“模型流程”的要点），按真实索引范围提取，不将 XXMI 的 VB 哈希窗口当成完整网格。CB 使用 draw 时刻快照；骨骼 SRV 是后续读回，因此上述静态编辑模式用三份独立采样核对完整几何与合并骨组映射，并保留读取时刻证据。它不保证复现某一帧的动画姿态，也不自动生成未捕获的 LOD 映射。输出拒绝覆盖已有工作空间或 `.blend`。
+Static geometry requires the complete resources to be unchanged since the capture (except the CPU-posed vertex streams the game rewrites itself, see the points under "Model workflow" above); it is extracted by the real index range, and XXMI's VB hash window is not taken for the complete mesh. CBs use the snapshot from the time of the draw; the bone SRV is read back afterwards, so the static editing mode above checks the complete geometry and the merged bone group mapping with three independent samples and keeps evidence of the read times. It does not guarantee reproducing the animation pose of one frame and does not generate LOD mappings for what was not captured. The output refuses to overwrite an existing workspace or `.blend`.
 
-### 探针边界
+### Limits of the probe
 
-- 探针必须在游戏创建 D3D 设备之前加载，所以只能由启动器在开局注入，不能附加到已运行的游戏。
-- 0.1.1 固定使用首个发现的交换链所属设备，后建的无交换链辅助设备不会抢走采集目标。不做多个窗口/交换链间的自动主画面识别；完整设备重建后需重启游戏，同设备交换链销毁/重建期间的跨界抓帧也尚未验证。
-- 看到的是真正发给显卡的调用。某个 mod 生效时，游戏对该网格的原始绘制已被替换，不会出现；出现的是 mod 发出的绘制，来源标为 `xxmi`。要看原始绘制，用 `efmi_toggle_mods state=off` 暂时关掉全部 mod。来源是按调用栈深度判断的启发式结果。
-- 缓冲和贴图的读取默认返回"读取那一刻"的内容，结果里的 `exact` 说明读之前有没有被写过。要调用当时的内容，抓取时加 `contents=inputs`／`outputs`（探针 0.1.6，见“调用当时的内容”）；只要常量缓冲的绑定窗口时 `cb_data=true` 也够。
-- 由 GPU 写入的缓冲（计算着色器蒙皮等），XXMI 自己缓存的哈希可能是旧值；探针给的是当前字节的哈希，两者可能不同。
-- **0.1.3 及更早的探针**把区域哈希按缓冲地址缓存：缓冲销毁后，同样大小的新缓冲若拿到同一个地址、且两者创建后都没被写过，会被记成前一个缓冲的哈希。重载会销毁并重建 mod 的缓冲，所以改过的 mod 重载后，它的 ib／vb 哈希可能还是改之前的。0.1.4 已修正（缓存条目同时记下缓冲对象的序号）：沙盒里让缓冲按原大小、不同内容反复销毁重建，修正前 180 次比对有 114 次是旧哈希，修正后为 0。实机上这种情况是偶发的：相邻两次重载之间，新缓冲大多不在上一代缓冲的地址上，地址也可能来自几次重载之前的缓冲。2026-10-07 用 0.1.3 遇到过一次；换成 0.1.4 后，同一块缓冲再次建在别的缓冲用过的地址上（读取范围相同、内容不同），记录的哈希与读回的内容一致。游戏里还是旧探针时，需要确证就用 `efmi_read_buffer` 读内容。
-- 只有最近一次抓取的资源可读；延迟上下文（deferred context）里的绘制看不到，`efmi_status` 会提示是否出现过。
-- 三维贴图整块读回；多重采样的颜色贴图读回解析后的像素，多重采样的深度贴图读不了（探针 0.1.6）。
-- 混合、深度模板、光栅化状态和采样器按 D3D11 保存的内容报告。运行时不保留状态里用不到的字段（深度测试关闭时的比较函数和写入、非各向异性过滤的各向异性级数等），这些字段不显示，而不是显示一个可能误导的默认值。没有绑定状态对象时报告 D3D11 的默认值并标 `default`。这些只在完整抓取里记录，并且需要探针 0.1.5。
-- `efmi_get_draw` 里贴图和输出后面的 `| view: …` 只在视图不是“以资源自己的格式显示整个资源”时出现（另一种格式、部分 mip 或切片、只读深度、缓冲的某一段元素）。
-- XXMI 的 `shader_hash = bytecode` 模式未实现（EFMI 默认是 `3dmigoto`）。
+- The probe has to be loaded before the game creates its D3D device, so it can only be injected by the launcher at start and cannot attach to a game that is already running.
+- 0.1.1 always uses the device that the first swap chain found belongs to, and an auxiliary device created later without a swap chain does not take the capture target away. There is no automatic recognition of the main picture among several windows/swap chains; after a complete device re-creation the game has to be restarted, and captures crossing the destruction/re-creation of a swap chain on the same device are not verified either.
+- What is seen are the calls really sent to the graphics card. While a mod is in effect, the game's original draw of that mesh has been replaced and does not appear; what appears is the draw the mod issues, with origin `xxmi`. To see the original draws, switch all mods off temporarily with `efmi_toggle_mods state=off`. The origin is a heuristic based on the depth of the call stack.
+- Reads of buffers and textures return the content "at the moment of reading" by default, and `exact` in the result says whether anything wrote to it before the read. For the content at the time of the call, capture with `contents=inputs` / `outputs` (probe 0.1.6, see "Contents as they were at the call"); when only the bound window of constant buffers is needed, `cb_data=true` is enough.
+- For buffers written by the GPU (compute shader skinning and the like), the hash XXMI has cached may be an old value; the probe gives the hash of the current bytes, and the two may differ.
+- **Probe 0.1.3 and earlier** cache region hashes by buffer address: after a buffer is destroyed, a new buffer of the same size that gets the same address is recorded with the hash of the previous buffer if neither was written after creation. A reload destroys and re-creates the mods' buffers, so after reloading a changed mod its ib / vb hashes may still be those from before the change. 0.1.4 fixes this (a cache entry also records the serial of the buffer object): in the sandbox, with buffers repeatedly destroyed and re-created with the original size and different content, 114 of 180 comparisons gave the old hash before the fix and 0 after. In the real game this is sporadic: between two neighbouring reloads most new buffers are not at the address of a buffer of the previous generation, and an address may also come from a buffer several reloads back. It was met once with 0.1.3 on 2026-10-07; after switching to 0.1.4 the same buffer was again created at an address another buffer had used (same read ranges, different content), and the recorded hash agrees with the content read back. While the game still has an old probe, read the content with `efmi_read_buffer` when certainty is needed.
+- Only the resources of the latest capture can be read; draws in a deferred context cannot be seen, and `efmi_status` says whether any occurred.
+- 3D textures are read back whole; multisampled colour textures are read back as resolved pixels, and multisampled depth textures cannot be read (probe 0.1.6).
+- Blend, depth-stencil and rasterizer state and samplers are reported as D3D11 stores them. The runtime does not keep fields of a state that are not used (the comparison function and writes when the depth test is off, the anisotropy level of a non-anisotropic filter and so on); these fields are not shown, rather than showing a default value that could mislead. When no state object is bound, D3D11's defaults are reported and marked `default`. All of this is recorded only in full captures and needs probe 0.1.5.
+- `| view: …` after textures and outputs in `efmi_get_draw` appears only when the view is not "the whole resource shown in the resource's own format" (another format, some mips or slices, read-only depth, a stretch of elements of a buffer).
+- XXMI's `shader_hash = bytecode` mode is not implemented (EFMI's default is `3dmigoto`).
 
-## 性能
+## Performance
 
-2026-10-06 在当前梨诺画面，用同一游戏进程交错运行修改前/后各三次完整归档，耗时中位数 **1.843 秒 → 1.220 秒（减少 33.8%）**。每次仍含两次完整绑定/CB 捕获、三个完整缓冲 41,967,616 字节、24 张 DDS 45,616,608 字节及全分辨率截图；86 个几何区域校验全部匹配。此为采集及写盘时间，不含后续模型转换和 Blender 导入，不能当作所有场景的固定延迟。
+On 2026-10-06, on the screen showing Liino at the time, three complete archives each before/after the change were run interleaved in the same game process; the median time went from **1.843 seconds to 1.220 seconds (33.8% less)**. Each still contains two complete binding/CB captures, three complete buffers of 41,967,616 bytes, 24 DDS of 45,616,608 bytes and a full-resolution screenshot; all 86 geometry region checks match. This is capture and disk-write time, without the later model conversion and Blender import, and cannot be taken as a fixed latency for all scenes.
 
-优化包括本机 CRC32C、紧凑 JSON、PNG 快速无损压缩及完整图/预览共享解码；身份复核帧保留 IB 哈希与 CB，省去不参与该复核的 VB 哈希。三采样和完整几何校验仍保留。实测 16 MiB CRC32C 从约 1.75 秒降到 1.90 毫秒；2560×1600 PNG 编码从约 419 降到 176 毫秒，像素不变，PNG 文件增大（本次样本约 52%，DDS 不变）。归档 `readback.json` 的 `durations_ms` 记录各阶段耗时，包含读回与写盘的阶段已明确命名。
+The optimisations include the native CRC32C, compact JSON, fast lossless PNG compression and shared decoding of full picture and preview; the identity-check frame keeps IB hashes and CBs and skips the VB hashes that play no part in that check. The three samples and the complete geometry validation are kept. Measured: a 16 MiB CRC32C went from about 1.75 seconds to 1.90 milliseconds; encoding a 2560×1600 PNG from about 419 to 176 milliseconds with unchanged pixels and larger PNG files (about 52% for that sample; DDS unchanged). `durations_ms` in `readback.json` of an archive records the time of each stage, and stages that include read-back and disk writes are named explicitly.
 
-离线合并骨骼导出复用已验证的缓冲与构建结果，三采样源BUF读取由1134次降为9次；另一组独立三轮对照中位1.890→1.662秒（减少12.1%）。输出文件逐一比对一致（仅忽略报告输出路径/日志耗时），完整缓冲缓存峰值约80MiB并在返回时清空。可运行 `scripts/test_loyal_bridge_performance.py` 对已有归档复测；CRC和图像等价性检查分别为 `scripts/test_crc32c.py`、`sandbox/decode_test.py`。
+The offline merged-skeleton export re-uses verified buffers and build results, bringing the source BUF reads of three samples from 1134 down to 9; in another independent comparison of three rounds the median went from 1.890 to 1.662 seconds (12.1% less). The output files agree one by one (ignoring only report output paths / log times), and the peak of the complete-buffer cache is about 80 MiB, emptied on return. `scripts/test_loyal_bridge_performance.py` re-tests on existing archives; the CRC and image equivalence checks are `scripts/test_crc32c.py` and `sandbox/decode_test.py`.
 
-以下是历史沙盒探针开销实测，每帧约 4000 次绘制、XXMI 同时在场：
+What follows are historical measurements of the probe's cost in the sandbox, with about 4000 draws per frame and XXMI present:
 
-- 探针已加载但无人连接、或已连接但不采集：帧率与不加载探针相比测不出差别。
-- 连续模式：探针内部计时每帧约 0.6 毫秒。
-- 请求一次完整抓取：被记录的那一帧多花约 9 毫秒。
-- 从显存读回数据是异步的，渲染线程不等待 GPU。
-- 2026-10-08 用探针 0.1.5 复测（同一场景）：未连接、已连接、连续模式与不加载探针相比仍测不出差别，连续模式探针内部计时每帧约 0.63 毫秒；完整抓取（现在连同固定管线状态、采样器和视图参数）被记录的那一帧在游戏进程内约 5.9 毫秒。渲染目标拷贝的开销取决于目标大小和个数，沙盒里没有可比的大目标，未测。
-- 真实游戏（2026-10-08，大世界，1097 次绘制，其中 520 次来自 mod）：一次完整抓取在游戏进程内的记录耗时 8.1 毫秒，从请求到拿到结果 81 毫秒。
-- 探针 0.1.6（2026-10-08，沙盒，每帧 1157 次调用）：完整抓取的记录耗时 1.9 毫秒；带 `contents=inputs` 是 2.6 毫秒，保留期间帧率与平时量不出差别（156 对 158 帧）；连每次绘制之后的渲染目标一起留（1233 份、3.9 GiB，预算调到 4096）是 6.1 毫秒。每帧约 4000 次绘制的场景里，未连接／已连接／连续模式／反复完整抓取与不加载探针相比仍量不出差别。实机数据待测。
+- Probe loaded but nobody connected, or connected but not capturing: no measurable difference of the frame rate compared with not loading the probe.
+- Continuous mode: about 0.6 ms per frame by the probe's internal timing.
+- One full capture requested: the recorded frame takes about 9 ms more.
+- Reading data back from video memory is asynchronous; the render thread does not wait for the GPU.
+- Re-test with probe 0.1.5 on 2026-10-08 (the same scene): not connected, connected and continuous mode still show no measurable difference compared with not loading the probe, and continuous mode is about 0.63 ms per frame by the probe's internal timing; the recorded frame of a full capture (now including fixed pipeline state, samplers and view parameters) takes about 5.9 ms inside the game process. The cost of render target copies depends on the size and number of targets; the sandbox has no comparably large targets, so it was not measured.
+- Real game (2026-10-08, open world, 1097 draws, 520 of them from mods): the in-game record time of a full capture is 8.1 ms, and 81 ms pass from the request to having the result.
+- Probe 0.1.6 (2026-10-08, sandbox, 1157 calls per frame): the record time of a full capture is 1.9 ms; with `contents=inputs` it is 2.6 ms, and while contents are kept the frame rate shows no measurable difference from normal (156 against 158 fps); keeping the render targets after every draw as well (1233 copies, 3.9 GiB, budget raised to 4096) takes 6.1 ms. In the scene with about 4000 draws per frame, not connected / connected / continuous mode / repeated full captures still show no measurable difference compared with not loading the probe. Real-game numbers were still to be measured at that point.
 
-两次运行之间帧率本身有约 1.5 毫秒的波动，所以这组沙盒数据以探针内部计时为准。真实游戏的渲染帧开销未测；本轮测量的是游戏外采集流程的总耗时。
+The frame rate itself fluctuates by about 1.5 ms between two runs, so for these sandbox numbers the probe's internal timing is authoritative. The cost per rendered frame in the real game was not measured; what that round measured is the total time of the capture flow outside the game.
 
-## XXMI 更新之后
+## After an XXMI update
 
-启动器会自动更新 XXMI。哈希算法若有改动，探针会跟着算错，所以更新后跑一遍：
+The launcher updates XXMI automatically. If the hash algorithm changes, the probe will compute wrong hashes, so after an update run:
 
 ```bash
 sandbox\build.bat
 python sandbox\run_all.py
 ```
 
-它会从 EFMI 目录拷一份运行时到 `sandbox\run`（原目录只读），让那份 XXMI 自己抓帧当作标准答案，与探针逐项对比。也可以在游戏里手动抓一帧，再让 agent 调 `efmi_verify_against_dump`。
+It copies the runtime from the EFMI directory to `sandbox\run` (the original directory is read-only), lets that XXMI dump a frame itself as the reference, and compares it with the probe item by item. You can also dump a frame manually in the game and have the agent call `efmi_verify_against_dump`.
 
-## 目录
+## Directories
 
 ```
-probe\      探针源码 (C++，MSVC x64)
-server\     MCP 服务 (Python)
-sandbox\    测试程序和测试脚本，不属于交付物
-dist\       构建出的 efmi_probe.dll 和运行日志
-captures\   导出的网格、贴图、着色器反汇编
+probe\      probe sources (C++, MSVC x64)
+server\     MCP server (Python)
+sandbox\    test program and test scripts, not part of what is delivered
+dist\       the built efmi_probe.dll and run-time logs
+captures\   exported meshes, textures, shader disassembly
 ```
 
-## 项目记忆
+## Project memory
 
-跨会话继续开发时，先读 `.ai-memory/CURRENT_STATE.md` 和 `.ai-memory/TASKS.md`。七份记忆文档记录概览、架构、当前状态、技术决策、已知问题、任务和会话摘要，维护约定见根目录 `AGENTS.md`。
+When continuing development across sessions, read `.ai-memory/CURRENT_STATE.md` and `.ai-memory/TASKS.md` first. Seven memory documents record the overview, architecture, current state, technical decisions, known issues, tasks and session summaries; the conventions for maintaining them are in `AGENTS.md` in the root directory.

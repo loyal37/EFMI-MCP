@@ -1,163 +1,169 @@
-# EFMI MCP — 任务列表
+# EFMI MCP — Tasks
 
-> 最后更新：2026-10-09。
+> Last updated: 2026-10-10.
 
-## 当前状态
+## Current state
 
-T-001 至 T-007 已完成。T-007 的原因是 UIPI；探针 0.1.2 / 服务 0.1.4 改为进程内按键，沙盒与实机（游戏在前台、在后台各一次）均已验证。每次改完并完成相关验证后提交并推送指定仓库（见 `AGENTS.md` / D-007）。
+T-001 to T-007 are done. The cause of T-007 was UIPI; probe 0.1.2 / server 0.1.4 switched to an in-process key press, verified in the sandbox and in the real game (once with the game in the foreground, once in the background). After every change and its verification, commit and push to the specified repository (see `AGENTS.md` / D-007).
 
-### ZZMI 兼容性询问（只读评估完成；未开始适配，2026-10-09 晚）
+### Ardelia ribbon transparency (done for the current showcase screen, 2026-10-10)
 
-- 已检查用户指定的 ZZMI：D3D11 DLL 与 EFMI 完全相同；基础采集具备复用条件，F10 配置预检通过，但尚未绝区零实测。游戏 PID 18692 存在、无探针管道。没有注入或修改外部文件。
-- 已识别需要适配的部分：进程／安装选择、`track_region_hashes=0` 下的资源 hash 呈现和模组匹配、F6 模组开关及状态读取、EFMI 专用的 LoyalTools 角色／骨骼／LOD 工作流。详见 CURRENT_STATE 首节、限制-009；这些是兼容性结论，未自动扩展成开发任务。
-- 已回答用户后续关于区域 hash 的概念询问；没有新增实施任务，未改 ZZMI 配置。
+The two black ribbons at the sides shown on screen are rendered privately with their original material and composited by HLSL after the background is complete; the user found 50% too transparent, and the final 85% was reloaded with an automatic F10 and checked on a screenshot. Three hook points in the main INI, the backup and a readme are in place. Real depth / motion targets unchanged, colour outside the coverage unchanged, and restoring 100% to the original drawing all pass; see the first section of CURRENT_STATE. The open world / LOD / several instances and real input of the hotkey are not verified, and this was not extended into a task for the MCP product code.
 
-### T-014：RabbitFX 写法的角色头发粗描边（原因已查明；Typhoeus 已按用户要求在 mod 里修好并实机通过，2026-10-09）
+On the same day the frills on the left and right upper arms and the bows at the wrists (swapkey3/4) were added from a screenshot, sharing the 85% and Ctrl+T, with the original switches kept; one more automatic F10 and a look at the screenshot, and the pixel / depth / motion / slot restore checks pass. Both INI files have backups from this round; see the additional subsection of CURRENT_STATE.
 
-- **结论**（细节和证据见 CURRENT_STATE 首节）：RabbitFX 2.7 的主匹配式把头发描边上色着色器（XXMI 原始哈希 `fadc3687dd18e11c`，变体 `bff61f7703cd52ee`）的第一个采样（透明度测试的遮罩）当成漫反射、第二个采样（漫反射）当成法线。绑了 RabbitFX 贴图后上色遍大部分被丢弃，露出预写遍写的黑色。屏上角色实测：外壳 5140 像素只上色 825；关掉 mod 是 4642／4569。
-- **用户的决定**：“不改rabbitfx,改mod的ini……这部分代码单独写一个ini”。已在 `Typhoeus Luxuria 1.2 alpha` 里做完（CURRENT_STATE 首节）：新增 `RabbitFX_HairOutlineFix.ini`，主 INI 改一行，原 INI 有备份；F10 后外壳 5100 像素上色 5039。此前列的另外两条路（改 `RabbitFX.ini`、反馈作者）没有走；改匹配式的候选写法留在 `captures/rabbitfx-hair-outline-20261009/replay_main_pattern.py`。
-- **剩下的**：① 其他 RabbitFX 写法的 mod：新 INI 按着色器哈希全局生效，按构造它们的头发描边也不再发黑（没有在屏上核对），要用上各自的漫反射还得各改一行，等用户点名；② 没实测的：变体 `bff61f7703cd52ee`、换发色、LOD 距离；③ 七个同样形状的 G-buffer 着色器没在游戏里见到，没有处理。
-- **可以接着做的（未要求）**：给工具补上“改写后哈希 → XXMI 原始哈希”的对应（`ShaderCache\<原始哈希>-ps_regex.bin` 的 FNV 就是探针报的哈希，顶点着色器的 `-vs_regex.bin` 未核对；原始着色器探针里也有），让 `efmi_get_draw`／`efmi_get_shader` 同时给出两种哈希，mod 作者拿到的才是能写进 INI、能和帧分析文件名对上的那个。
+### ZZMI compatibility question (read-only assessment done; no adaptation started, evening of 2026-10-09)
 
-### T-013：实时获取 FrameAnalysis 的全部数据（已完成：探针 0.1.6／服务 0.1.13，沙盒验收并于 2026-10-09 实机核对）
+- The ZZMI named by the user was examined: the D3D11 DLL is identical to EFMI's; basic capture can be reused and the F10 configuration pre-check passes, but nothing has been tested in Zenless Zone Zero yet. Game PID 18692 exists, without a probe pipe. Nothing was injected and no external file was modified.
+- Parts identified as needing adaptation: process / installation selection, presentation of resource hashes and mod matching under `track_region_hashes=0`, the F6 mod switch and reading its state, and the EFMI-specific LoyalTools character / skeleton / LOD workflow. See the first section of CURRENT_STATE and LIMIT-009; these are compatibility conclusions and were not turned into development tasks automatically.
+- The user's follow-up question about the concept of region hashes was answered; no new implementation task, and the ZZMI configuration was not changed.
 
-- **按用户要求重新实测（2026-10-09 08:29–08:32）**：当前游戏 PID 27452／探针 0.1.6／服务 0.1.13；三档抓取、调用时刻缓冲与贴图、图形 UAV 各次输出、写入／改绑、6 次调用导出及释放通过。另从真实角色绘制读 76 个完整缓冲（104,470,324 字节），与四个角色模组源文件逐字节相同；骨骼池隔一秒重复读取保留内容相同、当前内容已改变。证据 `captures/live-capture-20261009-0828/`，详细范围见 CURRENT_STATE 首节。只做采集及本项目内归档，未按键、未修改产品代码／游戏／模组；没有新增待修问题。实机原生 XXMI 对照、整帧导出和未出现的特殊资源类型仍未覆盖。
-- **已完成（服务 0.1.11，沙盒通过，未实机）**：`efmi_read_buffer` 接受 SRV／UAV 缓冲槽位和 `whole`，结果带 `source`／`exact`；BUG-006、BUG-007、两处过时文字已修正（CURRENT_STATE 首节）。
-- **已实现（探针 0.1.6／服务 0.1.12，沙盒通过）**：调用当时的内容（写前拷贝）、OM UAV、全部视口、Dispatch 之后的 UAV、三维／多重采样读回、写入列表、`efmi_dump_frame`、与 XXMI 导出逐字节对照（404 个文件全同）。做法、验证和安装情况见 CURRENT_STATE 首节，边界见 限制-008。
-- **实机核对已做（2026-10-09，CURRENT_STATE 首节）**：图形绘制的 UAV 可见并且连续绘制各自的内容都留住了；`buffers`／`inputs`／`outputs` 三档的拷贝量和帧率；蒙皮绘制的缓冲、贴图、IniParams 的读回；写入列表、改绑、导出。没做的：与 XXMI 的导出在实机上逐字节对照（要按它的帧分析键，未授权；沙盒里做过）、整帧导出。
-- **服务 0.1.13 追加（2026-10-09）**：`contents=buffers`（只留缓冲）；`efmi_list_writes bindings=true` 和导出日志里的 `bind` 行（相邻调用的绑定差异，对应帧分析日志里 Set* 调用给出的信息）。
-- **可以接着做的（未要求）**：① 模型提取改用带内容的抓取（骨骼池和 CPU 蒙皮顶点就是绘制当时的，不必三次采样和重试；要保持接入 LoyalTools 的做法）；② 按着色器声明的槽位标出“绑着但没用到”的绑定；③ 整帧导出放进后台任务；④ 贴图保留视图的全部 mip／切片（现在只留第一个）；⑤ XXMI 内部的命令／变量日志仍然拿不到，只能读 IniParams（`t120`）。
+### T-014: Thick hair outline on characters with RabbitFX-style mods (cause found; fixed inside the Typhoeus mod at the user's request and passed in the real game, 2026-10-09)
 
-- 用户目标：`FrameAnalysis-2026-10-07-123937` 的全部数据可实时获取。本轮请求是审查功能，已对目录、探针、服务逐项审计，公开说明见 README“实时采集与 FrameAnalysis 的覆盖差异”；证据在 `captures/audit-realtime-20261008/`。
-- 当前只有部分调用时刻内容：可选 CB、间接参数、选定绘制的 RTV/DSV；其他动态缓冲和贴图主要晚读。live 只发聚合摘要。用户目标不能标为完成。
-- 补齐顺序建议（尚未实施）：① 通用 SRV/UAV buffer 与完整结构化 capture/resource 入口；② draw/dispatch 时刻动态 IB/VB、SRV、UAV／贴图快照和完整性状态，CB 区分绑定窗口与整个常量池；③ 此 dump 所需的 API 事件、资源范围、全帧归档（相同文件夹格式的导出不是实时数据可用的前提）；④ 调用／子资源／时刻／字节逐项验收，再单独量持续采集性能。OM UAV 已在此 dump 的 4 个图形 draw 里出现，必须补；SO/counter、多视口、3D/MSAA/deferred 等未证实出现的场景另列覆盖范围。
-- XXMI 命令、变量、分支、skip 原始调用／原 shader 身份属于上游内部信息，需要另行确定只读观测来源；当前系统 D3D11 探针不能凭最终状态还原。
-- 审计伴随问题：BUG-006（CB 快照失败却标已采集）、BUG-007（dump 解析器漏掉带 `!S!` 的 157 个文件）；`model_capture.py` 与 `loyal_bridge.py` 的“SRV view/FirstElement 未采集”文字过时，后续修正时保持 LoyalTools 原生算法，不在桥接里臆改骨骼偏移。
-- 本轮无运行中的探针，只有源码和已有目录检查；未改实现、未做新实机采集，未按键。
+- **Conclusion** (details and evidence in the first section of CURRENT_STATE): the main pattern of RabbitFX 2.7 takes the first sample of the hair outline colour shader (XXMI original hash `fadc3687dd18e11c`, variant `bff61f7703cd52ee`), which is the mask of the alpha test, for the diffuse, and the second sample (the diffuse) for the normal map. With RabbitFX textures bound, most of the colour pass is discarded and the black written by the prepass shows. Measured on the character on screen: of 5140 hull pixels only 825 are coloured; with mods off it is 4642 / 4569.
+- **The user's decision**: do not change RabbitFX, change the mod's INI, and put this part of the code into an INI of its own. Done in `Typhoeus Luxuria 1.2 alpha` (first section of CURRENT_STATE): a new `RabbitFX_HairOutlineFix.ini`, one line changed in the main INI, with a backup of the original INI; after F10, 5039 of 5100 hull pixels are coloured. The other two routes listed before (changing `RabbitFX.ini`, reporting to the author) were not taken; the candidate change of the pattern is kept in `captures/rabbitfx-hair-outline-20261009/replay_main_pattern.py`.
+- **What remains**: (1) other RabbitFX-style mods: the new INI acts globally by shader hash, so by construction their hair outline no longer turns black either (not checked on screen); to use their own diffuse each needs the one-line change, waiting for the user to name them; (2) not tested live: the variant `bff61f7703cd52ee`, changing the hair colour, LOD distance; (3) seven G-buffer shaders of the same shape were not seen in the game and were not dealt with.
+- **Could be done next (not requested)**: give the tool the mapping "hash after rewriting → XXMI original hash" (the FNV of `ShaderCache\<original hash>-ps_regex.bin` is the hash the probe reports; `-vs_regex.bin` of vertex shaders has not been checked; the probe has the original shaders too), so that `efmi_get_draw` / `efmi_get_shader` give both hashes and a mod author gets the one that can be written into an INI and matched with frame analysis file names.
 
-### T-012：把 RabbitFX 形式的 mod 改成槽位形式（TangTang 已按用户要求改完并实机核对；只剩 LOD 距离没看，2026-10-08）
+### T-013: Obtain all data of a FrameAnalysis live (done: probe 0.1.6 / server 0.1.13, accepted in the sandbox and checked in the real game on 2026-10-09)
 
-- **TangTang 已改**（CURRENT_STATE 首节）：原 INI 备份在 mod 目录的 `tangtang.ini.rabbitfx-backup-20261008`。取槽位的办法比下面设想的更直接——读 RabbitFX 改写后的着色器里的回退槽位，不需要关 mod、不需要提取。
-- 画面对比和“留在槽位上的 mod 贴图是否影响别的绘制”已补做（CURRENT_STATE 首节）：主着色结果看不出差别，没有发现别的绘制采到 TangTang 的贴图。
-- **待补（需要用户把 TangTang 放到 LOD 距离，不按键）**：看 LOD 绘制绑定的像素着色器是否仍是近景那几个（`47868ca9…`、`2d0b12a7…` 等），不是的话用 `efmi_get_shader` 读它的回退槽位，槽位不同就得给槽位行加 `$lod_level` 条件。
-- 用户若觉得组件 2 的描边或 G-buffer 有差别要补：得按遍加条件（例如给描边遍的顶点着色器 `1041f0408b0e4fc3` 一个 `ShaderOverride` 的 `filter_index`，在绘制段里 `if vs == …` 再写 `ps-t13`），不能无条件写。
+- **Re-tested at the user's request (2026-10-09 08:29–08:32)**: current game PID 27452 / probe 0.1.6 / server 0.1.13; the three capture levels, buffers and textures as they were at the call, the outputs of each graphics UAV draw, writes / rebinds, the export of 6 calls and the release all pass. In addition 76 complete buffers (104,470,324 bytes) were read from real character draws and are byte-identical to the source files of four character mods; the bone pool read twice one second apart gives the same kept content while the current content has changed. Evidence `captures/live-capture-20261009-0828/`, detailed scope in the first section of CURRENT_STATE. Capture and archiving inside this project only, no key pressed, no product code / game / mod modified; no new problem to fix. A comparison with native XXMI in the real game, a whole-frame export and special resource types that did not occur are still not covered.
+- **Done (server 0.1.11, passes in the sandbox, not in the real game)**: `efmi_read_buffer` accepts SRV / UAV buffer slots and `whole`, and the result carries `source` / `exact`; BUG-006, BUG-007 and two outdated texts are corrected (first section of CURRENT_STATE).
+- **Implemented (probe 0.1.6 / server 0.1.12, passes in the sandbox)**: contents as they were at the call (copy before write), OM UAVs, all viewports, UAVs after a Dispatch, 3D / multisampled read-back, the write list, `efmi_dump_frame`, byte-for-byte comparison with XXMI's dump (all 404 files identical). Approach, verification and installation are in the first section of CURRENT_STATE, the boundaries in LIMIT-008.
+- **Checked in the real game (2026-10-09, first section of CURRENT_STATE)**: UAVs of graphics draws are visible and the contents of consecutive draws are each kept; copy volume and frame rate of the three levels `buffers` / `inputs` / `outputs`; read-back of the buffers, textures and IniParams of a skinned draw; write list, rebinds, export. Not done: a byte-for-byte comparison with XXMI's dump in the real game (needs its frame analysis key, not authorized; done in the sandbox), and a whole-frame export.
+- **Added in server 0.1.13 (2026-10-09)**: `contents=buffers` (keeps buffers only); `efmi_list_writes bindings=true` and the `bind` lines in the export log (binding differences between neighbouring calls, corresponding to what the Set* calls in a frame analysis log tell).
+- **Could be done next (not requested)**: (1) switch model extraction to captures with contents (the bone pool and CPU-skinned vertices are then those of the draw, without three samples and retries; the LoyalTools integration approach has to be kept); (2) mark bindings that are "bound but not used" by the slots the shader declares; (3) put whole-frame export into a background job; (4) keep all mips / slices of a texture view (only the first is kept now); (5) XXMI's internal command / variable log still cannot be had, only IniParams (`t120`) can be read.
 
-- 两种写法（只读查看所得）。槽位形式：组件的绘制段里直接写 `ps-t16 = Resource…DiffuseMap` 这类行（`Xaihi Venomous Vows 2.0`、`arcane fes 1.2`，LoyalTools 的导出也是这种）。RabbitFX 形式：写 `Resource\RabbitFx\Diffuse／LightMap／NormalMap = ref …` 再 `run = CommandList\RabbitFx\SetTextures`（`Yvonne Ensnared Heart 1.6`、`TangTang Seaside Breeze 1.4`、`perlica Ravenb 2.1`、`laevatain lune fluer 1.4`、`Liino Honmei Knit 1.6`）。
-- RabbitFX（`Mods\RabbitFX -ENDMI-\RabbitFX.ini`，2.7）做的事：用 ShaderRegex 改写游戏的像素着色器，加上 t70–t74（漫射、光照图、法线、裁剪图、雨水图）和 t60／t61（发光、FX），着色器里先看 t70 等是否绑了东西，绑了就采它，否则采原来的槽位。它既改主着色遍（Main），也改 G-buffer 遍的各种变体（它叫 Shadow，特征是 o0–o4 五个输出、贴图在 t0–t2）。另外还包住了游戏原有的 discard（`$censor`）。
-- 同一张贴图在不同遍里的槽位不同，同一遍里不同组件也不同。伊冯 `d160fb72`（10-07 提取的工程，`workplace\<组件>\TYPE_GPU-EFMI\TextureSlots.json` 按绘制逐个记录）：漫射在 G-buffer 遍是 `ps-t0`、主着色遍是 `ps-t16`、描边遍是 `ps-t13`；法线在 G-buffer 遍 `ps-t1`、主着色遍 `ps-t18`；光照图在主着色遍 `ps-t17`。槽位形式的 mod 和 LoyalTools 的导出用的都是主着色遍的槽位。
-- 所以槽位表拿得到：`efmi_extract_model` 产出的工程里每个组件都有 `TextureSlots.json`；现场用 `efmi_get_draw` 也能逐遍看。2026-10-08 上午实机上 `arcane` 组件 2 的 INI 写的 `ps-t13`（漫射）／`ps-t14`（法线）与抓到的绑定一致；同一个绘制的 G-buffer 遍里 `ps-t0`／`ps-t1` 仍是游戏自己的贴图，`ps-t12`、`ps-t15–17`、`ps-t21` 是别的组件留下的旧绑定——“绑着”不等于“着色器在用”，要以着色器声明的槽位为准。
-- 伊冯的槽位表已有（主着色遍）：`d160fb72`、`c0bb7cd6`、`06e91fc9` 是 16／17／18（漫射／光照图／法线），`7091ba4f` 是 13／14（漫射／法线）。其余四个角色要各提取一次（角色在画面里、mod 关着）。
-- 改成槽位之后与 RabbitFX 不等价的地方：① G-buffer 遍不再用 mod 的漫射和法线（现有的槽位形式 mod 就是这样；要补就得按遍加条件，不能无条件写 `ps-t0`，主着色遍和描边遍的 t0／t1 是别的资源）；② `Liino` 用了 `Resource\RabbitFX\FXMap` 和 `Commandlist\RabbitFX\Run`（裁剪／发光），槽位形式表达不了，只能留着 RabbitFX 或放弃这个效果；③ 槽位随游戏着色器版本变，游戏更新后可能要重查；LOD 距离下着色器用的槽位还没有专门核对过。
-- 做法（若用户要求）：转换结果写成副本，不改用户原来的 mod（`AGENTS.md`）；按组件把 RabbitFX 的三类行换成对应槽位行，`= null` 的（沿用游戏贴图）不写，去掉 `SetTextures`；部署到专用目录后 F10，逐遍比较绑定，并用 `efmi_capture_draw_outputs` 比较转换前后各遍画出的像素。
-- 用户的 Mods 目录里有反方向的工具 `SlotToRabbitFX.exe` 和它 9 月的转换报告（按资源名猜类型，掩码类贴图判断不了）。
+- The user's goal: all data of `FrameAnalysis-2026-10-07-123937` obtainable live. The request of that round was a review of the functions; directory, probe and server were audited item by item, the public description is in the README under "Coverage of live capture compared with FrameAnalysis"; evidence in `captures/audit-realtime-20261008/`.
+- At that point only part of the content was from the time of the call: optional CBs, indirect arguments, RTV/DSV of selected draws; other dynamic buffers and textures were mostly read late. Live mode sends only aggregated summaries. The user's goal could not be marked as done.
+- Suggested order for closing the gaps (not implemented then): (1) general SRV/UAV buffers and a complete structured capture/resource entry point; (2) snapshots of dynamic IB/VB, SRVs, UAVs / textures at the time of the draw/dispatch with a completeness state, CBs distinguishing the bound window from the whole constant pool; (3) the API events, resource ranges and whole-frame archive this dump needs (an export in the same folder format is not a precondition for the data being available live); (4) acceptance per call / subresource / moment / byte, then measuring the performance of continuous capture separately. OM UAVs occur in 4 graphics draws of this dump and have to be added; scenarios not shown to occur, such as SO/counters, multiple viewports, 3D/MSAA/deferred, are listed as coverage separately.
+- XXMI's commands, variables, branches, the original calls it skips / the identity of original shaders are internal information of the upstream side and need a read-only source of observation to be determined separately; the current system D3D11 probe cannot reconstruct them from the final state.
+- Problems found along with the audit: BUG-006 (a CB snapshot fails yet is marked as captured), BUG-007 (the dump parser misses the 157 files with `!S!`); the text "SRV view/FirstElement not captured" in `model_capture.py` and `loyal_bridge.py` is outdated; when correcting it later keep LoyalTools' native algorithm and do not alter bone offsets in the bridge on a guess.
+- No probe was running in that round, only sources and existing directories were examined; no implementation change, no new capture in the real game, no key pressed.
 
-### T-011：采集数据的三项完善（已完成：探针 0.1.5／服务 0.1.10，2026-10-08 实机核对通过；重载等待的新标准待实机确认）
+### T-012: Change RabbitFX-style mods to slot style (TangTang changed at the user's request and checked in the real game; only the LOD distance remains to be looked at, 2026-10-08)
 
-- 做了清单里的 1、4、5，结果与验证范围见 CURRENT_STATE 首节。
-- 实机核对已做（CURRENT_STATE 前两节）：管线状态和渲染目标拷贝通过。重载工具：第二次按键发现返回的帧里 mod 只恢复了一半，已把等待标准改成“mod 画的量不再增长”（服务 0.1.10，单元测试和沙盒真实按键通过）。
-- 新标准已在实机跑过一次（2026-10-08 15:36，默认 `settle_ms`）：`frames_looked_at=3`、`waited_for_xxmi_ms=359`、`mods_settled=true`，返回帧的 XXMI 绘制数与重载前相同（271）。“第一帧只恢复一部分”的情形（`settle_ms=250`）没有再专门跑，哪天顺带做一次即可。带渲染目标拷贝的那一帧的游戏内耗时也有了：7.37 毫秒（16 份拷贝，94.6 MiB），与不带拷贝时基本相同。
-- 可以再做的（未要求）：深度目标按 `box` 拷贝（先整块拷到一张同族格式的普通纹理，再取一块到暂存纹理），省掉 `depth=true` 时阴影图的几十 MiB。
-- 清单里没做的（用户未要求，按需再议）：
-  - 2：`efmi_status` 提示“运行中的服务比磁盘上的代码旧”（仅服务端，很小）。
-  - 3：绘制当时快照被游戏重写的顶点／索引范围（现在只有常量缓冲和间接参数是绘制当时的内容；动态合批、UI、粒子的索引读不到）。
-  - 6：同时保留两次抓取可读（做开／关 mod 对比时不必抢在下一次抓取前读完）。
-  - 低优先：某个哈希一出现就抓；取前台被拒时多等一会儿（不是重按）；第二个只读连接。
+- **TangTang is changed** (first section of CURRENT_STATE): the original INI is backed up in the mod folder as `tangtang.ini.rabbitfx-backup-20261008`. The way to get the slots turned out more direct than imagined below: read the fallback slots in the shaders RabbitFX rewrote; no need to switch mods off or to extract.
+- The picture comparison and "do the mod textures left on the slots affect other draws" have been done since (first section of CURRENT_STATE): no difference visible in the lit result, and no other draw was found sampling TangTang's textures.
+- **Still to do (needs the user to move TangTang to LOD distance; no key press)**: see whether the pixel shaders bound for the LOD draws are still the ones of the close view (`47868ca9…`, `2d0b12a7…` and so on); if not, read their fallback slots with `efmi_get_shader`, and if the slots differ the slot lines need a `$lod_level` condition.
+- If the user finds a difference in the outline or the G-buffer of component 2 and wants it fixed: conditions have to be added per pass (for example give the outline pass's vertex shader `1041f0408b0e4fc3` a `filter_index` in a `ShaderOverride`, and write `ps-t13` under `if vs == …` in the draw section); it cannot be written unconditionally.
 
-### T-010：探针区域哈希缓存给出已销毁缓冲的哈希（已完成：沙盒复现并修正，探针 0.1.4 实机核对通过，2026-10-07）
+- The two styles (from read-only inspection). Slot style: the draw section of a component has lines such as `ps-t16 = Resource…DiffuseMap` directly (`Xaihi Venomous Vows 2.0`, `arcane fes 1.2`; LoyalTools' exports are like this too). RabbitFX style: `Resource\RabbitFx\Diffuse / LightMap / NormalMap = ref …` followed by `run = CommandList\RabbitFx\SetTextures` (`Yvonne Ensnared Heart 1.6`, `TangTang Seaside Breeze 1.4`, `perlica Ravenb 2.1`, `laevatain lune fluer 1.4`, `Liino Honmei Knit 1.6`).
+- What RabbitFX (`Mods\RabbitFX -ENDMI-\RabbitFX.ini`, 2.7) does: it rewrites the game's pixel shaders with ShaderRegex, adding t70–t74 (diffuse, light map, normal map, discard map, rain map) and t60 / t61 (glow, FX); the shader first looks whether something is bound at t70 and so on, samples it if so, and otherwise samples the original slot. It rewrites the lit pass (Main) as well as the variants of the G-buffer pass (which it calls Shadow, recognisable by five outputs o0–o4 and textures at t0–t2). It also wraps the game's own discard (`$censor`).
+- The same texture sits in different slots in different passes, and in the same pass different components differ too. Yvonne's `d160fb72` (the project extracted on 10-07; `workplace\<component>\TYPE_GPU-EFMI\TextureSlots.json` records it draw by draw): the diffuse is `ps-t0` in the G-buffer pass, `ps-t16` in the lit pass and `ps-t13` in the outline pass; the normal map is `ps-t1` in the G-buffer pass and `ps-t18` in the lit pass; the light map is `ps-t17` in the lit pass. Slot-style mods and LoyalTools' exports both use the slots of the lit pass.
+- So the slot table can be had: every component of a project produced by `efmi_extract_model` has a `TextureSlots.json`; on the spot `efmi_get_draw` also shows it pass by pass. On the morning of 2026-10-08 in the real game, the `ps-t13` (diffuse) / `ps-t14` (normal map) written in the INI of `arcane`'s component 2 agreed with the captured bindings; in the G-buffer pass of the same draw `ps-t0` / `ps-t1` were still the game's own textures, and `ps-t12`, `ps-t15–17`, `ps-t21` were old bindings left by other components: "bound" is not the same as "used by the shader", and the slots the shader declares are what counts.
+- Yvonne's slot table exists already (lit pass): `d160fb72`, `c0bb7cd6`, `06e91fc9` are 16 / 17 / 18 (diffuse / light map / normal map), `7091ba4f` is 13 / 14 (diffuse / normal map). The other four characters would each need one extraction (character in view, mods off).
+- Where slots are not equivalent to RabbitFX after the change: (1) the G-buffer pass no longer uses the mod's diffuse and normal map (existing slot-style mods are like this; to add it, conditions per pass are needed, and `ps-t0` cannot be written unconditionally since t0 / t1 of the lit and outline passes are other resources); (2) `Liino` uses `Resource\RabbitFX\FXMap` and `Commandlist\RabbitFX\Run` (cutout / glow), which slot style cannot express: either RabbitFX stays or the effect is given up; (3) slots follow the version of the game's shaders and may have to be looked up again after a game update; the slots the shaders use at LOD distance have not been checked specifically.
+- Approach (if the user asks for it): write the conversion result as a copy and do not change the user's original mod (`AGENTS.md`); per component replace RabbitFX's three kinds of lines with the corresponding slot lines, write nothing for `= null` (the game's texture stays), drop `SetTextures`; after deployment into the dedicated folder press F10, compare bindings pass by pass, and compare the pixels each pass draws before and after the conversion with `efmi_capture_draw_outputs`.
+- The user's Mods folder has a tool for the opposite direction, `SlotToRabbitFX.exe`, and its conversion report from September (it guesses the type from resource names and cannot judge mask-like textures).
 
-- 结果见 CURRENT_STATE 首节和 BUG-005。游戏重启后已确认状态为 0.1.4、带 `region_hash_per_object`，两次重载前后哈希与内容相符。当日 17:39 按用户的要求做了“内容改变后重载”的实机实验：一块新缓冲建在此前另一块同样大小缓冲的地址上、读取范围相同、内容不同，记录的哈希是新内容的（CURRENT_STATE 首节）。无剩余事项。以下为当时的记录。
+### T-011: Three improvements of the captured data (done: probe 0.1.5 / server 0.1.10, checked in the real game on 2026-10-08; the new criterion for the wait after a reload was awaiting confirmation in the real game)
 
-- 现象与依据见 CURRENT_STATE 首节末尾。`probe/src/capture.cpp` 的 `g_rcache` 以 `{缓冲地址, 偏移, 大小}` 为键、以写入计数和 `gen` 判有效，`reg_add_resource` 在地址复用时直接替换登记项，新旧缓冲的写入计数都可能是初始值。
-- 做法：先在沙盒复现（给某个 draw 的 vb0 换成文件缓冲，重载；把文件改成同样大小的另一份内容，再重载，比较记录的区域哈希），再让缓存值带上资源序号 `serial` 并在不符时作废；重建、跑沙盒全套、装入 `dist`（游戏运行时用改名法），下次启动游戏生效。
-- 服务端已有的缓解：部署核对对哈希不符的顶点缓冲按内容裁决。索引缓冲哈希不符仍会被报为“旧部署或别的 mod”。
+- Items 1, 4 and 5 of the list were done; results and the scope of verification are in the first section of CURRENT_STATE.
+- The check in the real game is done (first two sections of CURRENT_STATE): pipeline state and render target copies pass. Reload tool: on the second key press the returned frame turned out to have only half of the mods back, so the wait criterion was changed to "what the mods draw has stopped growing" (server 0.1.10; unit tests and a real key press in the sandbox pass).
+- The new criterion has run once in the real game (2026-10-08 15:36, default `settle_ms`): `frames_looked_at=3`, `waited_for_xxmi_ms=359`, `mods_settled=true`, and the number of XXMI draws in the returned frame equals the one before the reload (271). The case "the first frame has only part of them back" (`settle_ms=250`) was not run again specifically; doing it once in passing some day is enough. The in-game cost of the frame with render target copies is known too: 7.37 ms (16 copies, 94.6 MiB), essentially the same as without copies.
+- Could still be done (not requested): copy depth targets by `box` (first copy the whole target to an ordinary texture of the same format family, then a block of it to a staging texture), saving the tens of MiB of a shadow map with `depth=true`.
+- Not done from the list (not requested by the user; to be discussed when needed):
+  - 2: `efmi_status` hinting that "the running server is older than the code on disk" (server only, very small).
+  - 3: a snapshot, at the time of the draw, of vertex / index ranges that the game rewrites (now only constant buffers and indirect arguments are content from the time of the draw; the indices of dynamic batching, UI and particles cannot be read).
+  - 6: keeping two captures readable at the same time (so that an on / off mod comparison need not be read before the next capture).
+  - Low priority: capture as soon as a certain hash appears; wait a little longer when taking the foreground is refused (not pressing again); a second read-only connection.
 
-### T-009：agent 用 F11 开关全部 mod（已完成，实机通过，2026-10-07）
+### T-010: The probe's region hash cache returns the hash of a destroyed buffer (done: reproduced and fixed in the sandbox, probe 0.1.4 checked in the real game, 2026-10-07)
 
-- 实机结果与随后的“不必要时不按键”改进见 CURRENT_STATE 首节。以下为实现时的记录。
+- The result is in the first section of CURRENT_STATE and in BUG-005. After the game restart the status was confirmed as 0.1.4 with `region_hash_per_object`, and hashes and contents agree before and after two reloads. At 17:39 that day, at the user's request, the real-game experiment "reload after the content changed" was done: a new buffer was created at the address of an earlier buffer of the same size, with the same read range and different content, and the recorded hash is that of the new content (first section of CURRENT_STATE). Nothing remains. What follows is the record from the time.
 
-- 探针 0.1.3 的 `mods_key` 与服务 0.1.6 的 `efmi_toggle_mods`；实现与验证范围见 CURRENT_STATE 首节、D-015。
-- 待办（需要用户重启游戏加载 0.1.3，并重启 MCP 服务）：画面里有被 mod 替换的角色时，`efmi_capture_frame` → `efmi_toggle_mods state=off`，核对 `mods_enabled=false`、该角色的原始绘制以 `game` 来源出现、XXMI 的替换绘制消失 → `efmi_diff_captures` → `state=on` 核对恢复；再试一次已开时的 `on`（两次按键）和关闭后 F10 重载恢复开启。顺带在关闭状态下做 T-008 的实机提取。
-- 结束对比后必须恢复为开启。
+- Symptom and basis are at the end of the first section of CURRENT_STATE. `g_rcache` in `probe/src/capture.cpp` is keyed by `{buffer address, offset, size}` and judged valid by write count and `gen`; `reg_add_resource` simply replaces the registration when an address is reused, and the write counts of the old and the new buffer may both be the initial value.
+- Approach: first reproduce in the sandbox (swap vb0 of some draw for a file buffer, reload; change the file to other content of the same size, reload again, compare the recorded region hashes), then let the cached value carry the resource serial `serial` and invalidate it on a mismatch; rebuild, run the full sandbox suite, install into `dist` (by renaming while the game runs); it takes effect at the next game start.
+- Mitigation already in the server: the deployment check decides by content for vertex buffers whose hash does not match. An index buffer whose hash does not match is still reported as "old deployment or another mod".
 
-### T-008：模型提取、LoyalTools 原生导出与游戏绘制验收（已完成：主流程、修改后的模型、LOD 距离均已实机通过，2026-10-07）
+### T-009: The agent switches all mods with F11 (done, passed in the real game, 2026-10-07)
 
-- 2026-10-07 实机：伊冯在 mod 关闭状态下提取到 `E:\Endfield mods\yvonne merge`，JSON LOD、Blender 导入、导出、部署→F10→逐组件核对均通过（CURRENT_STATE 首节）。
-- 2026-10-07 17:39 实机：在工作空间副本上用 Blender 移动全部顶点后导出，部署重载后 40 个缓冲与修改后的导出逐字节相同（CURRENT_STATE 首节）。
-- 2026-10-07 晚实机：LOD1 距离下 `efmi_map_lod method=capture` 和 LOD 入口的部署核对通过，期间修了大世界画面归档的问题（服务 0.1.7，CURRENT_STATE 首节）。
-- 两处 LOD 映射差异已查清（CURRENT_STATE 首节）：5 项骨索引重映射的两种选择效果相同（顶点相距不到 1 厘米）；CPU 姿态组件的 LOD 条目是按 JSON 复用时被 LoyalTools 的检查去掉的，用户的旧工程里有。都与用户已安装的 mod 无关。用户答复：CPU 组件从不修改，都是直接删掉、用游戏原来的，所以这一条缺失没有影响，不补。
-- 可选的后续（不阻塞）：比 LOD1 更远的级别；在大世界里实机跑一次三采样提取；手工修改的模型的观感。
-- 剩余：① ~~角色处于 LOD 距离时核对 LOD 入口和缓冲变体，以及 `efmi_map_lod method=capture`~~（已做）；② ~~改动模型后导出并在游戏里核对~~（已做；改动是脚本做的整体平移，手工修改的观感留待用户实际做模型时再看）；③ ~~游戏关闭后重跑 `sandbox/run_all.py`~~（已随 T-010 补跑通过，游戏运行时即可跑）。
+- The real-game result and the later improvement "do not press the key when it is unnecessary" are in the first section of CURRENT_STATE. What follows is the record from the implementation.
 
-- 服务 0.1.5 提供七个模型工具，M1–M5 的代码已就绪；按计划书的完成标志衡量，只有 M2（仅漫射的 Blender 工程）已达到；M3 的离线往返已做（未修改、移动顶点后各导出一次），其余都还差实机验证。实现方式与验证范围见 CURRENT_STATE 首节和计划书第 13 节。
-- 不需要游戏的部分已用真实的 LoyalTools 1.6.8（Blender 4.5.7 中已安装的插件）验证：仅漫射的 Blender 导入、LOD 的 JSON 匹配与帧匹配（两侧为帧分析目录）、插件原生导出及产物检查；部署规则、绘制对照、任务管理以及“用哪个 Blender、哪份插件”的选择有 37 项单元测试。
-- 待办（需要游戏运行、目标角色在画面中且未被模组替换）：`efmi_list_models` → `efmi_extract_model`（可带 `lod_json`）→ 不改动直接 `efmi_export_mod` → `efmi_verify_exported_mod`，核对三采样、导入、导出、部署一致、刷新证据和逐组件结果；再把角色放到 LOD 距离验证 `method=capture` 与 LOD 入口；最后做一次改动后的往返。实机通过前本任务不算完成。
-- 可选后续：把探针数据写成帧分析目录格式，去掉归档版提取器对 LoyalTools 内部方法的依赖。
+- `mods_key` of probe 0.1.3 and `efmi_toggle_mods` of server 0.1.6; implementation and scope of verification in the first section of CURRENT_STATE and in D-015.
+- To do (needs the user to restart the game to load 0.1.3, and a restart of the MCP server): with a character replaced by a mod in view, `efmi_capture_frame` → `efmi_toggle_mods state=off`, check `mods_enabled=false`, that the character's original draws appear with origin `game` and that XXMI's replacement draws are gone → `efmi_diff_captures` → `state=on` and check the restore; then try `on` once while already on (two key presses), and that an F10 reload after switching off switches back on. In passing, do the real-game extraction of T-008 while mods are off.
+- After the comparison the mods must be switched back on.
 
-以下为计划阶段的记录：
+### T-008: Model extraction, LoyalTools native export and acceptance of what the game draws (done: main flow, modified model and LOD distance all passed in the real game, 2026-10-07)
 
-- 用户确定完整流程：提取 → 工作空间／Blender 编辑 → LoyalTools 原生 INI／BUF 导出 → 指定测试目录部署 → 自动 F10 → 目标模组绘制与资源验证。
-- Blender 材质只连接漫射；游戏需要的其他 DDS／槽位元数据保留。导出复用原生完整入口，包含前后处理，不能仅依赖 `FINISHED`。
-- 计划见 `docs/model-extraction-export-plan.md`，M1–M6 全部待实施。重点覆盖主控／LOD 共用网格、产物身份、实际运行时缓冲对应与未覆盖状态报告。
-- 本轮仅写计划和项目记忆，未开始实现或游戏操作。
+- Real game, 2026-10-07: Yvonne was extracted with mods off to `E:\Endfield mods\yvonne merge`; JSON LOD, Blender import, export, deploy → F10 → check per component all pass (first section of CURRENT_STATE).
+- Real game, 2026-10-07 17:39: on a copy of the workspace all vertices were moved with Blender and exported; after deploy and reload the 40 buffers are byte-identical to the modified export (first section of CURRENT_STATE).
+- Real game, evening of 2026-10-07: `efmi_map_lod method=capture` at LOD1 distance and the deployment check of the LOD entry points pass; in the course of it the problem with archiving open-world screens was fixed (server 0.1.7, first section of CURRENT_STATE).
+- The two LOD mapping differences are explained (first section of CURRENT_STATE): the two choices in 5 bone index remaps have the same effect (the vertices are less than 1 cm apart); the LOD entry of the CPU-posed component was removed by a LoyalTools check when re-using by JSON, and the user's old project has it. Neither has to do with the mods the user has installed. The user's answer: CPU components are never modified, they are simply deleted and the game's own are used, so this missing entry has no effect and is not added.
+- Optional follow-ups (not blocking): levels farther than LOD1; one three-sample extraction in the open world in the real game; the look of a manually modified model.
+- Remaining: (1) ~~check the LOD entry points and buffer variants with the character at LOD distance, and `efmi_map_lod method=capture`~~ (done); (2) ~~export after changing the model and check in the game~~ (done; the change was a scripted translation of everything, the look of manual modifications is left for when the user actually works on a model); (3) ~~re-run `sandbox/run_all.py` after the game is closed~~ (re-run and passed along with T-010; it can be run while the game is running).
 
-### T-007：agent 自动 F10 重载后获取新帧（已完成，实机通过，2026-10-06 晚）
+- Server 0.1.5 provides seven model tools, and the code of M1–M5 is in place; measured against the completion marks of the plan document only M2 (the diffuse-only Blender project) was reached; the offline round trip of M3 was done (one export each unmodified and after moving vertices), everything else still lacked verification in the real game. Implementation and scope of verification are in the first section of CURRENT_STATE and section 13 of the plan document.
+- The parts that do not need the game were verified with the real LoyalTools 1.6.8 (the add-on installed in Blender 4.5.7): the diffuse-only Blender import, JSON matching and frame matching of LODs (both sides being frame analysis directories), the add-on's native export and the output checks; the deployment rules, draw comparison, job management and the choice of "which Blender, which copy of the add-on" have 37 unit tests.
+- To do (needs the game running, the target character in view and not replaced by a mod): `efmi_list_models` → `efmi_extract_model` (optionally with `lod_json`) → `efmi_export_mod` without any change → `efmi_verify_exported_mod`, checking the three samples, import, export, consistent deployment, refresh evidence and the results per component; then move the character to LOD distance and verify `method=capture` and the LOD entry points; finally one round trip after a change. Until it passes in the real game this task does not count as done.
+- Optional follow-up: write the probe data in the format of a frame analysis directory to remove the archive extractor's dependency on LoyalTools' internal methods.
 
-原因已定位：游戏以管理员运行，UIPI 丢弃普通权限的 MCP 服务发来的按键。探针 0.1.2 改为在游戏进程内按 F10（`reload_key`），服务 0.1.4 优先走该路径并给出重载证据（`reload_confirmed` 不再恒为 false）。沙盒全套与真实 F10 集成通过，新 DLL 已安装；详见 CURRENT_STATE 首节。
+What follows is the record of the planning stage:
 
-实机：PID 43816 报告探针 0.1.2、进程 elevated（完整性 0x3000）。用户移出伊冯 mod 后由工具重载：按键在进程内发出并被读到，持续 1 帧（21696→21697），重载那一帧耗时 92.7ms（平时约 8ms）；重载前 367 次绘制中 XXMI 120 次（93 DrawIndexed + 27 Dispatch），重载后 277 次全部来自游戏，XXMI 的 93 次/18 个网格消失，游戏原始的 30 次/6 个网格出现；`reload_confirmed=true`（XXMI 在按键后创建了新帧所用的 27 个着色器）。游戏继续运行。证据 `captures/verify-reload-inprocess-43816/`。
+- The user fixed the complete flow: extraction → workspace / Blender editing → LoyalTools native INI / BUF export → deployment into a specified test folder → automatic F10 → verification of the target mod's draws and resources.
+- Blender materials connect only the diffuse; the other DDS / slot metadata the game needs are kept. The export reuses the native complete entry point including pre- and post-processing and cannot rely on `FINISHED` alone.
+- The plan is in `docs/model-extraction-export-plan.md`, with M1–M6 all to be implemented. Emphasis on the mesh shared by main model / LOD, identity of the output, correspondence with the buffers actually used at run time, and reporting of uncovered states.
+- That round only wrote the plan and the project memory; no implementation and no game operation was started.
 
-同日 20:51 第二次实机，游戏在后台（前台是 Claude 窗口）：探针以 `direct` 方式取得前台，按键持续 1 帧（91844→91845，重载帧 79.8ms），随后把前台还给原窗口（前后为同一 hwnd）；移出的伊冯 mod 同样消失（XXMI 120→0 次绘制，游戏原始 30 次绘制出现），`reload_confirmed=true`。`attach_input` 这条备用取前台路径在实机上没有用到，只在沙盒验证。无遗留验证项。本轮改动已按 D-007 提交并推送，提交号以 git log 为准。
+### T-007: The agent gets a new frame after an automatic F10 reload (done, passed in the real game, evening of 2026-10-06)
 
-以下为 0.1.3 及之前的记录：
+The cause is located: the game runs as administrator, and UIPI drops key presses sent by the MCP server with ordinary rights. Probe 0.1.2 presses F10 inside the game process instead (`reload_key`), and server 0.1.4 prefers that path and gives reload evidence (`reload_confirmed` is no longer always false). The full sandbox suite and the real F10 integration pass, and the new DLL is installed; see the first section of CURRENT_STATE.
 
-PID41976两次普通VK请求均获API接受并采集到新帧，但用户移出Yvonne后仍显示模组，明确确认未刷新；中间一次focus_refused未发键，不计有效输入。扫描码诊断也未生效：down/up返回1、错误码0，却始终未观察到F10异步按下状态；帧160361→160664的XXMI IB及次数相同。证据见 `captures/verify-reload-scancode-41976-ready/assessment.json` 及CURRENT_STATE。具体原因未知，扫描码不是修复。
+Real game: PID 43816 reports probe 0.1.2, process elevated (integrity 0x3000). After the user moved the Yvonne mod out, the tool reloaded: the key was pressed inside the process and was read, held for 1 frame (21696→21697), and the reload frame took 92.7 ms (about 8 ms normally); of 367 draws before the reload 120 were XXMI's (93 DrawIndexed + 27 Dispatch), after the reload all 277 came from the game, XXMI's 93 draws / 18 meshes were gone and the game's original 30 draws / 6 meshes appeared; `reload_confirmed=true` (XXMI created, after the key press, 27 shaders that the new frame uses). The game kept running. Evidence `captures/verify-reload-inprocess-43816/`.
 
-MCP服务0.1.3增加 `key_down_observed`：按住期间未观察到高位就返回 `keydown_not_observed`，finally释放，不开始capture或重发。`key_down_sent`仍表示API接受，`reload_confirmed=false`仍无回执。默认双F10绑定、前台/PID/device验证、旧缓存失效、成功输入后的等待/新帧规则保留。探针仍0.1.1，只需重启服务，无需狩猎模式或重注入。
+Second real-game run the same day at 20:51, with the game in the background (the Claude window in front): the probe took the foreground by the `direct` method, the key was held for 1 frame (91844→91845, reload frame 79.8 ms), then the foreground was given back to the original window (the same hwnd before and after); the Yvonne mod that had been moved out disappeared likewise (XXMI draws 120→0, the game's original 30 draws appear), `reload_confirmed=true`. The fallback path for taking the foreground, `attach_input`, was not used in the real game and is verified only in the sandbox. No verification item is left. The changes of that round were committed and pushed per D-007; the git log is authoritative for the commit numbers.
 
-本轮输入21项+工作流32项、MCP stdio私有沙盒39项及compileall通过；完成的是失败检测。历史0.1.2真实F10私有沙盒通过（`sandbox/build/reload-xuxnsq73/reload-evidence.json`），本轮游戏运行时未重跑，不能代替当前实机失败。下一步定位正常输入为何不可见；不自动提权、改EFMI或再次发送输入。普通capture继续可用，当前目标不能标为全部完成。
+What follows is the record of 0.1.3 and before:
 
-### T-006：优化实际数据读取速度（已完成，2026-10-06）
+With PID 41976, two ordinary VK requests were both accepted by the API and new frames were captured, but after the user moved Yvonne out the mod was still shown, and the user explicitly confirmed that nothing was refreshed; one focus_refused in between sent no key and does not count as valid input. The scan-code diagnosis had no effect either: down/up returned 1, error code 0, yet the asynchronous pressed state of F10 was never observed; XXMI's IBs and counts in frames 160361→160664 are the same. Evidence in `captures/verify-reload-scancode-41976-ready/assessment.json` and CURRENT_STATE. The specific cause was unknown; scan codes are not a fix.
 
-实机同场景三轮交错对照，完整归档中位1.843→1.220秒（减少33.8%），每轮86几何校验全通过；本机CRC32C、PNG编码/共享解码、紧凑JSON、身份复核省去无用VB哈希、离线骨骼提取复用已验buffer均完成。新采集三帧通过合并骨骼导出；selftest83/MCP39、CRC8组/解码6组通过。只改游戏外工具，无需重新注入；启动新Python即可使用，已运行MCP服务重启才载入加速库。证据和边界见CURRENT_STATE。
+MCP server 0.1.3 adds `key_down_observed`: when the high bit is not observed during the hold it returns `keydown_not_observed`, releases in `finally`, and neither starts a capture nor resends. `key_down_sent` still means the API accepted, and `reload_confirmed=false` still means no receipt. The default double F10 binding, foreground/PID/device verification, invalidation of old caches, and the wait / new-frame rules after successful input are kept. The probe is still 0.1.1; only the server has to be restarted, with no hunting mode and no re-injection.
 
-### T-004：启用Mod后的实际绘制验证（已完成）
+In that round the 21 input checks + 32 workflow checks, the 39 checks of the MCP stdio private sandbox and compileall passed; what was completed is the detection of the failure. The historical real F10 of 0.1.2 in the private sandbox passed (`sandbox/build/reload-xuxnsq73/reload-evidence.json`); it was not re-run in that round while the game was running and cannot replace the current failure in the real game. Next step: find out why normal input is invisible; no automatic elevation, no change to EFMI, no sending of input again. Ordinary capture stays usable; the goal could not be marked as fully done then.
 
-伊冯Mod的93次替换绘制、四组完整IB/VB与材质绑定已确认；16缓冲与2K贴图均和源文件逐字节一致。证据在 `captures/verify-mod-38252/`，详情见当前状态。
+### T-006: Speed up reading of real data (done, 2026-10-06)
 
-## 已完成实机验证
+Three interleaved comparison rounds on the same scene in the real game: the median of a complete archive went from 1.843 to 1.220 seconds (33.8% less), with all 86 geometry validations passing in every round; the native CRC32C, PNG encoding / shared decoding, compact JSON, skipping the useless VB hashes in the identity check, and reuse of verified buffers by the offline skeleton extraction are all done. Three newly captured frames pass the merged-skeleton export; selftest 83 / MCP 39, the 8 CRC groups and the 6 decode groups pass. Only tools outside the game were changed, no re-injection needed; a newly started Python uses it at once, and an MCP server that is already running loads the acceleration library only after a restart. Evidence and boundaries in CURRENT_STATE.
 
-### T-003：用 `0.1.1` 采集当前角色数据（2026-10-05）
+### T-004: Verification of the actual draws with a mod enabled (done)
 
-- 实际 PID `38252` 报告 `0.1.1`；主设备保持稳定，捕获帧 `9113` / `14377` 均非空。
-- backbuffer 截图确认伊冯；帧 `9113` 的 `6` 个角色 IB、`30` draw 命中 Yvonne INI 的 hash/index_count。
-- 三组角色完整 IB/VB0/1/2 共 `12` 个缓冲读回 CRC 全匹配；draw 时刻 CB、`5` 张纹理、VS/PS 字节码及反汇编均已读取，连续采集也非空。
-- 证据目录：`captures/verify-game-38252/`；详细计数和边界见 `CURRENT_STATE.md`。未修改 EFMI 或结束游戏，验证后已停止 live 并释放资源。
-- 本任务验证数据可获取，不代表已完成全角色网格/骨架重建、其他角色或 LOD 的验证。
+The 93 replacement draws of the Yvonne mod, four groups of complete IB/VB and the material bindings are confirmed; 16 buffers and the 2K textures are byte-identical to the source files. Evidence in `captures/verify-mod-38252/`, details in the current state.
 
-## 已知未覆盖场景
+## Verified in the real game
 
-多交换链自动识别主画面、跨设备替代交换链迁移、同设备交换链销毁/重建期间的跨界捕获完整性；详见 `KNOWN_ISSUES.md`，不得视为本轮 `192` 项已覆盖。
+### T-003: Capture the current character's data with `0.1.1` (2026-10-05)
 
-## 已完成
+- The actual PID `38252` reports `0.1.1`; the main device stays stable, and the captured frames `9113` / `14377` are both non-empty.
+- A backbuffer screenshot confirms Yvonne; `6` character IBs and `30` draws of frame `9113` match the hash/index_count of the Yvonne INI.
+- The complete IB/VB0/1/2 of three character groups, `12` buffers in all, were read back with every CRC matching; CBs as they were at the draw, `5` textures, and VS/PS bytecode with disassembly were all read, and continuous capture is non-empty as well.
+- Evidence directory: `captures/verify-game-38252/`; detailed counts and boundaries in `CURRENT_STATE.md`. EFMI was not modified and the game was not ended; after the verification live mode was stopped and resources released.
+- This task verifies that the data can be obtained; it does not mean that the reconstruction of all character meshes/skeletons, other characters or LODs has been verified.
 
-### T-001：工具内修复多设备空捕获（2026-10-05）
+## Known scenarios not covered
 
-- `0.1.1` 分离挂钩与目标选择，由交换链绑定所属设备/立即上下文；辅助设备不再覆盖，诊断显示目标和 draw 计数。
-- 补修 live generation 会话隔离；修正沙盒 shader 的浮点基准，保留严格哈希/字节断言。
-- 最终整套通过：三种加载顺序各 `69` 项 hash 对照无差异且二次捕获一致；自测 `83`；多设备有/无 XXMI 各 `96`；MCP `39`；`git diff --check` / `compileall` 通过。
-- `dist/efmi_probe.dll` 已就位，大小 `355840` 字节；SHA256 见 `CURRENT_STATE.md`。旧版保存在 `dist/backup-before-multidevice/`。
-- EFMI 原目录 `56` 文件最终 SHA256 `changed=[]`。本地工具修复完成，随后 T-003 也通过本次伊冯画面实机验证。
+Automatic recognition of the main picture among several swap chains, migration to a replacement swap chain across devices, and the integrity of captures crossing the destruction/re-creation of a swap chain on the same device; see `KNOWN_ISSUES.md`. These must not be regarded as covered by the `192` checks of that round.
 
-### T-002：建立项目记忆体系（2026-10-05）
+## Done
 
-已参考 `E:\loyal tools\.ai-memory` 的七文件结构，创建本项目七份中文记忆文档与根 `AGENTS.md`。只读参考目录，未迁入 LoyalTools 项目细节；已记录最终实现、产物、通过结果与真实游戏验证范围。
+### T-001: Fix empty captures with several devices inside the tool (2026-10-05)
 
-### T-005：当前梨诺的合并骨骼提取（已完成，2026-10-06）
+- `0.1.1` separates hooking from target selection, and the swap chain binds the device/immediate context it belongs to; auxiliary devices no longer override, and the diagnostics show target and draw count.
+- Session isolation by live generation was fixed in addition; the floating-point baseline of the sandbox shader was corrected, keeping strict hash/byte assertions.
+- The final full suite passes: `69` hash parity checks in each of three load orders without difference and with consistent second captures; self-test `83`; multi-device with/without XXMI `96` each; MCP `39`; `git diff --check` / `compileall` pass.
+- `dist/efmi_probe.dll` is in place, size `355840` bytes; SHA256 in `CURRENT_STATE.md`. The old version is kept in `dist/backup-before-multidevice/`.
+- Final SHA256 of the `56` files of the original EFMI directory: `changed=[]`. The local tool fix is complete, and T-003 afterwards also passed real-game verification on this Yvonne screen.
 
-按原LoyalTools算法生成目标workplace及liimo merge.blend，18组件/79044顶点/94051三角，696组槽/512canonical来源。三独立采样、完整几何逐字节核对和Blender真实导入均通过；预览与说明随成品保存。EFMI/LoyalTools只读；静态编辑与材质边界见CURRENT_STATE。
+### T-002: Set up the project memory (2026-10-05)
 
-### GitHub Release v0.1.13（已完成，2026-10-10）
+Following the seven-file structure of `E:\loyal tools\.ai-memory`, this project's seven memory documents and the root `AGENTS.md` were created. The reference directory was only read, and no details of the LoyalTools project were brought in; the final implementation, the output, the passing results and the scope of real-game verification are recorded.
 
-- 用户要求带 DLL 的 Release：已发布 [v0.1.13](https://github.com/loyal37/EFMI-MCP/releases/tag/v0.1.13)，对应源码 `77c1dfd`，服务 0.1.13／探针 0.1.6。
-- 完整 Windows x64 包、独立探针 DLL、CRC 加速 DLL、SHA256SUMS 四个附件齐全，发布后下载逐字节核对通过。README 已补预编译包安装入口。
-- 本轮沙盒 143＋73＋102 项、CRC 8 项和解压后的 29 工具 stdio 启动检查通过；没有新增实机测试或 ZZMI 支持。证据与边界见 CURRENT_STATE 的同名节；无发版待办。
+### T-005: Merged-skeleton extraction of the current Liino (done, 2026-10-06)
+
+The target workplace and liimo merge.blend were generated with the original LoyalTools algorithm: 18 components / 79044 vertices / 94051 triangles, 696 group slots / 512 canonical sources. Three independent samples, the byte-for-byte check of the complete geometry and a real Blender import all pass; preview and notes are saved with the result. EFMI/LoyalTools read-only; the boundaries of static editing and materials are in CURRENT_STATE.
+
+### GitHub Release v0.1.13 (done, 2026-10-10)
+
+- The user asked for a release with DLLs: [v0.1.13](https://github.com/loyal37/EFMI-MCP/releases/tag/v0.1.13) is published, for source `77c1dfd`, server 0.1.13 / probe 0.1.6.
+- The four assets are complete: the full Windows x64 package, the separate probe DLL, the CRC acceleration DLL and SHA256SUMS; after publication they were downloaded and checked byte for byte. The README got the installation entry for the prebuilt package.
+- In that round the sandbox checks 143 + 73 + 102, the 8 CRC checks and the stdio start with 29 tools after unpacking pass; no new real-game test and no ZZMI support. Evidence and boundaries in the section of the same name in CURRENT_STATE; nothing left to do for the release.

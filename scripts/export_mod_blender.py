@@ -27,7 +27,7 @@ import traceback
 
 sys.dont_write_bytecode = True
 
-LOG_TEXT = "导出流程日志"   # The add-on's name for the log it leaves in the text editor.
+LOG_TEXT = "\u5bfc\u51fa\u6d41\u7a0b\u65e5\u5fd7"   # The add-on's name (not ASCII) for the log it leaves in the text editor.
 
 
 def arguments():
@@ -189,10 +189,10 @@ def run(args, report):
     args.report.with_suffix(".log.txt").write_text(text, encoding="utf-8")
     lines = text.splitlines()
     report["export_log"] = str(args.report.with_suffix(".log.txt"))
-    # The saved log has its emoji stripped; these are the add-on's own phrases.
-    report["log_failures"] = [line.strip() for line in lines if "Mod生成失败" in line or "❌" in line]
-    report["log_warnings"] = [line.strip() for line in lines if "⚠" in line or "警告" in line or "WARNING" in line.upper()][:60]
-    completed = any(marker in line for line in lines for marker in ("Mod生成完成", "导出完成!", "直出完成"))
+    # The saved log has its emoji stripped; these are the add-on's own phrases, spelled with escapes.
+    report["log_failures"] = [line.strip() for line in lines if "Mod\u751f\u6210\u5931\u8d25" in line or "❌" in line]
+    report["log_warnings"] = [line.strip() for line in lines if "⚠" in line or "\u8b66\u544a" in line or "WARNING" in line.upper()][:60]
+    completed = any(marker in line for line in lines for marker in ("Mod\u751f\u6210\u5b8c\u6210", "\u5bfc\u51fa\u5b8c\u6210!", "\u76f4\u51fa\u5b8c\u6210"))
 
     files = sorted(path for path in output.rglob("*") if path.is_file())
     report["files"] = [{"path": path.relative_to(output).as_posix(), "bytes": path.stat().st_size} for path in files]

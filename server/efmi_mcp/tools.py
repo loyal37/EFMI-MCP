@@ -97,7 +97,7 @@ NO_PROBE = """\
 The probe is not running in any process, so live data is unavailable.
 
 The probe (efmi_probe.dll) has to be loaded when the game starts, by XXMI Launcher itself:
-  XXMI Launcher -> Settings -> Advanced -> tick "Inject Libraries" (注入库) and add this path on its own line:
+  XXMI Launcher -> Settings -> Advanced -> tick "Inject Libraries" and add this path on its own line:
   {dll}
 then start the game from the launcher. It cannot be attached to a game that is already running.
 

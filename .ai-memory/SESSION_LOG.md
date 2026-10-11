@@ -1,331 +1,349 @@
-# EFMI MCP — 开发日志
+# EFMI MCP — Development log
 
-> 每轮结束追加简短摘要，记录实际完成、验证范围、遗留问题和下次入口；不粘贴聊天或完整日志。
+> A short summary is appended at the end of each round, recording what was actually done, the scope of verification, open problems and where to pick up next time; no chat and no complete logs are pasted.
 
-## 2026-10-06：模型提取、导出与刷新验收计划书
+## 2026-10-06: Plan document for model extraction, export and refresh acceptance
 
-用户要求将三采样／LoyalTools 工作空间／Blender 流程封装为正式 MCP；明确导出包含编辑后生成游戏 INI／BUF，遵循 LoyalTools 完整原生逻辑，Blender 仅连接漫射，并新增导出后刷新查看目标模组绘制状态。
+The user asked for the three-sample / LoyalTools workspace / Blender flow to be wrapped as a proper MCP; made clear that export includes generating game INI / BUF after editing, follows LoyalTools' complete native logic, that Blender connects only the diffuse, and added a refresh after export to look at the draw state of the target mod.
 
-已创建 `docs/model-extraction-export-plan.md`，列明接口、三采样、主控／LOD、材质来源、原生前后处理、产物文件清单、专用目录部署、一次正常 F10、实际组件和资源对照、覆盖结果及 M1–M6。记录原生 operator 假成功、CPU posed 保留行为、导入检查与编辑后导出检查的差异。T-008 标记待实施。
+`docs/model-extraction-export-plan.md` was created, listing interfaces, the three samples, main model / LOD, material sources, native pre- and post-processing, the list of output files, deployment into a dedicated folder, one normal F10, comparison of the actual components and resources, coverage results and M1–M6. It records the false success of the native operator, the behaviour of keeping CPU-posed components, and the difference between the import check and the export check after editing. T-008 was marked as to be implemented.
 
-本轮只修改文档；未连接探针、发送输入、提取或部署模组。用户补充要求本次计划只交付本地、不提交仓库；已取消本轮文件暂存，不创建提交或推送。文档已独立审阅，下一步按计划实施 M1。
+That round changed documents only; no probe connection, no input sent, no extraction or deployment of a mod. The user added that this plan was to be delivered locally only and not committed to the repository; the staging of the files was undone, and no commit or push was created. The document was reviewed independently; the next step is implementing M1 according to the plan.
 
-## 2026-10-06：用户启动游戏后的自动 F10 试用
+## 2026-10-06: Trying the automatic F10 after the user started the game
 
-功能提交 `ab6f4a5` 已推送至loyal37/EFMI-MCP/main。用户本轮启动游戏并要求试刷新；动态工具搜索接口返回internal error，直接启动生产MCP服务0.1.2并通过真实stdio调用工具，连接唯一探针Endfield PID41976（0.1.1）。首次一次F10按下/释放获API接受，聚焦准确窗口，无Numpad0；2328ms完成等待及抓帧，原帧57703→barrier57971→57972，共323次调用（203 game/120 xxmi）、188资源、176shader和9,523,456字节CB快照。IB/VB0读回正常，旧缓存失效，MCP子进程退出0。证据 `captures/verify-reload-41976/result.json`；这只证明API接受和后续采集。
+The feature commit `ab6f4a5` was pushed to loyal37/EFMI-MCP/main. In that round the user started the game and asked for a refresh to be tried; the dynamic tool search interface returned an internal error, so the production MCP server 0.1.2 was started directly and the tool called through real stdio, connecting to the only probe, Endfield PID 41976 (0.1.1). The first single F10 down/up was accepted by the API with the exact window focused and no Numpad0; waiting and capture completed in 2328 ms, original frame 57703 → barrier 57971 → 57972, 323 calls in all (203 game / 120 xxmi), 188 resources, 176 shaders and a CB snapshot of 9,523,456 bytes. IB/VB0 read-back was normal, the old cache was invalidated, and the MCP child process exited with 0. Evidence `captures/verify-reload-41976/result.json`; this proves only API acceptance and the subsequent capture.
 
-用户随后移出Yvonne模组并授权再试。目录扫描7→6个mod；一次focus_refused在发键前拒绝，用户手动前台后第二次普通VK请求API接受并得到帧84113，证据 `captures/verify-reload-41976-mod-removed-foreground/result.json`。用户明确确认模组仍显示、没有刷新成功，截图与旧网格绘制吻合；XXMI调用139→120是同一网格额外pass变化，不是卸载证据。当前实机自动刷新失败，不能再写“待用户确认”或“实机尚未验证”。
+The user then moved the Yvonne mod out and authorized another try. The directory scan went from 7 to 6 mods; one focus_refused refused before the key was sent; after the user brought the game to the foreground manually, the second ordinary VK request was accepted by the API and gave frame 84113, evidence `captures/verify-reload-41976-mod-removed-foreground/result.json`. The user explicitly confirmed that the mod was still shown and the refresh had not succeeded, and the screenshot agrees with the old mesh being drawn; XXMI calls going from 139 to 120 is a change in the additional passes of the same mesh, not evidence of unloading. The automatic refresh in the real game failed at that point, and it can no longer be written as "awaiting the user's confirmation" or "not yet verified in the real game".
 
-扫描码诊断保存在 `captures/verify-reload-scancode-41976-ready/result.json`：down/up的SendInput返回1、错误0，前台始终PID41976且无修饰键，但整个按住期F10异步高位均false；帧160361→160664的XXMI DrawIndexed IB及次数相同。`assessment.json` 明确实际刷新失败，raw报告pass仅表示诊断调用/采集完成。扫描码不是修复，原因尚未知；Python为medium、读取游戏token access denied不能推出目标权限或安全软件拦截结论。
+The scan-code diagnosis is saved in `captures/verify-reload-scancode-41976-ready/result.json`: SendInput returned 1 with error 0 for down/up, the foreground was PID 41976 throughout with no modifier keys, but the asynchronous high bit of F10 was false during the whole hold; the IBs and counts of XXMI's DrawIndexed in frames 160361→160664 are the same. `assessment.json` states that the actual refresh failed, and the pass of the raw report only means that the diagnostic call / capture completed. Scan codes are not a fix and the cause was still unknown; Python being medium and reading the game's token giving access denied do not allow a conclusion about the target's rights or about security software blocking.
 
-据此服务升0.1.3，增加按住期间至少一次GetAsyncKeyState高位的门槛，区分 `key_down_sent` 与 `key_down_observed`。未观察到按下返回input阶段 `keydown_not_observed`，finally释放、不capture、不重发；`reload_confirmed=false`不变。官方v1.2.2输入确实使用该高位，user.ini仅dirty时保存，因此本轮mtime不变不作为失败证据。未发现受支持外部reload接口；Core/auto_update.xcmd属于启动器更新/启动脚本，不能作运行时替代。
+On this basis the server went to 0.1.3, adding the threshold of at least one GetAsyncKeyState high bit during the hold and separating `key_down_sent` from `key_down_observed`. When the press is not observed, the input stage returns `keydown_not_observed`, releases in `finally`, does not capture and does not resend; `reload_confirmed=false` is unchanged. The official v1.2.2 input does use that high bit, and user.ini is saved only when dirty, so the unchanged mtime of that round is not evidence of failure. No supported external reload interface was found; Core/auto_update.xcmd belongs to the launcher's update/start script and cannot serve as a run-time substitute.
 
-本轮输入21项+工作流32项、MCP stdio私有沙盒39项及compileall通过；实际F10私有沙盒因用户游戏运行未重跑，旧沙盒结果仅作历史证据。此轮完成的是失败检测，真实输入问题仍未解决，T-007目标保持未完成。未改EFMI/启动器/Core/模组或探针，未自动提权、未再发送输入，游戏仍运行。同步记录后按既有授权提交推送0.1.3；提交及推送以实际git结果为准。
+In that round the 21 input checks + 32 workflow checks, the 39 checks of the MCP stdio private sandbox and compileall passed; the real-F10 private sandbox was not re-run because the user's game was running, and old sandbox results count only as historical evidence. What that round completed is the detection of the failure; the real input problem was still unsolved and the goal of T-007 stayed open. EFMI/launcher/Core/mods and the probe were not changed, no automatic elevation, no further input sent, and the game kept running. After syncing the records, 0.1.3 was committed and pushed under the existing authorization; the actual git result is authoritative for commit and push.
 
-## 2026-10-06：自动 F10 后采集与推送约定
+## 2026-10-06: Capture after an automatic F10, and the push agreement
 
-用户要求 MCP 自动完成修改 mod 后的刷新与重新采集。服务升至 0.1.2，新增 `reload_input.py` 固定 F10/前台/PID/修饰键输入模块、`reload_workflow.py` 同一管道与渲染目标的重载后捕获流程；探针仍为 0.1.1，只需重启 MCP 服务，无需重注入或狩猎模式。读取原始双 F10 绑定，不直接编辑 EFMI 文件；正常 F10 可能保存持久变量，文档明确保留此副作用。
+The user asked for the MCP to do the refresh and the new capture after a mod change automatically. The server went to 0.1.2 with the new `reload_input.py`, a fixed F10 / foreground / PID / modifier key input module, and `reload_workflow.py`, the capture flow after a reload under the same pipe and render target; the probe stayed at 0.1.1, only the MCP server has to be restarted, with no re-injection and no hunting mode. The original double F10 binding is read and EFMI files are not edited directly; a normal F10 may save persistent variables, and the documents keep this side effect explicit.
 
-工作流停止 live、release 并失效旧捕获/mod 索引，单次 F10 后默认等 2 秒，再接受严格晚于 barrier 的非空帧；不重连换进程、不自动重发 F10、live 不自动恢复。`reload_requested` 与恒 false 的 `reload_confirmed` 分开，后者没有 XXMI 回执。专项发现未知输入异常曾被误报为未发送，修正为 null；检查 live 的 recording 时先停止 live，不能误判为另一个未完成单帧请求。
+The workflow stops live mode, releases and invalidates old captures / the mod index, waits the default 2 seconds after the single F10, then accepts a non-empty frame strictly later than the barrier; it does not reconnect to another process, does not resend F10 automatically, and does not resume live mode automatically. `reload_requested` is separate from `reload_confirmed`, which is always false since there is no receipt from XXMI. The dedicated tests found that an unknown input exception had been wrongly reported as not sent, corrected to null; when checking a live recording, live mode is stopped first and must not be mistaken for another unfinished single-frame request.
 
-最终输入 19 项与工作流/MCP 边界 30 项、既有 MCP 39 项、私有沙盒实际 F10 集成均通过。前两组用 fake 输入和探针，纳入 `run_all.py`，无系统输入；实际集成单独运行 `reload_integration_test.py`，会真实聚焦/F10，发现其他探针则拒绝。
+In the end the 19 input checks and 30 workflow/MCP boundary checks, the existing 39 MCP checks and a real F10 integration in the private sandbox all passed. The first two groups use fake input and a fake probe and are part of `run_all.py`, without system input; the real integration is run separately with `reload_integration_test.py`, which really focuses and presses F10 and refuses when it finds another probe.
 
-集成证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`：`hunting=0` 且未按 Numpad0，私有新 INI 的 VS `checktextureoverride=ib` 加 IB `hash=64e97b80 / match_index_count=864 / handling=skip` 经实际 F10 生效。目标 IB 次数 1→0，其余 `3c980a7d:2`、`3970063e:1` 完全保留；工具帧 5→barrier 209→新帧 210（10 draws，6 game/4 xxmi）。旧缓存清除、新 mod 索引、live 停止及保留 IB 读回通过，沙盒进程退出 0。此为私有沙盒验证，未对用户游戏执行 F10，不声称真实角色重载通过。
+Integration evidence `sandbox/build/reload-xuxnsq73/reload-evidence.json`: with `hunting=0` and without pressing Numpad0, a new private INI with `checktextureoverride=ib` for the VS plus the IB `hash=64e97b80 / match_index_count=864 / handling=skip` took effect through a real F10. The count of the target IB went 1→0, and the others, `3c980a7d:2` and `3970063e:1`, were kept entirely; tool frame 5 → barrier 209 → new frame 210 (10 draws, 6 game / 4 xxmi). Clearing of the old cache, the new mod index, stopping of live mode and the read-back of the kept IBs pass, and the sandbox process exited with 0. This is a verification in the private sandbox; no F10 was performed on the user's game, and no claim is made that reloading a real character passed.
 
-初次集成暴露沙盒默认 `SC_KEYMENU` 进入 modal loop，修正测试窗口处理；随后 IB 规则因遗漏 `match_index_count` 未命中，补齐后通过。两者没有证明产品依赖狩猎模式。另观察到 XXMI 1.2.2 在单次约 200ms F10 按住期间重建按键注册，可内部多次 reload；工具保证单次 down/up 脉冲、不自动重发，不能保证 XXMI 内部只重载一次。
+The first integration run exposed that the sandbox's default `SC_KEYMENU` enters a modal loop, and the handling of the test window was corrected; then the IB rule did not match because `match_index_count` was missing, and passed once it was added. Neither showed that the product depends on hunting mode. It was also observed that XXMI 1.2.2 re-creates its key registrations during a single F10 hold of about 200 ms and can reload internally several times; the tool guarantees a single down/up pulse without automatic resending and cannot guarantee that XXMI reloads internally only once.
 
-用户本轮另明确要求完成后及后续轮次推送 `https://github.com/loyal37/EFMI-MCP`，已更新 AGENTS 和 D-007。旧日志“不 push”保留当时上下文；当前按验证、记忆、差异审查、提交、推送顺序完成，不把截图、捕获或忽略的构建产物加入源码提交。
+In that round the user also explicitly asked for pushing to `https://github.com/loyal37/EFMI-MCP` after completion and in later rounds; AGENTS and D-007 were updated. "No push" in the old log keeps the context of its time; the round was completed in the order verify, memory, diff review, commit, push, without adding screenshots, captures or ignored build output to the source commit.
 
-## 2026-10-06：优化真实数据读取耗时
+## 2026-10-06: Reducing the time to read real data
 
-用户反馈采集慢。先对PID29988完整归档剖析，再优化游戏外CRC32C、PNG压缩/共享解码、JSON编码、身份复核无用VB哈希和离线桥接重复读缓冲。新增独立 `server/native/build.bat` 构建CRC helper，不改探针；缺失/CPU不支持/自测不通过自动回Python，保留增量种子及各类buffer语义。MCP测试在其子进程屏蔽启动测试前已有probe，可在用户游戏运行时安全验证。
+The user reported that capturing was slow. The complete archive on PID 29988 was profiled first, then the following were optimised outside the game: CRC32C, PNG compression / shared decoding, JSON encoding, the useless VB hashes of the identity check, and the repeated buffer reads of the offline bridge. A new independent `server/native/build.bat` builds the CRC helper without changing the probe; when it is missing / the CPU does not support it / the self-test fails, Python is used automatically again, keeping the incremental seed and the semantics for all kinds of buffers. The MCP test hides, in its child process, the probes that existed before the test started, so it can be verified safely while the user's game is running.
 
-实机三轮交错旧/新采集：中位1.843→1.220秒（减少33.8%），各轮完整buffer 41,967,616字节、24DDS/45,616,608字节及86几何CRC全匹配；新帧313285/313640/313988合并导出仍通过三采样gate。单独16MiB CRC为1.754秒→1.897毫秒。PNG像素不变、样本体积增大52%–75%。离线桥接三轮中位1.890→1.662秒，BUF读取1134→9，928个输出文件比对通过（只忽略输出路径/日志秒数）；6拒绝门槛、6 NumPy读语义和缓存释放检查通过，整buffer缓存峰值约80MiB且返回时清空。边界测试纠正了NumPy offset超尾部的异常语义，没有删掉错误检查来通过。
+Three interleaved old/new capture rounds in the real game: median 1.843 → 1.220 seconds (33.8% less), with the complete buffers of 41,967,616 bytes, 24 DDS / 45,616,608 bytes and 86 geometry CRCs all matching in every round; the merged export of the new frames 313285/313640/313988 still passes the three-sample gate. A 16 MiB CRC alone went from 1.754 seconds to 1.897 milliseconds. PNG pixels are unchanged, the sample sizes grew by 52%–75%. The offline bridge: median of three rounds 1.890 → 1.662 seconds, BUF reads 1134 → 9, the comparison of 928 output files passes (ignoring only output paths / log seconds); the 6 rejection thresholds, 6 NumPy read semantics and the cache release checks pass, the peak of the whole-buffer cache is about 80 MiB and it is emptied on return. Boundary tests corrected the exception semantics of a NumPy offset beyond the tail, without deleting error checks to pass.
 
-相关回归selftest83/MCP39、CRC8组/图像6组均通过，compileall/diff检查通过，独立审查无阻断项。证据 `captures/performance/` 和 `captures/bridge-performance-1fac750a2f/results.json`；这些耗时不含Blender导入，也不代表GPU渲染帧成本。所有改动只在本项目，探针DLL SHA仍为b0fee912...8fa8a，游戏PID29988保持运行，EFMI/LoyalTools/E盘成品未修改。同步记忆后本地提交，不自动push。新Python采集直接生效，旧MCP服务需重启以选择CRC backend，游戏无需重新注入。
+The related regressions selftest 83 / MCP 39, the 8 CRC groups / 6 image groups all pass, compileall / the diff check pass, and an independent review found nothing blocking. Evidence `captures/performance/` and `captures/bridge-performance-1fac750a2f/results.json`; these times do not include the Blender import and do not represent the cost of GPU rendering frames. All changes are inside this project only, the SHA of the probe DLL is still b0fee912...8fa8a, the game PID 29988 kept running, and EFMI / LoyalTools / the finished output on drive E were not modified. After syncing the memory a local commit was made, without automatic push. A new Python capture benefits at once; an old MCP server has to be restarted to pick the CRC backend, and the game needs no re-injection.
 
-## 2026-10-05：建立记忆，完成 `0.1.1` 工具修复与本地验证
+## 2026-10-05: Memory set up, `0.1.1` tool fix and local verification completed
 
-**用户目标**：参考 `E:\loyal tools\.ai-memory` 为当前工具建立项目记忆，然后修复已注入但读不到当前角色数据的问题；只改本工具，不动 EFMI。
+**The user's goal**: set up a project memory for the current tool following `E:\loyal tools\.ai-memory`, then fix the problem that it was injected but could not read the current character's data; change only this tool, do not touch EFMI.
 
-**实际完成**：
+**What was done**:
 
-1. 只读参考七文件结构，核对本项目 README、探针/MCP 源码与日志，创建七份记忆文档及根 `AGENTS.md`。
-2. 修复后建辅助设备覆盖 `g_dev/g_ctx` 而 `g_swap` 保留的问题：设备挂钩与目标选择分离，首个发现的交换链绑定所属设备/上下文并持有引用；逐上下文保存能力，GPU writer 限定所选上下文和交换链。
-3. 探针/服务升至 `0.1.1`；状态显示目标指针/draw 计数，空捕获警告；live 增加 generation，阻止停止/重启/断开后的旧帧回填。
+1. Read the seven-file structure for reference only, checked this project's README, the probe/MCP sources and the logs, and created the seven memory documents and the root `AGENTS.md`.
+2. Fixed the problem of an auxiliary device created later overwriting `g_dev/g_ctx` while `g_swap` is kept: device hooking and target selection are separated, the first swap chain found binds the device/context it belongs to and holds references; capabilities are stored per context, and the GPU writer is limited to the selected context and swap chain.
+3. Probe/server went to `0.1.1`; the status shows target pointers / the draw count and warns on an empty capture; live mode got a generation that stops old frames from being back-filled after a stop / restart / disconnect.
 
-**失败到修复的证据**：旧游戏 PID `39000` 注入可连接，但第 `22964` 帧 draw / 资源 / 着色器均 `0`，live 空。旧版多设备后建场景 `6` 通过 / `7` 失败，仅录辅助三角形。首次自测 `71` 通过 / `2` 失败，定位 live 在途帧回填；generation 修复并新增 `10` 检查后自测全部通过。
+**Evidence from failure to fix**: the old game PID `39000` could be injected and connected to, but frame `22964` had `0` draws / resources / shaders, and live mode was empty. The old version's scenario with the auxiliary device created later showed `6` passed / `7` failed, recording only the auxiliary triangle. The first self-test showed `71` passed / `2` failed, which located the back-filling of in-flight live frames; after the generation fix and `10` new checks the self-test passes completely.
 
-**测试场景修正**：posed VB 偶发 `39` 个 float 变化 `1 ULP`（最大 `5.96e-8`），旧探针 + 无 XXMI 也复现，每次 hash 与读回 CRC 一致，不是本轮探针回归。测试 shader 加 HLSL `precise`，保留严格断言；有/无 XXMI 各 `12` 次连续首帧捕获的 `11616` 字节均一致，CRC `1b4be723`。具体优化机理仍属推断。
+**Correction of the test scene**: the posed VB occasionally has `39` floats changing by `1 ULP` (at most `5.96e-8`); the old probe without XXMI reproduces it too, and each time the hash agrees with the CRC of the read-back, so it is not a probe regression of that round. The test shader got HLSL `precise`, keeping strict assertions; with and without XXMI the `11616` bytes of `12` consecutive first-frame captures each are identical, CRC `1b4be723`. The exact optimisation mechanism is still an inference.
 
-**最终验证**：`sandbox/build/verification-0.1.1.log` 退出码 `0`，八阶段全部 `PASS`。三种加载顺序各 `69` 项 hash 对照 `0` mismatch，二次捕获 IB/VB 哈希一致均为 `True`；自测 `83`、多设备无/有 XXMI 各 `96`、MCP `39` 全部通过。`git diff --check`、Python `compileall` 通过。
+**Final verification**: `sandbox/build/verification-0.1.1.log` exit code `0`, all eight stages `PASS`. `69` hash parity items in each of three load orders with `0` mismatches, and the IB/VB hash consistency of the second capture is `True` everywhere; self-test `83`, multi-device without/with XXMI `96` each, MCP `39`, all pass. `git diff --check` and Python `compileall` pass.
 
-**交付与保护**：`dist/efmi_probe.dll` 为 `355840` 字节，SHA256 `b0fee912263763c9db28adc21798505845c9c803606bbf3969227a2bc948fa8a`；旧版备份 `dist/backup-before-multidevice/`。只改本项目；EFMI 原目录 `56` 文件最终 SHA256 `changed=[]`。未修改启动器配置、未结束用户进程，结束时游戏未运行。
+**Delivery and protection**: `dist/efmi_probe.dll` is `355840` bytes, SHA256 `b0fee912263763c9db28adc21798505845c9c803606bbf3969227a2bc948fa8a`; the old version is backed up in `dist/backup-before-multidevice/`. Only this project was changed; final SHA256 of the `56` files of the original EFMI directory `changed=[]`. The launcher configuration was not modified, no user process was ended, and the game was not running at the end.
 
-**遗留边界**：新版真实游戏角色采集尚未验证。多交换链自动识别主画面不支持；跨设备替代交换链拒绝并提示重启；同设备交换链重建期间跨界捕获完整性未验证。
+**Open boundaries**: capture of a character in the real game with the new version was not verified yet. Automatic recognition of the main picture among several swap chains is not supported; a replacement swap chain across devices is refused with a hint to restart; the integrity of captures across the re-creation of a swap chain on the same device is not verified.
 
-**下次继续**：先读 `CURRENT_STATE.md` / `TASKS.md`。T-001 本地工具修复和 T-002 记忆建档完成；用户按原方式启动游戏后执行 T-003，确认实际加载 `0.1.1`，再采集完整帧、live 和角色相关资源。
+**Next time**: read `CURRENT_STATE.md` / `TASKS.md` first. T-001, the local tool fix, and T-002, the memory, are done; after the user starts the game the usual way, carry out T-003: confirm that `0.1.1` is really loaded, then capture a full frame, live mode and character-related resources.
 
-## 2026-10-05：真实游戏伊冯采集验证与提交约定
+## 2026-10-05: Capture verification on Yvonne in the real game, and the commit agreement
 
-用户重新注入，PID `38252` 确认运行 `0.1.1`。帧 `9113` 为 `285` draw / `170` 资源 / `184` 着色器；15 个连续摘要均非空。探针 backbuffer 截图确认当前为伊冯，30 draw、6 IB 与 Yvonne INI 的 hash/index_count 匹配。
+The user injected again, and PID `38252` was confirmed to run `0.1.1`. Frame `9113` has `285` draws / `170` resources / `184` shaders; 15 consecutive summaries are all non-empty. The probe's backbuffer screenshot confirms that the current character is Yvonne; 30 draws and 6 IBs match the hash/index_count of the Yvonne INI.
 
-进一步捕获 frame `14377`（286 draw），读取三组网格完整 IB/VB0/1/2 共12个缓冲，CRC32C全部与捕获哈希相符；保留13,979,968字节draw时刻CB快照，读取5张纹理与VS/PS字节码及反汇编。证据位于 `captures/verify-game-38252/`。采集后停止 live、释放保持资源，未改 EFMI/游戏/启动器；未声称完成网格或骨架重建。
+Frame `14377` (286 draws) was captured in addition, and the complete IB/VB0/1/2 of three mesh groups, 12 buffers in all, were read with every CRC32C matching the capture hashes; a CB snapshot of 13,979,968 bytes from the time of the draws was kept, and 5 textures and VS/PS bytecode with disassembly were read. The evidence is in `captures/verify-game-38252/`. After capturing, live mode was stopped and held resources released, without changing EFMI / the game / the launcher; no claim was made of having reconstructed meshes or a skeleton.
 
-用户明确要求以后每次改完提交代码，已写入根 `AGENTS.md` 和 D-007。本轮将上一轮已验证的代码修复与记忆一并做本地 Git 提交（提交号由 `git log` 查阅）；捕获文件和构建产物保持忽略，不自动 push。
+The user explicitly asked for the code to be committed after every change from then on, which was written into the root `AGENTS.md` and D-007. That round made a local Git commit of the previous round's verified code fix together with the memory (the commit number can be looked up with `git log`); capture files and build output stay ignored, and there was no automatic push.
 
-## 2026-10-05/06：Mod实机验证与后续模型提取
+## 2026-10-05/06: Mod verification in the real game and the model extraction that followed
 
-伊冯Mod验证完成：93次替换绘制、18参数组合、72区域CRC一致；16完整缓冲29,824,876字节及2K纹理4,194,304字节与Mod源文件逐字节相同，截图和12帧live均已保存。证据在captures/verify-mod-38252，结束已停止live/release，EFMI只读。
+The verification of the Yvonne mod is complete: 93 replacement draws, 18 parameter combinations, 72 region CRCs agree; 16 complete buffers of 29,824,876 bytes and the 2K textures of 4,194,304 bytes are byte-identical to the mod's source files, and screenshots and 12 live frames are saved. The evidence is in captures/verify-mod-38252; at the end live mode was stopped / resources released, and EFMI stayed read-only.
 
-随后用户要求参考LoyalTools合并骨骼方式提取当前屏幕角色到E:\Endfield mods\liimo merge。2026-10-06新进程29988的56883帧确认当前为梨诺，输出目录为空。先提交此前已验证的修复和记忆，再实现当前提取任务；用户明确授权该输出路径，不修改LoyalTools/EFMI。
+The user then asked for the character currently on screen to be extracted to E:\Endfield mods\liimo merge, following LoyalTools' merged-skeleton method. On 2026-10-06, frame 56883 of the new process 29988 confirmed that the current character is Liino, and the output directory was empty. The previously verified fix and the memory were committed first, then the extraction task was implemented; the user explicitly authorized that output path, and LoyalTools/EFMI are not modified.
 
-## 2026-10-06：梨诺合并骨骼工作空间交付
+## 2026-10-06: Delivery of Liino's merged-skeleton workspace
 
-此前修复已提交6278b07。新增capture_merged_source、loyal_bridge、export CLI和Blender检查脚本，引用LoyalTools原代码不改其源码。捕获骨池offset动态，首次严格同帧尝试未通过；改按用户静态编辑目标用三份独立数据验证，未降低成“非零即通过”。147189/147435/147679三帧完整几何3,769,210字节一致，canonical来源一致；682使用骨矩阵在另两份均变化，170个跨组件带权骨/34,736通道稳定合并。
+The earlier fix was committed as 6278b07. New: capture_merged_source, loyal_bridge, the export CLI and the Blender check script, which refer to LoyalTools' original code without changing its sources. The offset of the captured bone pool is dynamic, and the first strict same-frame attempt did not pass; following the user's goal of static editing, verification was changed to three independent data sets, without lowering it to "non-zero passes". The complete geometry of 3,769,210 bytes of the three frames 147189/147435/147679 is identical, and the canonical sources agree; the 682 bone matrices in use all change in the other two samples, and 170 weighted bones across components / 34,736 channels merge stably.
 
-交付E:\Endfield mods\liimo merge：workplace、liimo merge.blend、验证JSON、preview.png与提取说明。18组件/79044顶点/94051三角、696私有组槽到512canonical；72个输出IB/VB字节核对通过。Blender4.5.7+LoyalTools1.6.7实导入errors=[]；首轮normal材质选项默认关闭导致验证失败，脚本在该临时场景显式启用normal map后通过，并选择漫反射节点作为Solid纹理显示。源几何和用户原目录不受这些验证修复影响。
+Delivered to E:\Endfield mods\liimo merge: workplace, liimo merge.blend, the verification JSON, preview.png and extraction notes. 18 components / 79044 vertices / 94051 triangles, 696 private group slots to 512 canonical; the byte check of the 72 output IB/VB passes. A real import with Blender 4.5.7 + LoyalTools 1.6.7 gives errors=[]; in the first run the material option for normals, off by default, made the verification fail, and the script passed after explicitly enabling the normal map in that temporary scene and selecting the diffuse node for the Solid texture display. Source geometry and the user's original directory are not affected by these verification fixes.
 
-预览核对完成，火箭靴等特效未重建游戏shader，2个小组件无自动贴图，均保留数据并写明边界。不含未捕获LOD、不声明某帧pose或命名层级rig。最终同步记忆并本地提交，不push。
+The preview check is complete; effects such as the rocket boots do not rebuild the game's shader, and 2 small components have no automatic texture; the data is kept in all cases and the boundaries are written down. No LOD that was not captured is included, and neither the pose of some frame nor a named hierarchical rig is claimed. Finally the memory was synced and a local commit made, without push.
 
-## 2026-10-06 晚：定位 F10 失效原因，改由探针按键（Claude 会话）
+## Evening of 2026-10-06: Cause of the F10 failure located; the probe presses the key instead (Claude session)
 
-用户反馈 Codex 实现的自动 F10 实机无效。查得 `Endfield.exe` 清单要求管理员权限，MCP 服务为普通权限，UIPI 丢弃其按键而 `SendInput` 照常返回成功。实现探针 0.1.2 的 `reload_key`（进程内固定 F10）与服务 0.1.4 的重载证据，详见 CURRENT_STATE 首节、D-012。
+The user reported that the automatic F10 implemented by Codex had no effect in the real game. It was found that the manifest of `Endfield.exe` requires administrator rights while the MCP server has ordinary rights, so UIPI drops its key presses and `SendInput` returns success as usual. Implemented `reload_key` of probe 0.1.2 (a fixed in-process F10) and the reload evidence of server 0.1.4; see the first section of CURRENT_STATE and D-012.
 
-沙盒首轮按键送达但 XXMI 未重载：`SendInput` 被系统键盘钩子拖住数毫秒，期间的 Present 被计作按住帧。改为从读到按下状态起计帧后通过；再把松开条件定为“第二个 Present 或晚于 10ms 的第一个 Present”，最终一次按键恰好一次重载。游戏占前台时沙盒取不到前台，按键类测试等用户切出游戏后才跑完。
+In the first sandbox round the key arrived but XXMI did not reload: `SendInput` was held up for a few milliseconds by the system keyboard hooks, and the Presents during that time were counted as hold frames. After counting frames from the moment the pressed state is read, it passed; then the release condition was set to "the second Present, or the first Present later than 10 ms", and in the end one key press gives exactly one reload. While the game held the foreground the sandbox could not take it, and the key-press tests finished only after the user switched away from the game.
 
-最终 DLL（SHA `a1ba4a93…2668`）全套通过并装到 `dist/efmi_probe.dll`，旧 0.1.1 存 `dist/backup-0.1.1/`。游戏 PID41976 仍在运行且仍是 0.1.1；未改 EFMI/启动器，未对用户游戏发键。
+The final DLL (SHA `a1ba4a93…2668`) passed the full suite and was installed as `dist/efmi_probe.dll`; the old 0.1.1 is kept in `dist/backup-0.1.1/`. The game PID 41976 was still running and still 0.1.1; EFMI/the launcher were not changed and no key was sent to the user's game.
 
-用户随后重启游戏、移出伊冯 mod 并要求刷新。实机一次通过：PID 43816 报告探针 0.1.2、进程 elevated（完整性 0x3000）。用户移出伊冯 mod 后由工具重载：按键在进程内发出并被读到，持续 1 帧（21696→21697），重载那一帧耗时 92.7ms（平时约 8ms）；重载前 367 次绘制中 XXMI 120 次（93 DrawIndexed + 27 Dispatch），重载后 277 次全部来自游戏，XXMI 的 93 次/18 个网格消失，游戏原始的 30 次/6 个网格出现；`reload_confirmed=true`（XXMI 在按键后创建了新帧所用的 27 个着色器）。游戏继续运行。证据 `captures/verify-reload-inprocess-43816/`。当时游戏在前台。
+The user then restarted the game, moved the Yvonne mod out and asked for a refresh. It passed at the first attempt in the real game: PID 43816 reports probe 0.1.2, process elevated (integrity 0x3000). After the user moved the Yvonne mod out, the tool reloaded: the key was pressed inside the process and was read, held for 1 frame (21696→21697), and the reload frame took 92.7 ms (about 8 ms normally); of 367 draws before the reload 120 were XXMI's (93 DrawIndexed + 27 Dispatch), after the reload all 277 came from the game, XXMI's 93 draws / 18 meshes were gone and the game's original 30 draws / 6 meshes appeared; `reload_confirmed=true` (XXMI created, after the key press, 27 shaders that the new frame uses). The game kept running. Evidence `captures/verify-reload-inprocess-43816/`. The game was in the foreground at the time.
 
-用户确认本轮及以后的 Claude 会话同样按 D-007 提交并推送。
+The user confirmed that this and later Claude sessions commit and push per D-007 as well.
 
-用户再次要求刷新时游戏在后台。同日 20:51 第二次实机，游戏在后台（前台是 Claude 窗口）：探针以 `direct` 方式取得前台，按键持续 1 帧（91844→91845，重载帧 79.8ms），随后把前台还给原窗口（前后为同一 hwnd）；移出的伊冯 mod 同样消失（XXMI 120→0 次绘制，游戏原始 30 次绘制出现），`reload_confirmed=true`。`attach_input` 这条备用取前台路径在实机上没有用到，只在沙盒验证。文档同步后提交并推送。
+When the user asked for a refresh again the game was in the background. Second real-game run the same day at 20:51, with the game in the background (the Claude window in front): the probe took the foreground by the `direct` method, the key was held for 1 frame (91844→91845, reload frame 79.8 ms), then the foreground was given back to the original window (the same hwnd before and after); the Yvonne mod that had been moved out disappeared likewise (XXMI draws 120→0, the game's original 30 draws appear), `reload_confirmed=true`. The fallback path for taking the foreground, `attach_input`, was not used in the real game and is verified only in the sandbox. Committed and pushed after syncing the documents.
 
-**下次继续**：无遗留验证项；新会话启动的 MCP 服务即为 0.1.4。
+**Next time**: no verification item is left; an MCP server started by a new session is 0.1.4.
 
-## 2026-10-07：接入模型提取、LOD 匹配、原生导出与部署核对（Claude 会话）
+## 2026-10-07: Integration of model extraction, LOD matching, native export and the deployment check (Claude session)
 
-用户要求参考计划书接入模型流程并补上 LOD 匹配的说明（帧分析目录方式、agent 采集数据同理、LoyalTools 新增的 JSON 匹配），中途强调以接入为主、LoyalTools 更新不应要求改 MCP，改完提交本地和 GitHub。
+The user asked for the model workflow to be integrated following the plan document, with the description of LOD matching added (by frame analysis directories, likewise for data captured by the agent, and the JSON matching newly added to LoyalTools); stressed midway that it should mainly be an integration, so that an update of LoyalTools does not require changing the MCP, and asked for commits both locally and to GitHub when done.
 
-实现服务 0.1.5 的七个工具和对应模块，详见 CURRENT_STATE 首节、D-014、计划书第 2.1、5、13 节。按“接入”要求改为默认使用 Blender 中已安装的插件，导出成败以产物为准，游戏内核对沿 INI 引用关联文件。离线部分用真实 LoyalTools 1.6.8 与 Blender 4.5.7 在现有工作空间的副本上验证通过；游戏本轮未运行，实时提取与部署核对未验证，文档中均已标明。
+Implemented the seven tools of server 0.1.5 and the corresponding modules; see the first section of CURRENT_STATE, D-014, and sections 2.1, 5 and 13 of the plan document. Following the "integration" requirement, the add-on installed in Blender is used by default, success or failure of an export is decided by the output, and the in-game check follows the INI references to the files. The offline part was verified with the real LoyalTools 1.6.8 and Blender 4.5.7 on a copy of an existing workspace; the game was not running in that round, so live extraction and the deployment check were not verified, which the documents state everywhere.
 
-回归：`sandbox/run_all.py` 11 步全部通过（探针自测 83、多设备 96＋96、MCP 端到端 39、重载 27＋46、模型流程 37）；`sandbox/model_offline_integration.py` 通过（伊冯工作空间的副本，导出 77 个文件，含 LOD 入口）；随后加入“编辑后再导出”，共 33 项：移动全部网格后只有 10 个顶点缓冲改变且整体平移同一向量。重启后的 MCP 服务 0.1.5 上离线调用项目查询与导出任务正常。
+Regression: all 11 steps of `sandbox/run_all.py` pass (probe self-test 83, multi-device 96 + 96, MCP end to end 39, reload 27 + 46, model workflow 37); `sandbox/model_offline_integration.py` passes (a copy of the Yvonne workspace, 77 exported files including the LOD entry points); "export again after editing" was added afterwards, 33 checks in all: after moving all meshes only 10 vertex buffers change, and all of them are translated by the same vector. On the restarted MCP server 0.1.5, offline calls of the project query and the export job work.
 
-过程中的发现：指定的 Blender 不存在时，原先会悄悄换用已知安装，已改为报错；插件导出日志保存时去掉了表情符号，不能按“✅／❌”判断；任务线程重定向 stdout 会影响同进程其他线程的 print（服务主循环不受影响，测试脚本改为写保存的控制台流）；LoyalTools 的蓝图和 INI 以工作空间根目录命名，因此项目目录取消了 `project/` 一层。
+Findings along the way: when the specified Blender does not exist, a known installation used to be substituted quietly, which is now an error; the add-on's export log is saved without the emoji, so it cannot be judged by the tick / cross marks; the job thread redirecting stdout affects print calls of other threads in the same process (the server's main loop is not affected, and the test scripts now write to the saved console stream); LoyalTools names its blueprint and INI after the workspace root directory, which is why the project directory dropped the `project/` level.
 
-**下次继续**：游戏运行且目标角色未被模组替换时，按 TASKS 中 T-008 的待办做实机验证；之后评估把探针数据写成帧分析目录格式以去掉归档适配器的内部依赖。
+**Next time**: when the game is running and the target character is not replaced by a mod, do the real-game verification listed under T-008 in TASKS; after that assess writing the probe data in the format of a frame analysis directory to remove the internal dependency of the archive adapter.
 
-## 2026-10-07（续）：编辑后再导出的离线验证；F11 开关全部 mod
+## 2026-10-07 (continued): Offline verification of exporting again after editing; F11 switch for all mods
 
-接着上一条：离线集成测试加入“在 Blender 里移动全部网格后再次导出”，伊冯副本上只有 10 个顶点缓冲改变且整体平移同一向量（提交 `c673447`）。重启后的 MCP 服务 0.1.5 上离线调用项目查询和导出任务正常。
+Continuing the previous entry: the offline integration test gained "export again after moving all meshes in Blender"; on the Yvonne copy only 10 vertex buffers change, all translated by the same vector (commit `c673447`). On the restarted MCP server 0.1.5, offline calls of the project query and the export job work.
 
-随后用户要求增加 F11，使 agent 能随时启用或禁用所有 mod 以对比原始绘制和 mod 绘制。查到 EFMI 自带 `[KeyToggleMods]`（F11 翻转 `$enable_mods`），于是让探针按这个键：探针 0.1.3 增加 `mods_key`，服务 0.1.6 增加 `efmi_toggle_mods`，状态从 EFMI 的提示文字读回。详见 CURRENT_STATE 首节、D-015、限制-005。
+The user then asked for F11 to be added so that the agent can enable or disable all mods at any time to compare the original draws with the mods' draws. EFMI turned out to have its own `[KeyToggleMods]` (F11 flips `$enable_mods`), so the probe presses that key: probe 0.1.3 adds `mods_key`, server 0.1.6 adds `efmi_toggle_mods`, and the state is read back from EFMI's notification text. See the first section of CURRENT_STATE, D-015 and LIMIT-005.
 
-验证：单元测试 22 项；私有 XXMI＋EFMI 核心副本里真实按键 25 项通过（含探针自身对绑定的两种拒绝）；`run_all.py` 12 步与真实 F10 沙盒测试对 0.1.3 通过。新 DLL 已装入 `dist`（游戏当时未运行，0.1.2 留作备份）。真实游戏未运行，F11 与模型流程的实机部分都未验证。
+Verification: 22 unit tests; 25 checks with real key presses in the private copy of XXMI + the EFMI core pass (including the probe's own two refusals concerning bindings); the 12 steps of `run_all.py` and the real-F10 sandbox test pass for 0.1.3. The new DLL is installed in `dist` (the game was not running at the time; 0.1.2 is kept as a backup). The real game was not running, so neither F11 nor the real-game part of the model workflow was verified.
 
-**下次继续**：用户重启游戏和 MCP 服务后，先做 T-009 的实机核对，再在 mod 关闭状态下做 T-008 的实机提取、导出、部署核对；结束时把 mod 恢复为开启。
+**Next time**: after the user restarts the game and the MCP server, do the real-game check of T-009 first, then, with mods off, the real-game extraction, export and deployment check of T-008; switch the mods back on at the end.
 
-## 2026-10-07 中午：实机验证 F11 与模型流程；计划书移出仓库
+## Noon of 2026-10-07: F11 and the model workflow verified in the real game; the plan document moved out of the repository
 
-用户重启游戏后要求验证，并要求不要把计划书上传 GitHub。计划书已从仓库移除并忽略（`02d116f`），README 改为自带项目布局和 LOD 说明；历史提交里仍有该文件，未改写历史。
+After restarting the game the user asked for verification, and asked that the plan document not be uploaded to GitHub. The plan document was removed from the repository and ignored (`02d116f`), and the README now carries its own project layout and LOD description; the file is still in the history of earlier commits, and history was not rewritten.
 
-F11 实机通过。验证脚本连按 4 下引起用户询问，随后加了“已知且画面相符时不按键”。用户指定提取到 `E:\Endfield mods\yvonne merge`；提取先后被三处检查拦下（CPU 姿态组件的动态顶点缓冲、会动的浮游装置、骨骼合并的末位噪声），逐一定位并修正后一次通过，结果与用户的旧工程骨骼结构一致。失败时留下的半成品目录已从用户的 mods 目录移到 `captures/verify-model-18776/failed-extraction-1`。
+F11 passed in the real game. The verification script pressing 4 times in a row made the user ask about it, after which "no key press when the state is known and the picture agrees" was added. The user named `E:\Endfield mods\yvonne merge` as the extraction target; the extraction was stopped by three checks in turn (the dynamic vertex buffer of the CPU-posed component, the floating device that moves, the last-digit noise in bone merging), each located and corrected, after which it passed in one go, with a bone structure matching the user's old project. The half-finished directories left by the failures were moved from the user's mods directory to `captures/verify-model-18776/failed-extraction-1`.
 
-用户随后要求：停用其原有伊冯 mod、部署导出、刷新查看、没问题就移除并换回；有问题先解决。共三轮（每轮都已恢复）：第一轮因取帧过早而未定，修正取帧时机；第二轮通过但有一个位置缓冲的哈希没对上且未被判定，加入按内容裁决；第三轮 40 个缓冲全部相同。导出没有发现问题。第二轮的现象指向探针区域哈希缓存在地址复用时给出旧值，未复现，记为 T-010。详见 CURRENT_STATE 首节、D-016。
+The user then asked: disable their existing Yvonne mod, deploy the export, refresh and look, remove it and switch back if there is no problem, and solve any problem first. Three rounds in all (each restored afterwards): the first was undecided because the frame was taken too early, and the timing of taking the frame was corrected; the second passed but the hash of one position buffer did not match and was not judged, so deciding by content was added; in the third all 40 buffers are identical. No problem was found with the export. The symptom of the second round points to the probe's region hash cache returning an old value when an address is reused; it was not reproduced and was recorded as T-010. See the first section of CURRENT_STATE and D-016.
 
-`run_all.py` 待游戏关闭后重跑；桌面端 MCP 服务仍是旧版，需重启。
+`run_all.py` was to be re-run after the game was closed; the MCP server of the desktop app was still the old version and had to be restarted.
 
-**下次继续**：T-010（先在沙盒复现）；T-008 的剩余项（LOD 距离、修改后的模型）。
+**Next time**: T-010 (reproduce in the sandbox first); the remaining items of T-008 (LOD distance, a modified model).
 
-## 2026-10-07 下午：复现并修正探针区域哈希缓存（T-010，探针 0.1.4）
+## Afternoon of 2026-10-07: The probe's region hash cache reproduced and fixed (T-010, probe 0.1.4)
 
-用户要求执行上午记下的疑似探针问题。先读代码确认缓存以地址为键、地址复用时写入计数相同会误判有效；给沙盒程序加了“定期销毁并按原大小重建缓冲”的选项和对应自测，0.1.3 上 180 次比对 114 次是旧哈希，复现成立。修正为缓存条目带对象序号，0.1.4 上全部相符；另加特性标记、服务端对旧探针的提示，以及部署核对对索引缓冲的按内容裁决。
+The user asked for the suspected probe problem noted in the morning to be dealt with. Reading the code first confirmed that the cache is keyed by address and that equal write counts on address reuse make an entry wrongly valid; the sandbox program got an option "destroy the buffer periodically and re-create it with the original size" with a matching self-test, and on 0.1.3, 114 of 180 comparisons gave the old hash, so the reproduction holds. The fix makes cache entries carry the object serial, and on 0.1.4 everything agrees; in addition a feature flag, a server hint for old probes, and deciding by content for index buffers in the deployment check.
 
-`run_all.py` 12 步通过（第一次运行时一个对照测试因前台是游戏窗口、按键被丢弃而失败，重跑通过）。新 DLL 已用改名法装入 `dist`，游戏当时仍在运行 0.1.3；用户问是否需要重启游戏，答复是装好后重启即可加载。实机上用未改动的 mod 做了两次重载比对，结果相符但不构成验证。详见 CURRENT_STATE 首节、BUG-005、D-017。
+The 12 steps of `run_all.py` pass (in the first run one parity test failed because the foreground was the game window and the key press was dropped; it passed when re-run). The new DLL was installed into `dist` by renaming while the game was still running 0.1.3; asked whether the game needed a restart, the answer was that a restart after installing loads it. In the real game two reload comparisons were made with an unchanged mod; the results agree but do not constitute verification. See the first section of CURRENT_STATE, BUG-005 and D-017.
 
-**下次继续**：游戏重启后确认加载的是 0.1.4（已于当日 17:20 完成，见下一节）；T-008 的剩余项（LOD 距离、修改后的模型）。
+**Next time**: confirm after a game restart that 0.1.4 is loaded (done at 17:20 the same day, see the next section); the remaining items of T-008 (LOD distance, a modified model).
 
-## 2026-10-07 17:20：重启后的游戏加载探针 0.1.4
+## 2026-10-07 17:20: The restarted game loads probe 0.1.4
 
-用户重启游戏后要求试一下。2026-10-07 17:17 用户重启游戏，新进程（PID 28408）加载了 0.1.4：状态带 `region_hash_per_object`，不再有旧探针的哈希提示。17:20 用脚本经当前服务代码核对：一次完整采集，再由工具触发两次 F10 重载（游戏在后台，探针取前台后还回，回执均为 ok），三帧各 270 个 XXMI 缓冲区域（每帧读回 46.4 MB）记录的哈希都等于读回字节的 CRC，期间没有缓冲被改写；重载均 `reload_confirmed=true`，结果不带 `hash_caution`。重载的是未改动的 mod，新旧缓冲内容相同，所以这只说明新探针在实机上采集、按键、哈希都正常，显示不出新旧探针的差别；缺陷已修正的依据仍是沙盒复现（114/180 → 0/180）。证据 `captures/verify-hashes-28408/result.json`。
+After restarting the game the user asked for a try. The user restarted the game at 17:17 on 2026-10-07, and the new process (PID 28408) loaded 0.1.4: the status carries `region_hash_per_object` and no longer has the hash hint of an old probe. At 17:20 a script checked through the current server code: one full capture, then two F10 reloads triggered by the tool (the game in the background, the probe taking the foreground and giving it back, both receipts ok); in each of the three frames the hashes recorded for 270 XXMI buffer regions (46.4 MB read back per frame) all equal the CRC of the bytes read back, and no buffer was rewritten in between; both reloads have `reload_confirmed=true` and the results carry no `hash_caution`. An unchanged mod was reloaded, so old and new buffers have the same content; this only shows that the new probe captures, presses keys and hashes normally in the real game, and cannot show the difference between the old and the new probe; the basis for the defect being fixed remains the sandbox reproduction (114/180 → 0/180). Evidence `captures/verify-hashes-28408/result.json`.
 
-游戏重启后删除了改名留下的 `dist\efmi_probe-0.1.3-loaded-by-running-game.dll`。本轮只改文档，没有代码改动。
+After the game restart, `dist\efmi_probe-0.1.3-loaded-by-running-game.dll`, left by the renaming, was deleted. That round changed documents only, no code.
 
-**下次继续**：T-008 的剩余项（LOD 距离下的入口、修改后的模型）；是否改写历史以清除旧提交里的计划书，仍等用户答复，未获同意不做（用户随后答复不用清除，见下一节）。
+**Next time**: the remaining items of T-008 (entry points at LOD distance, a modified model); whether to rewrite history to remove the plan document from old commits was still waiting for the user's answer and would not be done without consent (the user then answered that it need not be removed, see the next section).
 
-## 2026-10-07 17:39：实机补验内容改变后的重载（T-010），顺带核对修改后的模型（T-008）
+## 2026-10-07 17:39: Reload after a change of content verified in the real game (T-010), with a check of the modified model in passing (T-008)
 
-用户答复“补一下实验，不用彻底清除”：做实机补验；旧提交里的计划书保留（D-018）。
+The user answered that the experiment should be added and that complete removal is not needed: do the real-game verification; the plan document in old commits stays (D-018).
 
-在工作空间的副本上准备了两份大小相同、内容不同的导出（原样的 A、在 Blender 里整体移动顶点的 B）。不按键预检确认角色在画面里后，告知用户将按 3 次 F10，然后：停用用户的伊冯模组 → 部署 A → 部署 B → 移除并恢复。两次部署核对都通过，用户模组文件夹前后内容相同。四帧里记录的哈希都与读回的内容相符；B 的 `c0bb7cd6` Position 缓冲建在连接开始时用户模组一块同样大小缓冲的地址上，三个读取范围相同、内容不同，哈希正确——旧缺陷的触发条件在实机上出现并被 0.1.4 正确处理。相邻阶段之间没有地址复用，这一处是按“地址＋范围”回放全部四帧才找到的。详见 CURRENT_STATE 首节、BUG-005。
+Two exports of the same size with different content were prepared on a copy of the workspace (A as is, B with the vertices moved as a whole in Blender). After a pre-check without key presses confirmed that the character was in view, the user was told that F10 would be pressed 3 times; then: disable the user's Yvonne mod → deploy A → deploy B → remove and restore. Both deployment checks passed, and the content of the user's mod folder is the same before and after. The hashes recorded in the four frames all agree with the content read back; B's Position buffer of `c0bb7cd6` was created at the address of a buffer of the same size that belonged to the user's mod at the start of the connection, with the same three read ranges and different content, and the hashes are correct: the trigger condition of the old defect occurred in the real game and was handled correctly by 0.1.4. There was no address reuse between neighbouring stages; this instance was found only by replaying all four frames by "address + range". See the first section of CURRENT_STATE and BUG-005.
 
-据实机数据改正了两处“通常回到原地址”的注释；探针重建到 `dist\candidate` 并通过自测 86 项，未安装，游戏里仍是原来那份 0.1.4；重载流程单元测试 49 项通过。
+Two comments saying "usually returns to the original address" were corrected according to the real-game data; the probe was rebuilt into `dist\candidate` and passed the 86 self-test checks, was not installed, and the game still has the same 0.1.4; the 49 unit tests of the reload flow pass.
 
-**下次继续**：T-008 只剩 LOD 距离下的入口与 `efmi_map_lod method=capture`（需要用户把角色放到 LOD 距离）。
+**Next time**: of T-008 only the entry points at LOD distance and `efmi_map_lod method=capture` remain (needs the user to move the character to LOD distance).
 
-## 2026-10-07 晚：LOD 距离实机核对（T-008 完成），服务 0.1.7
+## Evening of 2026-10-07: Real-game check at LOD distance (T-008 complete), server 0.1.7
 
-用户把伊冯放到 LOD 距离（大世界）。第一次 `efmi_map_lod method=capture` 因大世界里的动态合批整帧失败；改为只归档含 GPU 蒙皮网格的对象、被重写的顶点数据一次读回、抓帧后让出探针，并先离线跑通“探针归档作为 LOD 一侧”。第二次实机一次成功：mod 关闭 5.3 秒，LoyalTools 认出 `Character 36804`，11 个组件全部匹配，与用户工程里的旧映射相比 10 个组件的 LOD 条目相同，多出 CPU 姿态组件的 LOD 网格，骨索引重映射有 7 项不同（5 项不等价，留给用户判断）。
+The user moved Yvonne to LOD distance (open world). The first `efmi_map_lod method=capture` failed for the whole frame because of dynamic batching in the open world; it was changed to archive only objects with GPU-skinned meshes, to read rewritten vertex data back in one go, and to hand the probe back after capturing, and "a probe archive as the LOD side" was first run through offline. The second real-game attempt succeeded at once: mods off for 5.3 seconds, LoyalTools recognised `Character 36804`, all 11 components matched; compared with the old mapping in the user's project the LOD entries of 10 components are the same, the LOD mesh of the CPU-posed component is additional, and 7 items of the bone index remap differ (5 of them not equivalent, left for the user to judge).
 
-LOD 入口的部署核对经用户当场同意后进行（两次询问：是否停用其模组；一次 F10 被 `focus_refused` 挡下后如何继续）。两种映射的导出都通过：游戏的 LOD 网格被替换，`Texcoord-LOD1` 和 `BlendRemap` 缓冲被使用且内容一致。用户的模组恢复原样。顺带修了部署核对里重载确认取帧过早的问题。详见 CURRENT_STATE 首节、D-019、限制-003／004。
+The deployment check of the LOD entry points was carried out after the user agreed on the spot (asked twice: whether to disable their mod; how to continue after one F10 was stopped by `focus_refused`). The exports with both mappings pass: the game's LOD mesh is replaced, and the `Texcoord-LOD1` and `BlendRemap` buffers are used with matching content. The user's mod was restored as it was. In passing, the problem of the reload confirmation taking its frame too early in the deployment check was fixed. See the first section of CURRENT_STATE, D-019, LIMIT-003 / 004.
 
-验证：单元测试 56＋50＋27＋25 项、MCP 端到端 41 项通过；探针未改动。
+Verification: unit tests 56 + 50 + 27 + 25 and the 41 MCP end-to-end checks pass; the probe was not changed.
 
-**下次继续**：模型流程没有阻塞项。可选：比 LOD1 更远的级别、大世界里的三采样提取、手工修改的模型的观感；桌面端 MCP 服务需重启才是 0.1.7。
+**Next time**: nothing blocks the model workflow. Optional: levels farther than LOD1, a three-sample extraction in the open world, the look of a manually modified model; the MCP server of the desktop app has to be restarted to be 0.1.7.
 
-## 2026-10-07 深夜：两处 LOD 映射差异的来源
+## Late night of 2026-10-07: Where the two LOD mapping differences come from
 
-用户问差异出在他的 mod 还是提取的模型上。只读检查了他已安装的 mod（不用重映射表，不碰相关组件）和旧工程 `yvonne test`（有 CPU 姿态组件的 LOD 条目），读了 LoyalTools 复用映射的规则，并做了一次蒙皮比较（近景网格按两种映射用 LOD 骨骼蒙皮，对照游戏的 LOD 网格）。结论：都不是；重映射的差异没有实际影响，缺的条目是 JSON 复用时被 LoyalTools 的检查去掉的。只改了文档。详见 CURRENT_STATE 首节、限制-004。
+The user asked whether the differences lie in their mod or in the extracted model. Read-only examination of their installed mod (it uses no remap table and does not touch the components in question) and of the old project `yvonne test` (which has the LOD entry of the CPU-posed component), a reading of LoyalTools' rules for re-using mappings, and one skinning comparison (the close-view mesh skinned with the LOD bones under both mappings, compared with the game's LOD mesh). Conclusion: neither; the remap difference has no practical effect, and the missing entry was removed by a LoyalTools check when re-using by JSON. Only documents were changed. See the first section of CURRENT_STATE and LIMIT-004.
 
-**下次继续**：没有待定事项。用户随后说明 CPU 组件从不修改（删掉、用游戏原来的），缺的那条 LOD 条目没有影响，不补；已写入 `AGENTS.md`。
+**Next time**: nothing pending. The user then explained that CPU components are never modified (deleted, the game's own are used), so the missing LOD entry has no effect and is not added; written into `AGENTS.md`.
 
-用户又问这条在 JSON 匹配时丢失是本工具的问题还是 LoyalTools 的问题：是 LoyalTools 的复用检查（`_lod_entry_problem` 的顶点组范围一条）。已用插件自己的 `apply_lod_mapping` 在内存副本上验证（LoyalTools 1.6.8）：把旧工程 `yvonne test` 的映射套回它自己去掉 LOD 的档案，同样只匹配 10／11、同样的提示；把那条 LOD 记录里的 40 项顶点组映射清空后再套，11／11 全部保留。所以与数据由谁采集无关。脚本和输出在 `captures/verify-lod-3468/remap-check/json_reuse_experiment.py`、`json-reuse-result.txt`。
+The user also asked whether losing this entry in JSON matching is a problem of this tool or of LoyalTools: it is LoyalTools' re-use check (the vertex group range item of `_lod_entry_problem`). Verified with the add-on's own `apply_lod_mapping` on in-memory copies (LoyalTools 1.6.8): applying the mapping of the old project `yvonne test` back to its own archive with the LODs removed likewise matches only 10 / 11 with the same message; after emptying the 40 vertex group mappings in that LOD record and applying again, all 11 / 11 are kept. So it does not depend on who captured the data. Script and output are in `captures/verify-lod-3468/remap-check/json_reuse_experiment.py`, `json-reuse-result.txt`.
 
-## 2026-10-08：完善清单里的 1、4、5（探针 0.1.5／服务 0.1.8）
+## 2026-10-08: Items 1, 4 and 5 of the improvement list (probe 0.1.5 / server 0.1.8)
 
-用户问对 agent 获取绘制数据还有什么值得完善，随后要求“做 1 4 5”；中间还问了桌面端的 MCP 服务怎么重启（README 已写：`/mcp` → `efmi` → Reconnect，或新开会话）和第 1 项是不是工具只能抓一帧（不是，是重载工具只取重载后的第一帧）。
+The user asked what else would be worth improving for an agent obtaining draw data, then asked for items 1, 4 and 5 to be done; in between also asked how to restart the MCP server of the desktop app (the README said: `/mcp` → `efmi` → Reconnect, or a new session) and whether item 1 meant the tool could capture only one frame (no: the reload tool takes only the first frame after the reload).
 
-完成：重载后多看几帧并返回 mod 已重新绘制的那一帧（`37db7ad`）；完整抓取记录固定管线状态、采样器、视图参数和间接绘制参数，`efmi_get_draw` 显示它们；新工具 `efmi_capture_draw_outputs` 在选中的绘制前后各拷贝一次渲染目标并报告改动。装入之前自审了一遍探针新增的代码，改了五处（按内容识别状态对象、只有深度的通道不占名额、成对预算、读完释放、索引数据已变的提示）。
+Done: looking at several more frames after a reload and returning the frame in which the mods are drawn again (`37db7ad`); a full capture records fixed pipeline state, samplers, view parameters and indirect draw arguments, and `efmi_get_draw` shows them; the new tool `efmi_capture_draw_outputs` copies the render target once before and once after each selected draw and reports the changes. Before installing, the probe's new code was reviewed once more and changed in five places (recognising state objects by content, depth-only passes taking no quota, budget in pairs, release after reading, the hint that index data has changed).
 
-验证：`run_all.py` 13 步全过（自测 143、端到端 68、新增离线单元测试 38），性能复测无退化。探针 0.1.5 已装入 `dist`（当时游戏没有运行），0.1.4 备份在 `dist\backup-0.1.4\`。
+Verification: all 13 steps of `run_all.py` pass (self-test 143, end to end 68, 38 new offline unit tests), and a performance re-test shows no regression. Probe 0.1.5 is installed in `dist` (the game was not running at the time), 0.1.4 is backed up in `dist\backup-0.1.4\`.
 
-**没有做实机验证**：游戏需要重启才会加载 0.1.5。**下次继续**：按 TASKS 的 T-011 待办在真实游戏里核对四项；先看 `efmi_status` 确认探针版本和 `features`。
+**No verification in the real game**: the game has to be restarted to load 0.1.5. **Next time**: check the four items in the real game as listed under T-011 in TASKS; look at `efmi_status` first to confirm the probe version and `features`.
 
-更正（同日）：用户照“`/mcp` → `efmi` → Reconnect”去找，桌面端的 MCP servers 对话框里 `efmi` 显示已连接，没有重连按钮（截图为证；会话的连接状态显示 `efmi` 仍是 26 个工具，即旧代码）。那是终端版 `/mcp` 的菜单；桌面端要新开会话才会启动新代码的服务。README 的安装一节已改，上一个提交 `70c0827` 里的说法作废。
+Correction (same day): following "`/mcp` → `efmi` → Reconnect", the user found that the MCP servers dialog of the desktop app shows `efmi` as connected with no reconnect button (a screenshot is the evidence; the connection state of the session shows `efmi` still with 26 tools, that is, old code). That is the menu of the terminal version's `/mcp`; the desktop app starts a server with new code only in a new session. The installation section of the README was changed, and what the previous commit `70c0827` said is void.
 
-## 2026-10-08（续）：三项完善的实机核对，服务 0.1.9
+## 2026-10-08 (continued): Real-game check of the three improvements, server 0.1.9
 
-用户重启游戏后（PID 9736，探针 0.1.5）经 MCP 工具核对：管线状态和 `efmi_capture_draw_outputs` 在大世界 4 个带 mod 的角色的画面上通过；按一次 F10 的重载正常并得到确认，但等待逻辑没有被触发。数字与细节见 CURRENT_STATE 首节。
+After the user restarted the game (PID 9736, probe 0.1.5), checked through the MCP tools: pipeline state and `efmi_capture_draw_outputs` pass on an open-world screen with 4 modded characters; the reload with one F10 press works and is confirmed, but the waiting logic was not triggered. Numbers and details are in the first section of CURRENT_STATE.
 
-实机看到后改了服务端的几处显示（主深度缓冲出图、结果按绘制分组、DDS 回退、记录耗时、混合状态合并、离屏目标颠倒和 `depth=true` 代价的说明），版本 0.1.9；离线单元测试 41、端到端 68 通过。探针未改。
+After seeing it in the real game, several presentations in the server were changed (a picture of the main depth buffer, results grouped by draw, a DDS fallback, the record time, merged blend state, notes about off-screen targets being upside down and the cost of `depth=true`), version 0.1.9; 41 offline unit tests and the 68 end-to-end checks pass. The probe was not changed.
 
-**下次继续**：没有待办。T-011 里列了两件以后顺带看的事和清单里没做的几项。桌面端要用上 0.1.9 需新开会话。
+**Next time**: nothing to do. T-011 lists two things to look at in passing some time and the items of the list that were not done. The desktop app needs a new session to use 0.1.9.
 
-## 2026-10-08（再续）：第二次 F10 与重载等待标准的修改，服务 0.1.10
+## 2026-10-08 (continued again): A second F10 and the change of the wait criterion after a reload, server 0.1.10
 
-用户同意再按一次 F10 验证“多看几帧”。把 `settle_ms` 调到 250 后，等待仍未触发，但拿到的那一帧里 XXMI 只画了 272 次（稳定后 508 次）：旧标准把“只回来一半”的帧当成了结果。据此改为等到“用到的新建对象数不再增长”，结果里多了 `mods_settled`。
+The user agreed to one more F10 to verify "looking at several more frames". With `settle_ms` set to 250 the wait was still not triggered, but in the frame obtained XXMI drew only 272 times (508 once stable): the old criterion took a frame with "only half back" for the result. It was therefore changed to wait until "the number of newly created objects in use has stopped growing", and the result gained `mods_settled`.
 
-验证：重载流程单元测试 60 项，其余离线套件通过，沙盒真实 F10 集成测试通过（`frames_looked_at=3`、`mods_settled=true`）。
+Verification: 60 unit tests of the reload flow, the other offline suites pass, and the real-F10 integration test in the sandbox passes (`frames_looked_at=3`, `mods_settled=true`).
 
-**没有做**：新标准的实机验证（这个会话的 MCP 服务是旧代码且占着探针管道）。**下次继续**：新会话里按 TASKS 的 T-011 待办做一次，需按一次 F10，先告知用户。
+**Not done**: verification of the new criterion in the real game (the MCP server of that session ran old code and held the probe pipe). **Next time**: do it once in a new session as listed under T-011 in TASKS; it needs one F10 press, so tell the user first.
 
-## 2026-10-08 下午：用户问能否准确拿到组件的贴图槽位、能否把 RabbitFX 形式的 mod 改成槽位形式
+## Afternoon of 2026-10-08: The user asked whether the texture slots of a component can be obtained exactly, and whether RabbitFX-style mods can be changed to slot style
 
-只答复，没有改代码，也没有动任何 mod。当时游戏没有运行，所以没有现场抓帧；依据是只读查看的 RabbitFX 2.7、各 mod 的 INI、EFMI 核心的 `CommandListOverrideTextures`、当天上午实机的抓取，以及 10-07 提取的伊冯工程里的 `TextureSlots.json`。查到的事实和转换时要注意的三处不等价写在 TASKS 的 T-012。
+Answers only; no code was changed and no mod touched. The game was not running at the time, so nothing was captured on the spot; the basis was read-only inspection of RabbitFX 2.7, the INI files of the mods, `CommandListOverrideTextures` of the EFMI core, the real-game captures of that morning, and `TextureSlots.json` in the Yvonne project extracted on 10-07. The facts found and the three points of non-equivalence to watch in a conversion are written under T-012 in TASKS.
 
-答复要点：槽位能准确拿到（按绘制、按遍），伊冯的槽位表现成就有；贴图绑定这部分可以转换并能在游戏里核对；G-buffer 遍、Liino 的 FX 效果、游戏更新后槽位变化这三点与 RabbitFX 不等价。
+Main points of the answer: the slots can be obtained exactly (per draw, per pass), and Yvonne's slot table is readily available; the texture binding part can be converted and checked in the game; the G-buffer pass, Liino's FX effect, and slots changing after a game update are the three points where it is not equivalent to RabbitFX.
 
-**下次继续**：等用户决定是否要转、先转哪个。重载等待新标准的实机确认（T-011）仍然待办。
+**Next time**: wait for the user to decide whether to convert, and which one first. Confirming the new wait criterion after a reload in the real game (T-011) was still to do.
 
-## 2026-10-08 15:08–15:40：按用户要求把 TangTang 的 INI 从 RabbitFX 改成槽位
+## 2026-10-08 15:08–15:40: TangTang's INI changed from RabbitFX to slots at the user's request
 
-用户点名要求改 TangTang、备份原 INI、直接改。槽位取自 RabbitFX 改写后的着色器里的回退槽位（组件 0：t13／t14；组件 2：t16／t17／t18）；原 INI 备份在同目录。F10 一次重载后核对：两个主着色遍采到的就是原来经 t70–t72 交给 RabbitFX 的那三张贴图。G-buffer 遍和组件 2 的描边现在用游戏原来的贴图，这是槽位写法本身的差别。
+The user named TangTang and asked for the original INI to be backed up and the INI changed directly. The slots come from the fallback slots in the shaders RabbitFX rewrote (component 0: t13 / t14; component 2: t16 / t17 / t18); the original INI is backed up in the same folder. Check after one F10 reload: the two lit passes sample exactly the three textures that used to be handed to RabbitFX through t70–t72. The G-buffer pass and the outline of component 2 now use the game's own textures, which is a difference inherent in the slot style.
 
-没做完：改后画面的抓取那一步之前游戏已被正常关闭（日志为正常退出，不是崩溃），所以没有改前改后的画面对比；LOD 距离也没有核对。细节和待补事项在 CURRENT_STATE 首节、TASKS 的 T-012。
+Not finished: the game had been closed normally before the step of capturing the picture after the change (the log shows a normal exit, not a crash), so there is no before/after picture comparison; the LOD distance was not checked either. Details and what remains to be done are in the first section of CURRENT_STATE and under T-012 in TASKS.
 
-顺带：这次重载跑的是 0.1.10 的新等待标准（3 帧、`mods_settled=true`）；带渲染目标拷贝的一帧的记录耗时有了实机数据。`AGENTS.md` 加了“用户点名时才可修改其模组文件、先备份”的约定。
+In passing: this reload ran the new wait criterion of 0.1.10 (3 frames, `mods_settled=true`); there is now real-game data for the record time of a frame with render target copies. `AGENTS.md` gained the rule "a file of the user's mod may be modified only when the user names it, after a backup".
 
-**下次继续**：游戏开着且 TangTang 在画面里时补 T-012 的两项核对；用户若要转别的角色，方法同上。
+**Next time**: with the game open and TangTang in view, do the two remaining checks of T-012; if the user wants other characters converted, the method is the same.
 
-## 2026-10-08 傍晚：补做 TangTang 改动的画面对比和影响范围核对
+## Early evening of 2026-10-08: Picture comparison and scope-of-effect check for the TangTang change
 
-用户重开游戏（PID 22552）。不按键补做了两项：改前改后各遍画面并排对比（主着色结果无可见差别，G-buffer 底色里身体一块换成了游戏原皮肤贴图）；留在 t13／t16 等槽位上的 mod 贴图没有被别的绘制采到（主着色遍和描边遍里没有游戏绘制还绑着它，G-buffer 遍读 t13／t14 的场景着色器绑的是自己的贴图）。
+The user reopened the game (PID 22552). Two things were done without a key press: a side-by-side comparison of the pictures of each pass before and after the change (no visible difference in the lit result; in the G-buffer base colour one patch of the body changed to the game's original skin texture); the mod textures left on slots such as t13 / t16 are not sampled by other draws (no game draw of the lit and outline passes still has them bound, and the scene shaders of the G-buffer pass that read t13 / t14 bind their own textures).
 
-**下次继续**：只剩 LOD 距离（要用户把角色放远）。
+**Next time**: only the LOD distance remains (needs the user to move the character far away).
 
-## 2026-10-08 晚：实时采集与 FrameAnalysis 全部数据的覆盖审计
+## Evening of 2026-10-08: Audit of how far live capture covers all data of a FrameAnalysis
 
-用户要求审查当前插件，目标是给定 `FrameAnalysis-2026-10-07-123937` 的全部数据可实时获取。并行审查探针、服务和实际目录：776 次调用（715 draw／61 dispatch），顶层 18,667 文件，deduped 2,767 文件；log 有 50 种 D3D API、10,953 条调用记录及 XXMI 内部命令／变量信息。用生产离线工具及独立清单核对计数。
+The user asked for the current tool to be reviewed, with the goal that all data of the given `FrameAnalysis-2026-10-07-123937` can be obtained live. Probe, server and the actual directory were reviewed in parallel: 776 calls (715 draws / 61 dispatches), 18,667 files at the top level, 2,767 files in deduped; the log has 50 kinds of D3D API, 10,953 call records and XXMI's internal command / variable information. Counts were checked with the production offline tool and an independent listing.
 
-结论：当前 full 主要记录绑定，live 只保留聚合摘要；普通资源是晚读，可选 CB 只快照绑定窗口、间接参数和选定 draw 的 RTV/DSV 有当时内容。缺通用 SRV/UAV buffer MCP 入口、动态资源版本、图形 OM UAV、完整事件／内部日志、全帧归档和完整性验收。实际 dump #550–552 的同一个 OM u0 有三份不同 BUF，#481/482 同一个 o0 也不同，证明晚读不能代替事件时刻内容。dump 自身有 810 次 TXT 创建失败、内置 t120 跳过及有损 JPG，验收要区分内容种类。另记录 BUG-006（CB 快照失败时 contents_captured 可误报）、过时的 SRV view 说明，纠正架构中“全部视口”的表述。
+Conclusion: `full` at that time mainly recorded bindings, and live keeps only aggregated summaries; ordinary resources are read late, the optional CB snapshot covers only the bound window, and indirect arguments and the RTV/DSV of selected draws have content from that moment. Missing: a general MCP entry for SRV/UAV buffers, versions of dynamic resources, graphics OM UAVs, complete events / the internal log, a whole-frame archive and completeness acceptance. In the actual dump the same OM u0 of #550–552 has three different BUFs, and the same o0 of #481/482 differs too, which proves that a late read cannot replace content from the moment of the event. The dump itself has 810 failed TXT creations, a skipped built-in t120 and lossy JPGs, so acceptance has to distinguish kinds of content. Also recorded: BUG-006 (contents_captured can be wrong when a CB snapshot fails), the outdated SRV view description, and the correction of "all viewports" in the architecture document.
 
-生产离线工具复核正确读到 776 次调用，但只识别 18,509 资源文件；独立枚举发现 157 个带 `!S!` 标记的资源文件被正则跳过，已记 BUG-007。审阅后还精确化了留存范围：旧抓取已取回的 CB／间接参数字节仍可读，只有依赖探针的普通资源限最新一次。
+The re-check with the production offline tool read 776 calls correctly but recognised only 18,509 resource files; an independent enumeration found 157 resource files with the `!S!` marker skipped by the regular expression, recorded as BUG-007. After review the retention scope was also made precise: CB / indirect-argument bytes that an old capture has already fetched stay readable, and only ordinary resources that depend on the probe are limited to the latest capture.
 
-本地服务 0.1.10 提供 27 工具，探针源码 0.1.5。AgentDock 搜索失败后用本地生产工具入口检查；无运行中的探针／游戏，本轮未采新帧、未按键、未改运行时代码或 EFMI。证据和审计脚本仅在被忽略的 `captures/audit-realtime-20261008/`。README 已补覆盖矩阵，T-013 记录目标未完成及补齐建议。文档经独立复核及 `git diff --check` 通过，审计提交为 `e68014d`。两次正常推送失败：首次连接被重置，使用 HTTP/1.1 再试时 GitHub 443 连接失败；未强制推送。提交保留本地，网络恢复后需补推。
+The local server 0.1.10 provides 27 tools; the probe sources are 0.1.5. After the AgentDock search failed, the check went through the local production tool entry point; no probe / game was running, and that round captured no new frame, pressed no key, and changed neither run-time code nor EFMI. Evidence and audit scripts are only in the ignored `captures/audit-realtime-20261008/`. The README got the coverage matrix, and T-013 records that the goal is not reached and the suggestions for closing the gaps. The documents passed an independent review and `git diff --check`; the audit commit is `e68014d`. Two normal pushes failed: the first connection was reset, and on a retry with HTTP/1.1 the connection to GitHub 443 failed; nothing was force-pushed. The commits stayed local and had to be pushed once the network was back.
 
-**下次继续**：按 T-013 确定的数据覆盖逐项补齐；保留“按需抓一帧的全部数据”与“持续每帧传全量数据”的性能区别，不能将哈希对照当作全数据验收。
+**Next time**: close the gaps item by item according to the data coverage settled in T-013; keep the performance distinction between "all data of one frame on demand" and "sending full data every frame continuously", and do not take hash parity for acceptance of all data.
 
-## 2026-10-08 深夜：T-013 第一步（服务 0.1.11）
+## Late night of 2026-10-08: First step of T-013 (server 0.1.11)
 
-用户要求按审计结果补齐，目标是基本能拿到帧分析目录里的所有类型的数据。先做不需要重启游戏的部分：`efmi_read_buffer` 支持 SRV／UAV 缓冲槽位和整块读取，结果带来源和是否确切；修正 BUG-006、BUG-007 和两处过时文字。沙盒 `mcp_test.py` 74 项通过，离线单元测试通过；游戏没开，没有实机验证，没有按键。这次推送把另一位 agent 留在本地的两个审计提交一并推上去。
+The user asked for the gaps of the audit to be closed, with the goal of getting essentially every type of data in a frame analysis directory. The part that needs no game restart came first: `efmi_read_buffer` supports SRV / UAV buffer slots and whole-buffer reads, and the result carries the source and whether it is exact; BUG-006, BUG-007 and two outdated texts were corrected. The 74 checks of the sandbox `mcp_test.py` and the offline unit tests pass; the game was not open, so no real-game verification and no key press. This push also carried the two audit commits another agent had left local.
 
-**下次继续**：探针 0.1.6（调用时刻的内容快照等，见 T-013）。
+**Next time**: probe 0.1.6 (snapshots of contents at the time of the call and so on, see T-013).
 
-## 2026-10-08 深夜：T-013 主体（探针 0.1.6／服务 0.1.12）
+## Late night of 2026-10-08: The main body of T-013 (probe 0.1.6 / server 0.1.12)
 
-实现“调用当时的内容”：探针记录时只登记版本，资源被改写之前才存旧内容（缓冲存被覆盖的那一段，贴图存子资源），读回时拼出每次调用看到的字节；补上 OM UAV、全部视口、Dispatch 之后的 UAV、三维和多重采样读回、写入列表；服务新增 `contents` 抓取选项、`efmi_list_writes`、`efmi_dump_frame`。沙盒新增内容场景，三组新测试；与私有副本 XXMI 的导出逐字节对照 404 个文件全同。`run_all.py` 16 步通过。探针 0.1.6 已装入 `dist\`（最后一次安装的 SHA256 `FFFA1315B5F16B2E…`，比提交 `288ba31` 时多了状态里的拷贝计数），0.1.5 备份在 `dist\backup-0.1.5\`。实机核对脚本备在 `captures\t013-contents-20261008\live_check.py`，已对沙盒跑通。
+Implemented "contents as they were at the call": while recording, the probe only registers versions and stores old content just before a resource is rewritten (for a buffer the stretch that is overwritten, for a texture the subresource), and on read-back it pieces together the bytes each call saw; added OM UAVs, all viewports, UAVs after a Dispatch, 3D and multisampled read-back, and the write list; the server got the `contents` capture option, `efmi_list_writes` and `efmi_dump_frame`. The sandbox got a contents scene and three new test groups; the byte-for-byte comparison with the dump of the private XXMI copy shows all 404 files identical. The 16 steps of `run_all.py` pass. Probe 0.1.6 is installed in `dist\` (SHA256 of the last installation `FFFA1315B5F16B2E…`, which has the copy counters in the status in addition to commit `288ba31`), 0.1.5 is backed up in `dist\backup-0.1.5\`. A real-game check script is prepared in `captures\t013-contents-20261008\live_check.py` and has been run against the sandbox.
 
-用户中途要求测试窗口开在副屏：沙盒已改，并写进 `AGENTS.md`。
+Midway the user asked for test windows to open on the secondary screen: the sandbox was changed, and this was written into `AGENTS.md`.
 
-游戏没开：没有实机验证，没有按键。
+The game was not open: no real-game verification, no key press.
 
-**下次继续**：用户启动游戏后做 T-013 的实机核对（CURRENT_STATE 首节列了项目）；MCP 服务要重启才用上 0.1.12。
+**Next time**: do the real-game check of T-013 after the user starts the game (the first section of CURRENT_STATE lists the items); the MCP server has to be restarted to use 0.1.12.
 
-## 2026-10-09 早：服务 0.1.13（改绑列表、只留缓冲的一档）
+## Early morning of 2026-10-09: Server 0.1.13 (list of rebinds, a level that keeps buffers only)
 
-只动服务端：`contents=buffers`；`efmi_list_writes bindings=true` 和导出日志里的 `bind` 行，列出每次调用相对上一次同类调用改绑了什么（比较得出，不是记录的 Set* 调用）。离线 33 项、沙盒端到端 102 项、全套 16 步通过。游戏没开，没有实机验证，没有按键。
+Server side only: `contents=buffers`; `efmi_list_writes bindings=true` and the `bind` lines of the export log, which list what each call has bound differently from the previous call of its kind (obtained by comparison, not recorded Set* calls). 33 offline checks, 102 sandbox end-to-end checks and all 16 steps of the full suite pass. The game was not open: no real-game verification, no key press.
 
-**下次继续**：用户启动游戏后跑 `captures\t013-contents-20261008\live_check.py` 做 T-013 的实机核对。
+**Next time**: after the user starts the game, run `captures\t013-contents-20261008\live_check.py` for the real-game check of T-013.
 
-## 2026-10-09 上午：沙盒补齐其余写入路径；T-013 实机核对
+## Morning of 2026-10-09: The remaining write paths covered in the sandbox; real-game check of T-013
 
-沙盒的内容场景加了 `ClearView`、`DiscardView`、`DiscardResource`、`UpdateSubresource1`、`CopySubresourceRegion1` 和两种 UAV 清除（37 次调用，`contents_test.py` 73 项）；与 XXMI 导出的对照变为 42 次调用、546 个缓冲／贴图文件和 223 个文本文件，全部相同（提交 `5116ff9`）。
+The contents scene of the sandbox got `ClearView`, `DiscardView`, `DiscardResource`, `UpdateSubresource1`, `CopySubresourceRegion1` and two kinds of UAV clears (37 calls, 73 checks in `contents_test.py`); the comparison with XXMI's dump now covers 42 calls, 546 buffer / texture files and 223 text files, all identical (commit `5116ff9`).
 
-用户 08:00 开了游戏（加载探针 0.1.6）。只读、不按键，做了 T-013 的实机核对：图形绘制的 UAV 可见，同一个 `u0` 被 12 次连续绘制改写、各次内容都留住；`buffers`／`inputs` 两档各拷约 206／624 MiB、帧率看不出变化，`outputs` 之后第一个 0.25 秒从约 70 帧掉到 60；蒙皮绘制的缓冲、8192² 贴图、IniParams 读回均为调用当时；写入列表 688 条；导出 6 次调用 0.5 秒。结果在 `captures\t013-contents-20261008\`。
+The user opened the game at 08:00 (it loaded probe 0.1.6). Read-only and without key presses, the real-game check of T-013 was done: UAVs of graphics draws are visible, the same `u0` is rewritten by 12 consecutive draws and the content of each is kept; the levels `buffers` / `inputs` copy about 206 / 624 MiB each with no visible change of the frame rate, and in the first 0.25 seconds after `outputs` it drops from about 70 to 60 frames; the buffers of a skinned draw, an 8192² texture and IniParams all read back as from the time of the call; the write list has 688 entries; exporting 6 calls takes 0.5 seconds. Results in `captures\t013-contents-20261008\`.
 
-**下次继续**：T-013 没有欠账了（实机上与 XXMI 导出的逐字节对照需要按它的帧分析键，未授权，沙盒里已做）。TangTang 的 LOD 距离仍待用户把角色放远时看。
+**Next time**: T-013 owes nothing any more (a byte-for-byte comparison with XXMI's dump in the real game needs its frame analysis key, which is not authorized; done in the sandbox). TangTang's LOD distance is still to be looked at when the user moves the character far away.
 
-## 2026-10-09 08:29–08:32：用户要求实测最新的数据捕获能力
+## 2026-10-09 08:29–08:32: The user asked for a live test of the latest capture capabilities
 
-重新连接真实游戏 PID 27452，探针实际为 0.1.6、服务使用当前磁盘 0.1.13 的生产处理器。证据写到新的 `captures/live-capture-20261009-0828/`，不复用早上的结果。截图确认大世界角色场景；全程无输入、无窗口／焦点操作、无注入／重启、EFMI 和模组只读。
+Reconnected to the real game PID 27452; the probe actually is 0.1.6, and the server used the production handlers of the current 0.1.13 on disk. Evidence was written to the new `captures/live-capture-20261009-0828/` without reusing the morning's results. A screenshot confirms an open-world scene with characters; throughout no input, no window / focus operation, no injection / restart, and EFMI and mods read-only.
 
-三档抓取与延迟读回、图形 UAV 各次输出、8192² 贴图、IniParams、写入／改绑、6 次调用导出和资源释放均通过。`buffers`／`inputs`／六次调用 `outputs` 的保留拷贝量稳定为 203.4／609.3／663.0MiB，记录耗时 4.99／5.15／5.59ms，无内容丢失。输出限定范围与场景波动应一并保留，不能当全帧输出性能结论。
+The three capture levels with delayed read-back, the outputs of each graphics UAV draw, an 8192² texture, IniParams, writes / rebinds, the export of 6 calls and the release of resources all pass. The kept copy volume of `buffers` / `inputs` / `outputs` of six calls is stable at 203.4 / 609.3 / 663.0 MiB, the record time 4.99 / 5.15 / 5.59 ms, with no content lost. The limited scope of the outputs and the fluctuation of the scene have to be kept in mind; this is not a conclusion about the performance of outputs for a whole frame.
 
-另外抓帧 132830，用真实 XXMI 绘制的绑定读完整缓冲：四个角色模组的 76 个资源（16 IB、60 VB，104,470,324 字节）与只读源 BUF 逐字节相同，全部 `source=contents`／exact。角色骨骼池 379,392 字节隔一秒重复读回不变，而晚读内容已变，直接证实旧帧内容的保留。结果见 `character-report.json`，管线状态和 VS／PS 反汇编也已保存。
+In addition frame 132830 was captured and complete buffers were read through the bindings of real XXMI draws: 76 resources of four character mods (16 IB, 60 VB, 104,470,324 bytes) are byte-identical to the read-only source BUFs, all `source=contents` / exact. The character bone pool of 379,392 bytes read back twice one second apart is unchanged, while the late-read content has changed, which directly confirms that the content of the old frame is kept. Results in `character-report.json`; pipeline state and VS / PS disassembly were saved as well.
 
-临时验收脚本对导出区间字段类型判断失误中断一次，已修正并从已保存证据继续，首轮报告保留；无产品问题或代码修复。最终 16 类采集检查通过，导出目录由本项目读取器读回 6 次调用／84 个槽位。最终释放并断开，游戏继续运行。未做实机原生 XXMI 帧分析对照、整帧全资源导出或特殊资源场景；TangTang LOD 任务范围不变。
+The temporary acceptance script stopped once because it misjudged the type of the export range field; it was corrected and continued from the saved evidence, and the report of the first run is kept; no product problem and no code fix. In the end 16 kinds of capture checks pass, and the export directory was read back by this project's reader with 6 calls / 84 slots. Finally everything was released and disconnected, and the game kept running. Not done: a comparison with native XXMI frame analysis in the real game, an export of all resources of a whole frame, or special resource scenarios; the scope of the TangTang LOD task is unchanged.
 
-同步当前状态、任务和本日志；本轮仅提交／推送测试记录，捕获和游戏资源保持忽略，计划书不纳入。推送前发现本地 `main` 已有未推送的动画提交 `824079e`，保持其原状；本轮记录从 `origin/main` 建独立分支 `codex/live-capture-verification-20261009` 后推送，避免连带发布旧提交。Git 完成状态以实际提交／推送结果为准。
+Current state, tasks and this log were synced; that round committed / pushed only test records, with captures and game assets ignored and the plan document left out. Before pushing, an unpushed animation commit `824079e` was found on the local `main` and left as it was; the records of that round were pushed on a separate branch `codex/live-capture-verification-20261009` created from `origin/main`, to avoid publishing the old commit along with them. The actual commit / push result is authoritative for the Git state.
 
-## 2026-10-09 下午：RabbitFX 写法的角色头发粗描边
+## Afternoon of 2026-10-09: Thick hair outline on characters with RabbitFX-style mods
 
-用户报告用 RabbitFX 标记贴图的角色头发有一层粗描边，屏上角色（`Typhoeus Luxuria 1.2 alpha`）就有。只读调查：抓帧、读头发各遍的绑定和状态、取着色器反汇编、读 RabbitFX.ini 的匹配式。头发描边是外扩外壳，预写遍写深度并写黑，上色遍在深度相等处盖上“漫反射 × 0.45”。RabbitFX 2.7 的主匹配式把上色着色器的第一个采样（透明度测试的遮罩）当成漫反射、第二个（漫反射）当成法线，所以绑了 RabbitFX 贴图后透明度测试用的是漫反射的 R、颜色用的是法线贴图，大部分外壳没被上色，留下黑色。
+The user reported that the hair of characters whose textures are bound through RabbitFX has a thick outline layer, and that the character on screen (`Typhoeus Luxuria 1.2 alpha`) had it. Read-only investigation: captures, the bindings and state of each pass of the hair, shader disassembly, the patterns of RabbitFX.ini. The hair outline is an extruded hull; the prepass writes depth and black, and the colour pass covers it at equal depth with "diffuse × 0.45". The main pattern of RabbitFX 2.7 takes the first sample of the colour shader (the mask of the alpha test) for the diffuse and the second (the diffuse) for the normal map, so with RabbitFX textures bound the alpha test uses the red channel of the diffuse and the colour uses the normal map; most of the hull is not coloured and black remains.
 
-验证：按顶点 UV 取贴图算出只有 15.4% 能通过；画面实测 5140 像素的外壳只上色 825（16%）；F11 关掉 mod（同一个头发、同一批着色器、不绑 `t70`）是 4642／4569。F11 共按 2 次，事前告知，结束时为开启。用探针里留着的改写前着色器离线重放 RabbitFX 的匹配式，复现了认错的两行；候选改法（只动 `head` 组）在两个头发描边着色器上改对、另外 8 个着色器不变。实机未验证，RabbitFX.ini 和模组都没有动。
+Verification: sampling the textures at the vertex UVs gives only 15.4% passing; measured on the picture, only 825 (16%) of 5140 hull pixels are coloured; with mods off through F11 (the same hair, the same shaders, `t70` not bound) it is 4642 / 4569. F11 was pressed 2 times in all, announced beforehand, and mods were on at the end. Replaying RabbitFX's pattern offline on the shaders from before the rewrite, which the probe keeps, reproduced the two wrongly assigned lines; a candidate change (touching only the `head` group) assigns the two hair outline shaders correctly and leaves 8 other shaders unchanged. Not verified in the real game; neither RabbitFX.ini nor a mod was touched.
 
-顺带得到：探针报的改写后哈希可以用 `ShaderCache\<原始哈希>-ps_regex.bin` 的 FNV 对回 XXMI 的原始哈希，原始着色器探针里也取得到。记入 KNOWN_ISSUES 和 T-014，未实现。
+Found along the way: the hash after rewriting that the probe reports can be mapped back to XXMI's original hash through the FNV of `ShaderCache\<original hash>-ps_regex.bin`, and the original shaders can be had from the probe too. Recorded in KNOWN_ISSUES and T-014, not implemented.
 
-证据在被忽略的 `captures/rabbitfx-hair-outline-20261009/`（脚本、对比图）和 `captures/shaders/`。本轮只更新记录。本地 `main` 仍带着未推送的无关提交 `824079e`，本轮记录照前一轮的做法另行推送，不连带发布它；Git 结果以实际提交／推送为准。
+Evidence in the ignored `captures/rabbitfx-hair-outline-20261009/` (scripts, comparison pictures) and `captures/shaders/`. That round only updated records. The local `main` still carried the unrelated unpushed commit `824079e`, so the records were pushed separately as in the previous round, without publishing it; the actual commit / push result is authoritative for Git.
 
-## 2026-10-09 傍晚：在 Typhoeus 的 mod 里修好头发描边
+## Early evening of 2026-10-09: The hair outline fixed inside the Typhoeus mod
 
-用户的决定：“不改rabbitfx,改mod的ini,然后你这样改，这部分代码单独写一个ini”。先备份 `Typhoeus.ini`，在 mod 目录新增 `RabbitFX_HairOutlineFix.ini`，主 INI 只把头发段调用 RabbitFX `SetTextures` 的那一行换成调用新 INI 的同名命令列表。
+The user's decision: do not change RabbitFX, change the mod's INI, and put this part of the code into an INI of its own. `Typhoeus.ini` was backed up first, a new `RabbitFX_HairOutlineFix.ini` was added to the mod folder, and in the main INI only the line of the hair section that calls RabbitFX's `SetTextures` was changed to call the command list of the same name in the new INI.
 
-写法取自一个事实：显式 `[ShaderOverride]` 的 `filter_index` 压过 ShaderRegex 的标记（查了 3DMigoto 的 `ShaderRegex.cpp`；这个 mod 的 `Typhoeus_Interaction.ini` 注释里也提到）。给两个认错的着色器单独的编号，RabbitFX 自己就不再往那一遍放贴图；新命令列表再把漫反射绑到改写后的着色器取描边颜色的 `t72`，绘制后清掉。原先设想的按顶点着色器认遍数的写法分不开两个上色变体，没有用。
+The approach rests on one fact: the `filter_index` of an explicit `[ShaderOverride]` beats the tag of a ShaderRegex (looked up in 3DMigoto's `ShaderRegex.cpp`; a comment in this mod's `Typhoeus_Interaction.ini` mentions it too). With numbers of their own for the two wrongly assigned shaders, RabbitFX itself no longer puts textures into that pass; the new command list then binds the diffuse to `t72`, where the rewritten shader reads the outline colour, and clears it after the draw. The approach first imagined, recognising the pass by the vertex shader, cannot separate the two colour variants and was not used.
 
-F10 一次（事前告知）后实测：上色遍 `t70` 空、`t72` 是头发漫反射，下一次绘制已清；外壳 5100 像素上色 5039；其他遍照旧；头发漫反射没有漏到别的绘制。没实测的：第二个变体、换发色、LOD、其他角色。这个 INI 对别的 RabbitFX 角色的头发描边也生效（不再发黑，颜色取游戏原贴图），已告知用户。
+Measured after one F10 (announced beforehand): in the colour pass `t70` is empty and `t72` is the hair diffuse, cleared by the next draw; 5039 of 5100 hull pixels are coloured; the other passes are as before; the hair diffuse does not leak into other draws. Not tested live: the second variant, changing the hair colour, LOD, other characters. This INI also acts on the hair outline of other RabbitFX characters (no longer black, colour from the game's original texture), which the user was told.
 
-只更新记录，产品代码没有改。Git 同上一节：本地 `main` 仍带未推送的无关提交，记录另行推到分支。
+Only records were updated; the product code was not changed. Git as in the previous section: the local `main` still carried the unrelated unpushed commit, and the records were pushed to a branch separately.
 
-## 2026-10-09 傍晚：本地 `main` 去掉无关提交，恢复正常推送
+## Early evening of 2026-10-09: The unrelated commit removed from the local `main`; normal pushing restored
 
-用户决定：“从本地 main 去掉再正常推”。本地 `main` 原来是 `acb0ad4` 之后接着无关的 `824079e`（pelican 动画）和三次记录提交；远端分支 `claude/rabbitfx-hair-outline-20261009` 上是同样三次记录、但不含 `824079e`，两者的文件只差 `pelican-bicycle.html`。把本地 `main` 指到那条线的末端 `1188552`（工作区文件没有动，原先“已删除未暂存”的 `pelican-bicycle.html` 随之不再出现），然后普通推送，`origin/main` 从 `acb0ad4` 快进到 `1188552`，没有强推。`824079e` 现在不在任何分支上。
+The user's decision: remove it from the local main and then push normally. The local `main` consisted of `acb0ad4` followed by the unrelated `824079e` (a pelican animation) and three record commits; the remote branch `claude/rabbitfx-hair-outline-20261009` had the same three record commits without `824079e`, and the files of the two differed only by `pelican-bicycle.html`. The local `main` was pointed at the tip of that line, `1188552` (the files of the working tree were not touched, and `pelican-bicycle.html`, formerly "deleted, not staged", no longer shows up), then pushed normally; `origin/main` fast-forwarded from `acb0ad4` to `1188552`, without a force push. `824079e` is on no branch any more.
 
-远端的 `codex/live-capture-verification-20261009` 和 `claude/rabbitfx-hair-outline-20261009` 的内容都已在 `main` 里；随后用户说“删”，两个远端分支和本地同名的 `codex/…` 分支都已删除（删前确认过都是 `origin/main` 的祖先），远端现在只有 `main`。此后照常在 `main` 上提交并推送。
+The contents of the remote `codex/live-capture-verification-20261009` and `claude/rabbitfx-hair-outline-20261009` are all in `main`; the user then said to delete them, and both remote branches and the local `codex/…` branch of the same name were deleted (after confirming that both were ancestors of `origin/main`); the remote now has only `main`. From here on, commits and pushes go to `main` as usual.
 
-## 2026-10-09 晚：回答本 MCP 能否用于绝区零／ZZMI
+## Evening of 2026-10-09: Answering whether this MCP can be used for Zenless Zone Zero / ZZMI
 
-只读检查用户指定的 `D:\XXMI-Launcher-Portable-v2.1.6\ZZMI`。两份 XXMI DLL 版本与 SHA256 完全相同，探针没有 Endfield 进程名限制，基础 D3D11 采集可望复用；但目前无绝区零实测。看到 ZenlessZoneZero PID 18692，探针管道列表为空；没有注入、按键、重启或更改安装配置。
+Read-only examination of `D:\XXMI-Launcher-Portable-v2.1.6\ZZMI`, named by the user. The two XXMI DLLs have exactly the same version and SHA256, and the probe has no restriction to the Endfield process name, so basic D3D11 capture can be expected to be reusable; but there is no test in Zenless Zone Zero so far. ZenlessZoneZero PID 18692 was seen, and the list of probe pipes was empty; nothing was injected, no key pressed, nothing restarted and no installation configuration changed.
 
-用生产代码跑了只读 mod 扫描与按键配置预检：扫描规则正常（0 活动 mod），F10 两条绑定满足要求；模组开关因代码固定 EFMI 的路径／F11 而拒绝，ZZMI 实际为 F6／$costume_mods。另查明 track_region_hashes=0 与工具默认区域 hash 的呈现／匹配差异；LoyalTools 模型流程仍依赖 EFMI 布局与 merged-skeleton 工程。结论及范围同步 CURRENT_STATE／TASKS／KNOWN_ISSUES。用户只询问能力，未实施适配。仅更新项目记忆，原有未跟踪的 `pelican-bicycle.html` 未动。
+The production code was used for a read-only mod scan and the key configuration pre-check: the scan rules work (0 active mods), and the two F10 bindings meet the requirement; the mod switch refuses because the code fixes EFMI's paths / F11, while ZZMI actually uses F6 / $costume_mods. Also established: the difference between track_region_hashes=0 and the tool's default presentation / matching by region hash; the LoyalTools model workflow still depends on EFMI's layout and the merged-skeleton project. Conclusions and scope were synced to CURRENT_STATE / TASKS / KNOWN_ISSUES. The user only asked about the capability, and no adaptation was implemented. Only the project memory was updated; the existing untracked `pelican-bicycle.html` was not touched.
 
-用户随后问“区域 hash 是什么”：核对 `hashes.py` 的 `index_region`／`vertex_region` 与探针范围裁剪，按“共享大缓冲中的一段数据”说明，与整资源标识区分；IB 范围精确，indexed VB 的哈希范围遵循 XXMI 的估算规则。参考上游 XXMI 区域哈希发布说明及 ZZMI 配置，未做游戏操作或代码／配置修改。
+The user then asked what a region hash is: `index_region` / `vertex_region` of `hashes.py` and the range clipping of the probe were checked, and it was explained as "one stretch of data in a shared large buffer", as distinct from an identifier of the whole resource; the IB range is exact, and the hash range of an indexed VB follows XXMI's estimation rule. The upstream release notes on XXMI region hashes and the ZZMI configuration were consulted; no game operation and no code / configuration change.
 
-## 2026-10-10：发布首个带 DLL 的 GitHub Release
+## Ardelia: the ribbons at both sides made translucent (2026-10-10; the mod changed at the user's request, with automatic refresh)
 
-用户要求在 GitHub 发布带 DLL 的版本。已将 README 的 Release 安装说明提交为 `77c1dfd` 并同步 main，发布正式 Latest `v0.1.13`，tag 精确指向该提交：[Release](https://github.com/loyal37/EFMI-MCP/releases/tag/v0.1.13)。服务 0.1.13／探针 0.1.6；复用此前实机验证且校验值相同的 DLL，没有产品代码或探针构建变化。
+The user pointed at the black ribbons on screen and asked the agent to refresh and look at the effect itself. A matching HLSL / INI pair was added to the Ardelia mod, and the main INI, after a backup that is not loaded, was hooked in only three places. Capturing draw by draw showed that the background is drawn after the clothes, so it was changed to render with a private material and composite after the scene copy; all five normal F10 presses were confirmed, and the pixel / depth / motion / state restore checks at 50% and the comparison with the unchanged original at 100% pass. After the user pointed out that 50% was too transparent it was set to 85%, and the screenshot of the final frame 134483 was looked at. Evidence, boundaries and how to restore are in the first section of CURRENT_STATE and in the notes in the mod's Ribbons folder. The MCP product code is unchanged; game assets and captures do not go into the repository.
 
-附件为 Windows x64 完整包（含 Python 服务／四个运行辅助脚本／两个 DLL／中文快速开始／BUILD_INFO／内部校验）、独立 `efmi_probe.dll`、`efmi_crc32c.dll` 和 `SHA256SUMS.txt`。从确定的 Git 提交取源码打包，不包含工作区未提交内容、捕获、游戏资源或本地计划书。使用暂存探针完成 selftest 143／contents 73／MCP 102 项及 CRC 8 项回归；解压后校验、Python 编译和 stdio 初始化／29 工具／ping 通过。发布后下载四个附件与本地逐字节相同，GitHub digest、清单、tag、Latest 与发布状态核对通过。证据 `captures/release-v0.1.13-20261010/release-verification.json`，其余测试日志同目录。
+## 2026-10-10: Ardelia's arm accessories made translucent as well
 
-Git 传输失败，使用 Git Data API 上传精确相同的 Git 对象，并以 `force=false` 快进 main；未覆盖远端历史。本轮开始已有的艾尔黛拉记忆改动保留，只暂存本轮发布记录。没有操作用户游戏或安装目录，也没有新增实机验证；发布说明明确 ZZMI 尚未适配／实测。发版已完成。
+The user asked for the accessories at both sides shown in a picture to be translucent in the same way. After isolating draw by draw in the running game, the upper-arm frills 63336/275721 and the wrist bows 70608/339057 were selected, each containing the left and right side. The main INI got two more hook points, and the transparency INI was extended with the selected meshes and display conditions, sharing the 85% default and Ctrl+T; the HLSL needed no change, and the original display switches are kept. Backups that are not loaded were made of both INI files and the notes first. One F10 in that round, reload confirmed / settled, and the actual screenshot of the equipment screen was looked at; the independent frame 201641 confirms the shading of both groups, zero modification outside the coverage, unchanged depth / motion, and restored temporary slots. Evidence in captures/transparency-20261010/hand-accessories/; the notes include how to undo only the accessory extension. The MCP product code was not changed; the open world / LOD / several instances are not verified.
+
+## 2026-10-10: The first GitHub release with DLLs published
+
+The user asked for a version with DLLs to be published on GitHub. The release installation notes of the README were committed as `77c1dfd` and synced to main, and the official Latest `v0.1.13` was published with the tag pointing exactly at that commit: [Release](https://github.com/loyal37/EFMI-MCP/releases/tag/v0.1.13). Server 0.1.13 / probe 0.1.6; the DLLs verified in the real game before are reused with identical checksums, with no change to product code or the probe build.
+
+The assets are the complete Windows x64 package (with the Python server / four run-time helper scripts / two DLLs / a quick-start guide / BUILD_INFO / internal checksums), the separate `efmi_probe.dll`, `efmi_crc32c.dll` and `SHA256SUMS.txt`. The package was built from the sources of a definite Git commit and contains no uncommitted content of the working tree, no captures, no game assets and not the local plan document. With the staged probe, the regressions selftest 143 / contents 73 / MCP 102 and the 8 CRC checks were completed; after unpacking, the checksum verification, Python compilation and stdio initialisation / 29 tools / ping pass. After publication the four downloaded assets are byte-identical to the local ones, and the GitHub digests, manifest, tag, Latest and release state were checked. Evidence `captures/release-v0.1.13-20261010/release-verification.json`, with the other test logs in the same directory.
+
+Git transport failed, so exactly the same Git objects were uploaded with the Git Data API and main fast-forwarded with `force=false`; remote history was not overwritten. The Ardelia memory changes that existed at the start of that round were kept, and only the release records of that round were staged. The user's game and installation directories were not operated on, and no new real-game verification was added; the release notes state that ZZMI is not adapted / tested yet. The release is complete.
+
+## 2026-10-11: Repository documents rewritten
+
+At the user's request the README, `AGENTS.md` and the seven memory files were rewritten in their entirety, keeping every fact, number, hash, path and date; `AGENTS.md` now states that everything in the repository is written in English, and that a string which has to match text another tool produces in a different script is spelled with `\u` escapes. Limits are now numbered `LIMIT-00N`. The uncommitted record edits of 2026-10-10 about the Ardelia mod were in the working tree and went in with the rest.
+
+Three source files were adjusted accordingly without changing behaviour (`scripts/export_mod_blender.py`, `sandbox/mods_toggle_test.py`, one help text in `server/efmi_mcp/tools.py`). Compileall, six offline unit test scripts (25 + 56 + 33 + 41 + 60 + 27 checks) and `sandbox/mcp_test.py` (102 checks) pass. The probe was not rebuilt; the real game was not involved and no key was pressed.
+
+The notes of release v0.1.13 on GitHub were rewritten as well; its assets were not touched. Earlier commits and the local-only plan document stay as they are.
+
+**Next time**: nothing pending from this round. Open items are unchanged: the LOD distance for TangTang (T-012), the other RabbitFX-style mods and the hash mapping for rewritten shaders (T-014), and ZZMI adaptation if the user asks for it.

@@ -1,178 +1,178 @@
-# EFMI MCP — 已知问题
+# EFMI MCP — Known issues
 
-> 最后更新：2026-10-09。
+> Last updated: 2026-10-09.
 
-## 限制-009：不能把 EFMI 全套工具原样当作 ZZMI 支持（2026-10-09 只读评估）
+## LIMIT-009: The EFMI tool set cannot be taken as ZZMI support as it stands (read-only assessment of 2026-10-09)
 
-- 通用探针工作在 D3D11 层，本机 EFMI／ZZMI 的 XXMI 1.2.2 DLL 相同，但没有绝区零注入／采集证据。`--efmi-root` 只配置服务的安装根，不负责加载探针，也不筛选自动连接的进程；多个游戏同时带探针时需要明确选择目标。
-- ZZMI 配置 `track_region_hashes=0`；目前 `Capture.draw()` 的 IB／VB `hash` 仍为绘制区域 CRC、另有 `resource_hash`。默认摘要／模组匹配依赖区域 hash，不能未经适配将它当作 ZZMI 的 INI hash。资源字节是否可读取与 INI hash 是否一致是两个验收项。
-- ZZMI 开关在 `Core/ZZMI/main.ini`，F6 修改 `$costume_mods`；现有服务与探针检查 EFMI 的路径／F11／命令列表及通知资源，直接调用会被预检拒绝。F10 配置预检通过不等于重载已实机验证。
-- 高级模型入口依赖 EFMI 的 VS t0／实例 CB／merged-skeleton 与 LoyalTools 对应规则；绝区零需要独立适配，不能仅改安装路径后承诺完整角色与骨架导出。
+- The general probe works at the D3D11 level, and the XXMI 1.2.2 DLLs of the local EFMI / ZZMI are the same, but there is no evidence of injection / capture in Zenless Zone Zero. `--efmi-root` only configures the installation root of the server; it neither loads the probe nor filters the process that is connected to automatically; when several games carry a probe at the same time the target has to be chosen explicitly.
+- The ZZMI configuration has `track_region_hashes=0`; at present the `hash` of IB / VB in `Capture.draw()` is still the CRC of the drawn region, with a separate `resource_hash`. The default summaries / mod matching depend on the region hash, which cannot be treated as ZZMI's INI hash without adaptation. Whether resource bytes can be read and whether they agree with the INI hash are two separate acceptance items.
+- ZZMI's switch is in `Core/ZZMI/main.ini`; F6 changes `$costume_mods`. The existing server and probe check EFMI's paths / F11 / command lists and notification resources, so a direct call is refused by the pre-check. The F10 configuration pre-check passing does not mean a reload has been verified in the real game.
+- The advanced model entry points depend on EFMI's VS t0 / instance CB / merged skeleton and the corresponding LoyalTools rules; Zenless Zone Zero needs its own adaptation, and complete character and skeleton export cannot be promised after merely changing the installation path.
 
-## 限制-008：调用当时的内容（探针 0.1.6）的边界
+## LIMIT-008: Boundaries of contents as they were at the call (probe 0.1.6)
 
-- **验证范围**：与 XXMI 自己的导出逐字节一致是在沙盒里验的；实机（2026-10-09）核对的是功能和量——UAV 可见、连续绘制的内容各自留住、读回标为调用当时、三档的拷贝量和帧率（CURRENT_STATE）。实机上没有与 XXMI 的导出对照过（要按它的帧分析键）。
-- `NO_OVERWRITE` 的 Map 不另起版本：调用读到的字节确切，它没读的部分可能带着之后追加的数据。XXMI 的导出在这种位置上是当时的字节，所以整块逐字节对比时会不同；对照测试用协议里的 `strict` 选项（放行前等 GPU 做完拷贝，慢，MCP 工具未开放）。
-- 贴图每个绑定只保留视图的第一个 mip／切片；多重采样只有解析后的颜色，多重采样深度和“无类型且没有视图说明格式”的多重采样贴图读不了。
-- 沙盒没有走到的两个钩子：`DiscardView1`、`SwapDeviceContextState`（都只是转发后做与其他钩子相同的通知；签名由编译器按虚表成员类型核对）。
-- 看不到的写入：deferred command list（执行后原地读的内容标 `exact=false`）、视频解码／处理器、别的设备经共享句柄写入、tiled resource 的更新。这些情况下保留的内容可能悄悄不对。
-- 拷贝发生在游戏改写被引用资源的时候，多数在抓取之后的几帧；占游戏进程的内存（预算默认 1024 MiB，机器空闲内存低于 2 GiB 时停拷）。超预算的项读取时报错。实机（大世界，2560×1600）的量：`buffers` 约 206 MiB、`inputs` 约 624 MiB，另加选中调用的输出；`outputs` 之后的第一个 0.25 秒里帧率从约 70 掉到 60，单帧卡顿没有细量。
-- 一次只保留一次抓取的内容；任何一次新的显式抓取（包括重载流程里的轻量抓取）开始时就放掉上一次的。
-- `efmi_dump_frame`：调用编号是抓取的（从 0 起，含 mod 的绘制），不是 XXMI 的；常量缓冲的 TXT 在缓冲大于 64 KiB 时只写绑定的寄存器（XXMI 写整块）；按实例步进的顶点流的 TXT 没有与 XXMI 对照过；不写 JPG；整帧是几个 GiB，靠 `first`／`last`／`kinds`／`max_mb`／`max_seconds` 分段。
-- XXMI 1.2.0 的帧分析在沙盒里遇到 3 个或 6 个索引的绘制不返回（294 个正常；无索引的绘制也不返回）。原因未查明，属于 XXMI 自身；对照测试避开了这些绘制。
+- **Scope of verification**: byte-for-byte agreement with XXMI's own dump was verified in the sandbox; in the real game (2026-10-09) function and volume were checked: UAVs visible, the contents of consecutive draws each kept, read-backs labelled as from the time of the call, copy volume and frame rate of the three levels (CURRENT_STATE). There was no comparison with XXMI's dump in the real game (it needs its frame analysis key).
+- A `NO_OVERWRITE` Map does not start a new version: the bytes the call read are exact, while the part it did not read may carry data appended afterwards. XXMI's dump has the bytes of that moment at such places, so a byte-for-byte comparison of the whole block differs there; the parity test uses the `strict` option of the protocol (waits for the GPU to finish the copy before letting the call through; slow, not exposed in the MCP tools).
+- For textures only the first mip / slice of the view is kept per binding; for multisampled textures only the resolved colour; multisampled depth and multisampled textures that are "typeless without a view stating the format" cannot be read.
+- Two hooks the sandbox does not reach: `DiscardView1`, `SwapDeviceContextState` (both only forward and then notify the same way as the other hooks; the compiler checks the signatures against the vtable member types).
+- Writes that cannot be seen: deferred command lists (content read in place after their execution is marked `exact=false`), video decoding / processors, another device writing through a shared handle, updates of tiled resources. In these cases the kept content may be silently wrong.
+- Copies happen when the game rewrites a referenced resource, mostly in the few frames after the capture; they take memory of the game process (budget 1024 MiB by default; copying stops when the machine has less than 2 GiB of free memory). Items over budget report an error when read. Volume in the real game (open world, 2560×1600): `buffers` about 206 MiB, `inputs` about 624 MiB, plus the outputs of the selected calls; in the first 0.25 s after `outputs` the frame rate dropped from about 70 to 60; single-frame stutter was not measured in detail.
+- The contents of only one capture are kept at a time; any new explicit capture (including the light captures in the reload flow) releases those of the previous one when it starts.
+- `efmi_dump_frame`: the call numbers are the capture's (from 0, including the mods' draws), not XXMI's; the TXT of a constant buffer larger than 64 KiB contains only the bound registers (XXMI writes the whole block); the TXT of vertex streams stepped per instance has not been compared with XXMI; no JPG is written; a whole frame is several GiB and is split with `first` / `last` / `kinds` / `max_mb` / `max_seconds`.
+- XXMI 1.2.0's frame analysis does not return in the sandbox for draws with 3 or 6 indices (294 are fine; non-indexed draws do not return either). The cause was not investigated and lies in XXMI itself; the parity test avoids such draws.
 
-## 限制-007：实时抓取尚未完整覆盖 FrameAnalysis（2026-10-08 审计；大部分已由探针 0.1.6 补上，见 限制-008 和 README 的覆盖表）
+## LIMIT-007: Live capture does not fully cover FrameAnalysis yet (audit of 2026-10-08; most of it has since been closed by probe 0.1.6, see LIMIT-008 and the coverage table in the README)
 
-- **现状（探针 0.1.6／服务 0.1.12）**：下面列的缺口里，IB/VB／SRV／UAV 的调用时刻内容、整块常量池、OM UAV、Dispatch 之后的 UAV、全部视口、三维／多重采样读回、写入事件、目录导出都已实现并在沙盒验收。仍然成立的只有：XXMI 内部的命令／变量轨迹和被它跳过的原始调用看不到；Set* 类调用不逐条列出；Stream Output／计数器的值没有；deferred context 里的绘制看不到。以下是审计当时的记录。
+- **Present state (probe 0.1.6 / server 0.1.12)**: of the gaps listed below, IB/VB / SRV / UAV contents from the time of the call, the whole constant pool, OM UAVs, UAVs after a Dispatch, all viewports, 3D / multisampled read-back, write events and the directory export are all implemented and accepted in the sandbox. What still holds: XXMI's internal command / variable trace and the original calls it skips cannot be seen; Set*-type calls are not listed one by one; the values of Stream Output / counters are not available; draws in a deferred context cannot be seen. What follows is the record from the time of the audit.
 
-- 覆盖矩阵见 README，目标和剩余项见 T-013。`full` 是绑定记录，不是全资源内容快照；live 是聚合摘要；模型 archive 有意过滤资源。当前哈希对照工具不证明完整 dump 数据一致。
-- IB/VB draw-time 读回只留 CRC，SRV（含骨骼）和 CS UAV 只有绑定＋晚读；通用 MCP buffer 工具尚未开放 SRV/UAV buffer。选定 RTV/DSV 快照不覆盖 dispatch UAV，RT array 只取首 slice。
-- 用户提供的 dump 实际包含图形 OM UAV（4 个 draw），其中 #550–552 同一个 u0 对象有三份不同 BUF，当前连绑定也未导出；CB dump 含完整 4 MiB 常量池，而当前 CB 快照只保存绑定窗口。这两项都是该目录的实际差距。
-- 多视口只留第一个数值和总数；OM UAV、SO/counter、3D/MSAA 读回、完整 API 历史和 deferred draws 尚未覆盖。绑定摘要不能还原显式 Set/Map/Copy/Clear 顺序。
-- 系统 D3D11 探针看不到 XXMI 完全 skip 的原始调用、内部命令／变量轨迹、改写前后 shader 身份关系；这不是普通资源接口的缺口。不能承诺只扩展几个槽位便覆盖 log.txt。
-- （已修正，服务 0.1.11）`model_capture.py` 的 `srv_view` 现在记录抓取到的 `vs-t0` 视图起点，`loyal_bridge.py` 的 `srv_view_scope` 只陈述桥接按整块 vs-t0 解释偏移。
+- The coverage matrix is in the README, goal and remaining items in T-013. `full` is a record of bindings, not a snapshot of all resource contents; live is an aggregated summary; the model archive filters resources on purpose. The current hash parity tool does not prove that the data of a complete dump agrees.
+- The draw-time read-back of IB/VB keeps only the CRC; SRVs (including bones) and CS UAVs have only the binding plus a late read; the general MCP buffer tool does not open SRV/UAV buffers yet. Snapshots of selected RTVs/DSVs do not cover dispatch UAVs, and of an RT array only the first slice is taken.
+- The dump the user provided actually contains graphics OM UAVs (4 draws), where #550–552 have three different BUFs for the same u0 object, and at present not even the binding is exported; the CB dump contains the complete 4 MiB constant pool, while the current CB snapshot stores only the bound window. Both are real gaps for that directory.
+- Of several viewports only the values of the first and the total count are kept; OM UAVs, SO/counters, 3D/MSAA read-back, the complete API history and deferred draws are not covered yet. A binding summary cannot reconstruct the explicit order of Set/Map/Copy/Clear.
+- The system D3D11 probe cannot see the original calls XXMI skips completely, the internal command / variable trace, or the identity relation of shaders before and after rewriting; this is not a gap of an ordinary resource interface. It cannot be promised that extending a few slots covers log.txt.
+- (Corrected, server 0.1.11) `srv_view` in `model_capture.py` now records the start of the captured `vs-t0` view, and `srv_view_scope` in `loyal_bridge.py` only states that the bridge interprets offsets against the whole vs-t0.
 
-## BUG-007：FrameAnalysis 解析器漏掉带 !S! 的资源文件（已修正，服务 0.1.11）
+## BUG-007: The FrameAnalysis parser misses resource files with !S! (corrected, server 0.1.11)
 
-- **修正**（2026-10-08）：正则接受 `=!…!=` 标记、无哈希的名字和 `oD`；标记留在 `DumpSlot.marks`，没有哈希时 `hash` 为 `None`。同一目录现在识别 18,666 个文件（121 个槽位带 `S`，36 个无哈希）。下面是当时的记录。
+- **Correction** (2026-10-08): the regular expression accepts `=!…!=` markers, names without a hash and `oD`; markers are kept in `DumpSlot.marks`, and `hash` is `None` when there is no hash. The same directory now yields 18,666 recognised files (121 slots with `S`, 36 without a hash). Below is the record from the time.
 
-- `fa_dump.py::_RE_FILE` 要求槽位后的等号紧跟 8 位 hash，不接受 `000474-vs-t0=!S!=d629cf1a-…dds` 这种实际文件名；日志 Dumping 映射也复用该正则。
-- 用户的 `FrameAnalysis-2026-10-07-123937` 有 18,666 个资源文件＋log.txt。生产 `efmi_frame_dump_summary` 只报告 18,509；漏掉 VS SRV 2、PS SRV 119、o0 36，共 157 个文件。调用数 776 没少，不能用调用数相等判断资源齐全。
-- 证据：`captures/audit-realtime-20261008/offline-dump-check.json`、`parser-unmatched-files.json`。本轮审计只记录，尚未修复；以后修正时保留标记本身，不臆测它与普通资源等价。
+- `fa_dump.py::_RE_FILE` requires the equals sign after the slot to be followed directly by an 8-digit hash and does not accept real file names such as `000474-vs-t0=!S!=d629cf1a-…dds`; the Dumping mapping of the log reuses the same regular expression.
+- The user's `FrameAnalysis-2026-10-07-123937` has 18,666 resource files + log.txt. The production `efmi_frame_dump_summary` reports only 18,509; it misses VS SRV 2, PS SRV 119 and o0 36, 157 files in all. The call count of 776 is not short, so equal call counts cannot be used to judge that the resources are complete.
+- Evidence: `captures/audit-realtime-20261008/offline-dump-check.json`, `parser-unmatched-files.json`. The audit round only recorded this and did not fix it; when correcting later, keep the marker itself and do not assume it is equivalent to an ordinary resource.
 
-## BUG-006：CB 快照失败时 get_draw 仍可能标已采集（已修正，服务 0.1.11）
+## BUG-006: get_draw may still mark a CB as captured when its snapshot failed (corrected, server 0.1.11)
 
-- **修正**（2026-10-08）：`contents_captured` 看快照字节是否在抓取里；请求了却没有时给 `contents_missing`，`efmi_read_buffer` 的 `source` 也会写明。每个快照缺失的具体原因（预算／读回失败）要等探针 0.1.6 才逐项给出。下面是当时的记录。
+- **Correction** (2026-10-08): `contents_captured` looks at whether the snapshot bytes are in the capture; when they were requested but are absent it gives `contents_missing`, and the `source` of `efmi_read_buffer` says so too. The specific reason for each missing snapshot (budget / read-back failure) is given item by item only from probe 0.1.6 on. Below is the record from the time.
 
-- `capture.cpp::snapshot` 超预算／staging 创建失败仍建立非负 snap ID，读回失败也会使该快照无 blob。`Capture.snap_bytes` 能识别无内容，但 `tools.py::efmi_get_draw` 的 `contents_captured` 只看 `snap>=0`，可误报 true。
-- `efmi_read_buffer` 随后会晚读，并在 `source` 明写不是 draw 当时的内容；因此不是无提示地把晚读称为快照。不过提示仍建议开启 `cb_data=true`，没有说明已开却失败的原因。
-- `arena_full` 摘要仅提示 hashes 缺失，GPU Map 失败无统一完整性摘要。后续应依据实际快照内容标记成功，并暴露每项缺失原因；全量 dump 验收不能依赖当前 `contents_captured`。
+- `capture.cpp::snapshot` still creates a non-negative snap ID when over budget / when creating the staging resource fails, and a failed read-back also leaves that snapshot without a blob. `Capture.snap_bytes` can recognise the absence of content, but `contents_captured` in `tools.py::efmi_get_draw` only looks at `snap>=0` and can wrongly report true.
+- `efmi_read_buffer` then reads late and states in `source` explicitly that it is not the content at the draw, so a late read is not silently called a snapshot. The hint still suggests turning on `cb_data=true`, though, without explaining why it failed although it was on.
+- The `arena_full` summary only hints at missing hashes, and there is no unified completeness summary for failed GPU Maps. Later, success should be marked from the actual snapshot content and the reason for each missing item exposed; acceptance of a full dump cannot rely on the current `contents_captured`.
 
-## 限制-006：管线状态与渲染目标拷贝（探针 0.1.5）的边界
+## LIMIT-006: Boundaries of pipeline state and render target copies (probe 0.1.5)
 
-- 2026-10-08 已在实机核对（CURRENT_STATE）。带拷贝的那一帧的游戏内记录耗时：7.37 毫秒（16 份、94.6 MiB），同场景不带拷贝 7.28 毫秒；显卡一侧的耗时没有量。
-- 离屏渲染目标在游戏里是上下颠倒存放的，图片和矩形用目标自己的行。
-- `depth=true` 时阴影通道的深度目标是 4096×4096（`D16_UNORM`，每份 32 MiB）且只能整块拷贝：一个网格 6 遍连深度是 224 MiB，接近预算的一半。
-- 状态和采样器按 D3D11 `GetDesc` 的结果报告。运行时不保留用不到的字段（非各向异性过滤的各向异性级数报 0，深度测试关闭时的比较函数和写入掩码报默认值），这些字段不显示。
-- 间接绘制没有区域哈希，按 `ib` 哈希选不到它；用绘制编号或着色器哈希。它的参数是绘制当时的快照。
-- 渲染目标拷贝按“同一个索引缓冲对象（地址＋创建序号）＋索引数＋起始索引”在新的一帧里找绘制。动态缓冲里同一位置下一帧可能是别的网格：结果里列出实际绘制的 `ib` 哈希，与选择时不同会加 `NOTE`。探针没见到创建的对象没有序号，只按地址匹配。重载后对象全换，要重新抓取再选。
-- 多重采样目标、非二维目标不拷贝。深度模板目标只能整块拷贝，`box` 对它无效。像素预算默认 512 MiB，超出的拷贝略过并注明。
-- 判断改动用原始字节：绘制写入与原值相同的像素不算改动。图片对 HDR 按 0–1 截断，深度按各自的数值范围拉伸。
-- 拷贝在游戏进程内存里，服务端读完即 `release_rt`；服务端若中途崩溃，探针在下一次抓取或客户端断开时释放。
-- 状态对象和视图在一帧内按内容去重（地址只用来找候选）；不为此持有它们的引用。
+- Checked in the real game on 2026-10-08 (CURRENT_STATE). In-game record time of the frame with copies: 7.37 ms (16 copies, 94.6 MiB), against 7.28 ms for the same scene without copies; the time on the graphics card side was not measured.
+- Off-screen render targets are stored upside down in the game; pictures and rectangles use the target's own rows.
+- With `depth=true` the depth target of the shadow passes is 4096×4096 (`D16_UNORM`, 32 MiB per copy) and can only be copied whole: a mesh with 6 passes including depth is 224 MiB, close to half the budget.
+- States and samplers are reported as D3D11 `GetDesc` returns them. The runtime does not keep fields that are not used (the anisotropy level of a non-anisotropic filter reports 0, the comparison function and write mask report defaults when the depth test is off); these fields are not shown.
+- Indirect draws have no region hash and cannot be selected by the `ib` hash; use the draw number or a shader hash. Their arguments are a snapshot from the time of the draw.
+- Render target copies find the draws in the new frame by "the same index buffer object (address + creation serial) + index count + start index". In a dynamic buffer the same position may hold a different mesh in the next frame: the result lists the `ib` hash actually drawn and adds a `NOTE` when it differs from the selection. Objects whose creation the probe did not see have no serial and are matched by address only. After a reload all objects are replaced, so capture again and select anew.
+- Multisampled targets and targets that are not 2D are not copied. Depth-stencil targets can only be copied whole; `box` has no effect on them. The pixel budget is 512 MiB by default; copies beyond it are skipped and noted.
+- Changes are judged on raw bytes: pixels a draw writes with the value they already had do not count as changed. Pictures clamp HDR to 0–1, and depth is stretched to each picture's own value range.
+- Copies live in the memory of the game process, and the server calls `release_rt` as soon as it has read them; if the server crashes midway, the probe frees them at the next capture or when the client disconnects.
+- State objects and views are de-duplicated by content within a frame (addresses are used only to find candidates); no references to them are held for this.
 
-## BUG-005：区域哈希缓存把已销毁缓冲的哈希给了同地址的新缓冲（已修复，探针 0.1.4，实机核对通过）
+## BUG-005: The region hash cache gave the hash of a destroyed buffer to a new buffer at the same address (fixed, probe 0.1.4, checked in the real game)
 
-- 现象：2026-10-07 实机部署核对的第二轮，`c0bb7cd6` 的 Position 缓冲记录的区域哈希与导出文件不符，而第三轮证实同一文件加载后的内容与文件逐字节相同。
-- 原因：缓存以缓冲地址为键；新缓冲复用地址、且新旧缓冲创建后都未被写入时，写入计数相同，缓存条目被当作仍然有效。mod 重载、模组切换都会成批销毁并重建同样大小的缓冲。
-- 影响（0.1.3 及更早）：客户端保持连接期间，重载后内容已变的 mod 缓冲可能仍显示旧的 ib／vb 区域哈希；资源自身的创建哈希、着色器哈希、贴图不受影响。内容没变的重载看不出问题。
-- 修正与验证：见 CURRENT_STATE 首节。沙盒可用 `sandbox/selftest.py`（内含 `--recreate-mesh3` 场景）复查。
-- 实机：0.1.4 已加载（2026-10-07）。17:39 的实验里，修改后的 `c0bb7cd6` Position 缓冲建在用户模组一块同样大小的缓冲此前所在的地址上，三个被读取的范围与之相同、内容不同，记录的哈希都是新内容的；中午 0.1.3 记录出错的正是这块缓冲。
-- 实机上地址复用是偶发的：相邻两次重载之间新缓冲落在上一代地址上的是 0／40、0／40、7／16，另有 5／40 落在两次重载之前的缓冲的地址上。旧探针的缓存条目会留到同一地址和范围再次被画到为止，所以旧哈希可能来自好几次重载之前；查这类问题要回看整个连接期间，不能只比较相邻两帧。
-- 未覆盖：不保持资源的采集（连续模式的摘要帧）若在同一帧内遇到地址复用，帧内映射仍以地址为键。
+- Symptom: in the second round of the real-game deployment check on 2026-10-07, the region hash recorded for the Position buffer of `c0bb7cd6` did not match the exported file, while the third round confirmed that the content loaded from the same file is byte-identical to the file.
+- Cause: the cache is keyed by buffer address; when a new buffer reuses an address and neither the old nor the new buffer was written after creation, the write counts are equal and the cache entry is taken to be still valid. Mod reloads and mod switches destroy and re-create buffers of the same size in batches.
+- Effect (0.1.3 and earlier): while the client stays connected, mod buffers whose content changed after a reload may still show the old ib / vb region hash; the creation hash of the resource itself, shader hashes and textures are not affected. A reload without changed content shows no problem.
+- Fix and verification: see the first section of CURRENT_STATE. In the sandbox it can be re-checked with `sandbox/selftest.py` (which contains the `--recreate-mesh3` scenario).
+- Real game: 0.1.4 is loaded (2026-10-07). In the experiment at 17:39 the modified Position buffer of `c0bb7cd6` was created at the address where a buffer of the same size of the user's mod had been before, the three ranges that were read were the same and the content different, and the recorded hashes are all those of the new content; this is exactly the buffer for which 0.1.3 recorded wrongly at noon.
+- Address reuse is sporadic in the real game: between two neighbouring reloads the new buffers landing on an address of the previous generation were 0 / 40, 0 / 40, 7 / 16, and another 5 / 40 landed on the address of a buffer from two reloads before. A cache entry of the old probe stays until the same address and range are drawn again, so an old hash may come from several reloads back; investigating this kind of problem means looking back over the whole connection, not just comparing two neighbouring frames.
+- Not covered: captures that do not hold resources (the summary frames of continuous mode) still key the in-frame mapping by address if address reuse happens within one frame.
 
-## 限制-005：mod 开关（F11）的边界
+## LIMIT-005: Boundaries of the mod switch (F11)
 
-- 2026-10-07 已在真实游戏中验证（伊冯，开／关／已开时不按键）。未覆盖：EFMI 更新后提示文字或绑定变化、画面中没有被 mod 覆盖的网格时的两次按键路径（只在沙盒和单元测试中走过）。
-- 开／关状态只能从按键后 1.5 秒内的 EFMI 提示读出。提示文字或绑定方式在 EFMI 更新后变化时，`mods_enabled` 会是 `null`（未知），不会给出错误的确定结论；此时 `on`／`off` 只按一次就停。
-- 没有不按键就查询状态的办法。`on`／`off` 只有在本服务读过提示且现采一帧的绘制相符时才不按键；服务刚启动、用户手动按过 F11、或画面里没有被 mod 覆盖的网格时，已处于目标状态也会先翻到相反状态再翻回来（两次按键，约 0.4 秒，画面闪一下）。连续调用会让用户看到游戏连闪，先告知。
-- 会话记住的状态不知道用户手动按的 F11；F10 重载（包括用户手动重载）之后 mod 总是开启。
-- 只关掉按 IB 哈希触发的替换。自带 `ShaderOverride`／`ShaderRegex` 的 mod 仍然生效；mod 绑在 F11 上的 `[Key…]` 段会一并触发（结果里列出）。
-- 提示文字的缓冲很小，工具最多读 48 个小缓冲来找它；绑定为着色器输入的小缓冲异常多时可能读不到。
+- Verified in the real game on 2026-10-07 (Yvonne; on / off / no key press when already on). Not covered: changes of the notification text or the binding after an EFMI update, and the two-press path when no mesh covered by a mod is in view (exercised only in the sandbox and in unit tests).
+- The on / off state can only be read from EFMI's notification within 1.5 seconds after the key press. When the notification text or the way of binding changes after an EFMI update, `mods_enabled` will be `null` (unknown) rather than a wrong definite conclusion; `on` / `off` then press only once and stop.
+- There is no way of querying the state without pressing the key. `on` / `off` skip the key press only when this server has read a notification and the draws of a freshly captured frame agree; when the server has just started, the user has pressed F11 manually, or no mesh covered by a mod is in view, it first flips to the opposite state and back even if already in the target state (two key presses, about 0.4 seconds, the picture flickers once). Repeated calls make the user see the game flicker repeatedly: tell them first.
+- The state remembered in the session does not know of an F11 the user pressed manually; after an F10 reload (including a manual one by the user) mods are always on.
+- Only replacements triggered by IB hash are switched off. Mods with their own `ShaderOverride` / `ShaderRegex` stay active; `[Key…]` sections that a mod binds to F11 are triggered along with it (listed in the result).
+- The buffer of the notification text is small, and the tool reads at most 48 small buffers to find it; it may not be found when unusually many small buffers are bound as shader inputs.
 
-## 限制-004：模型流程的未验证部分与耦合点
+## LIMIT-004: Unverified parts and coupling points of the model workflow
 
-- 模型流程已于 2026-10-07 全部实机通过（伊冯）：提取、JSON LOD、导入、导出、部署核对；修改后的模型按缓冲内容核对（改动是脚本做的整体平移，手工修改的观感未评判）；LOD1 距离下的帧匹配和 LOD 入口。未覆盖：比 LOD1 更远的级别、大世界里的三采样提取。
-- 大世界一帧里“带每对象常量和 vs-t0”的绘制大多是场景物件。归档只保留至少有一个 GPU 蒙皮网格的对象（按每对象常量分组）。这依赖“可提取的模型至少有一个 GPU 蒙皮组件”；LoyalTools 若改为支持纯 CPU 姿态的对象，这里要跟着放宽（`model_capture.select_draws`）。
-- 同一角色的 LOD 骨索引重映射，用不同的帧做匹配，个别骨头上会得到不同结果（伊冯 368 项中 7 项，其中 5 项对应的两根 LOD 骨头矩阵不同）。已检验过效果：把近景网格按两种映射分别用那一帧的 LOD 骨骼矩阵蒙皮，再与游戏自己的 LOD 网格比较：受影响的顶点（`d160fb72` 286 个、`28ab9d1b` 82 个）两种结果相距中位 0.48 厘米／0.07 厘米，离游戏的 LOD 网格都在 2 毫米左右（前者新映射略近，后者旧映射略近）。游戏的 LOD 网格在这些位置本来就由相邻的几根骨头混合加权，映射到其中哪一根都只是近似，两种都可用。遇到这类差异可用同样的办法判断，不必当作错误。
-- 按 JSON 复用 LOD 映射（`lod_json`、`efmi_map_lod method=json`）时，CPU 姿态组件的 LOD 条目会被 LoyalTools 去掉并标为回退（伊冯的 `ba957493` → `01b00fec`）：用户更早的工程 `yvonne test` 里本来有这一条，是按 JSON 复用到新提取的工程时被 LoyalTools 的检查去掉的：这个组件没有顶点组（`vg_count=0`），而匹配器给它的 LOD 条目写了 40 项顶点组映射，复用时被判为“LOD 顶点组映射超出当前组件的顶点组范围”。所以这个角色的映射只要按 JSON 复用，这一条都会丢，要靠帧匹配补回。少了这一条时，这个部件在远处仍由游戏自己画；用到它的 mod 需要再做一次帧匹配（`method=frame` 或 `capture`）。这是 LoyalTools 内部的规则，本工具只转述它的警告。已用插件自己的 `apply_lod_mapping` 在内存副本上验证（LoyalTools 1.6.8）：把旧工程 `yvonne test` 的映射套回它自己去掉 LOD 的档案，同样只匹配 10／11、同样的提示；把那条 LOD 记录里的 40 项顶点组映射清空后再套，11／11 全部保留。所以与数据由谁采集无关。脚本和输出在 `captures/verify-lod-3468/remap-check/json_reuse_experiment.py`、`json-reuse-result.txt`。用户确认（2026-10-07）：CPU 姿态组件在他的 mod 里从不修改，都是直接删掉、用游戏原来的，所以这一条缺失对成品没有影响，不必补，也不必再当作问题提出。导出里没有入口的组件在检查里只是一条提示，不影响导出是否有效。
-- `efmi_map_lod` 的匹配本身要几十秒到一分多钟（伊冯：近景对 LOD 约 38 秒，近景对近景 75 秒，大部分花在骨组匹配上）。
-- CPU 姿态组件的顶点（游戏重写的动态缓冲）取自主帧之后几帧的一次轻量采集，是同一网格稍后的姿态；能否读到取决于数据在采集后保持不变的那几帧（伊冯约 5 帧，实测一次成功），数据每帧都变的角色会在 6 次尝试后失败。同一块缓冲里几个角色的数据一次读回（大世界 4 个角色实测一次成功）。索引数据被游戏重写的绘制读不回来：归档时略过并列出，所属对象不能提取（实机上只见过场景的动态合批是这样，角色没有）。彻底的办法是探针在绘制时快照这些范围（需改探针）。
-- LoyalTools 按矩阵逐位相等合并骨头，游戏的矩阵有末位差异，所以同一角色每次提取的合并数可能差一两根；与旧工程的 `vg_map` 会在个别组件上不同（伊冯为 `510debd5`、`7091ba4f`）。这会影响“把旧工程的 LOD 映射按 JSON 复用”的兼容性，由 LoyalTools 自行判断并报告。
-- 与已启用的同角色 mod 同时部署会叠画，`efmi_verify_exported_mod` 只列出冲突、不会停用别人的 mod；干净的核对需要先停用那个 mod（2026-10-07 是用户明确要求后由 agent 临时改名并改回）。
-- 重载较大的模组时游戏会停顿数秒；刚重载的模组可能有几帧既不画原始网格也不画自己的（角色短暂消失），核对会跳过这些帧。
-- 探针 0.1.3 及更早版本记录的区域哈希可能属于同地址上已销毁的缓冲（BUG-005，0.1.4 已修正）。部署核对对哈希不符的索引和顶点缓冲按内容裁决；游戏里还是旧探针时，重载之后 mod 缓冲的 ib／vb 哈希如与预期不符，用 `efmi_read_buffer` 读内容确认。
-- 被模组替换的角色没有原始绘制，无法提取；多角色在画面中时必须指定 `object_name`。骨骼数据是稍后读回，三采样只保证静态几何与骨组来源一致，不复现某一帧的姿态。
-- 贴图对照只比较 XXMI 创建并绑定的贴图的最高一级 mip；运行时计算的缓冲（蒙皮后的位置、骨骼数据）和渲染状态不比较；当时不在画面上的 LOD 级别和分支列为未覆盖。
-- 归档版提取器依赖 `DumpWorkspaceExtractor` 的内部方法名；LoyalTools 的入口函数、操作器或场景属性改名时相应步骤会失败并报错，不会静默走样。
-- 任务运行期间 `sys.stdout` 被整进程重定向（防止库的输出混入 MCP 协议）；服务主循环使用启动时保存的输出流，不受影响。
-- 导出默认使用 `D:\blender4,5\blender.exe`；该 Blender 未安装插件或版本不同时需指定 `blender_path`。
+- The whole model workflow passed in the real game on 2026-10-07 (Yvonne): extraction, JSON LOD, import, export, deployment check; the modified model was checked by buffer content (the change was a scripted translation of everything; the look of manual modifications was not judged); frame matching at LOD1 distance and the LOD entry points. Not covered: levels farther than LOD1, and a three-sample extraction in the open world.
+- Most draws "with per-object constants and vs-t0" in an open-world frame are scene objects. The archive keeps only objects with at least one GPU-skinned mesh (grouped by per-object constants). This relies on "an extractable model has at least one GPU-skinned component"; if LoyalTools comes to support purely CPU-posed objects, this has to be loosened accordingly (`model_capture.select_draws`).
+- Matching the LOD bone index remap of the same character with different frames gives different results on a few bones (7 of 368 items for Yvonne, in 5 of which the two LOD bones in question have different matrices). The effect was examined: the close-view mesh was skinned with the LOD bone matrices of that frame under each of the two mappings and compared with the game's own LOD mesh: for the affected vertices (286 of `d160fb72`, 82 of `28ab9d1b`) the two results are a median 0.48 cm / 0.07 cm apart, and both are about 2 mm from the game's LOD mesh (for the former the new mapping is slightly closer, for the latter the old one). The game's LOD mesh blends several neighbouring bones at these places anyway, so mapping to any one of them is only an approximation, and both are usable. Differences of this kind can be judged the same way and need not be treated as errors.
+- When an LOD mapping is re-used by JSON (`lod_json`, `efmi_map_lod method=json`), the LOD entry of a CPU-posed component is removed by LoyalTools and marked as a fallback (Yvonne's `ba957493` → `01b00fec`): the user's earlier project `yvonne test` did have this entry, and it was removed by a LoyalTools check when re-using by JSON into the newly extracted project: this component has no vertex groups (`vg_count=0`), while the matcher wrote 40 vertex group mappings into its LOD entry, which on re-use is judged as "the LOD vertex group mapping exceeds the vertex group range of the current component". So for this character the entry is lost whenever the mapping is re-used by JSON, and has to be restored by frame matching. Without the entry the game draws this part itself at a distance; a mod that uses it needs one more frame matching (`method=frame` or `capture`). This is a rule inside LoyalTools, and this tool only relays its warning. Verified with the add-on's own `apply_lod_mapping` on in-memory copies (LoyalTools 1.6.8): applying the mapping of the old project `yvonne test` back to its own archive with the LODs removed likewise matches only 10 / 11 with the same message; after emptying the 40 vertex group mappings in that LOD record and applying again, all 11 / 11 are kept. So it does not depend on who captured the data. Script and output are in `captures/verify-lod-3468/remap-check/json_reuse_experiment.py`, `json-reuse-result.txt`. The user confirmed (2026-10-07): CPU-posed components are never modified in their mods, they are simply deleted and the game's own are used, so this missing entry has no effect on the finished mod, need not be added, and need not be raised as a problem again. A component without an entry point in the export is only a note in the checks and does not affect whether the export is valid.
+- The matching of `efmi_map_lod` itself takes tens of seconds to more than a minute (Yvonne: close view against LOD about 38 seconds, close view against close view 75 seconds, most of it spent on bone group matching).
+- The vertices of CPU-posed components (dynamic buffers the game rewrites) come from a light capture a few frames after the main frame and are a slightly later pose of the same mesh; whether they can be read depends on the few frames during which the data stays unchanged after the capture (about 5 frames for Yvonne, succeeded at the first attempt in the test); a character whose data changes every frame fails after 6 attempts. The data of several characters in the same buffer is read back in one go (succeeded at the first attempt with 4 characters in the open world). Draws whose index data the game rewrites cannot be read back: they are skipped and listed when archiving, and the object they belong to cannot be extracted (in the real game only the scene's dynamic batching has been seen to be like this, not characters). The thorough solution is for the probe to snapshot these ranges at draw time (needs a probe change).
+- LoyalTools merges bones whose matrices are bit-identical, and the game's matrices differ in the last digits, so the number of merges may differ by one or two bones between extractions of the same character; `vg_map` then differs from an old project on individual components (`510debd5`, `7091ba4f` for Yvonne). This affects the compatibility of "re-using the LOD mapping of an old project by JSON", which LoyalTools judges and reports itself.
+- Deployed together with an enabled mod for the same character, both are drawn on top of each other; `efmi_verify_exported_mod` only lists the conflict and does not disable other people's mods; a clean check needs that mod to be disabled first (on 2026-10-07 the agent renamed it temporarily and back after the user explicitly asked).
+- The game pauses for several seconds when a large mod is reloaded; a mod that was just reloaded may draw neither the original mesh nor its own for a few frames (the character disappears briefly), and the check skips these frames.
+- The region hash recorded by probe 0.1.3 and earlier may belong to a destroyed buffer at the same address (BUG-005, corrected in 0.1.4). The deployment check decides by content for index and vertex buffers whose hash does not match; while the game still runs an old probe, if the ib / vb hash of a mod buffer is not as expected after a reload, confirm by reading the content with `efmi_read_buffer`.
+- A character replaced by a mod has no original draws and cannot be extracted; with several characters in view `object_name` must be given. Bone data is read back later; the three samples only guarantee that the static geometry and the bone group sources agree and do not reproduce the pose of one frame.
+- The texture comparison only compares the top mip of textures that XXMI created and bound; buffers computed at run time (skinned positions, bone data) and render state are not compared; LOD levels and branches that were not on screen at the time are listed as not covered.
+- The archive extractor depends on internal method names of `DumpWorkspaceExtractor`; when entry functions, operators or scene properties of LoyalTools are renamed, the corresponding step fails with an error and does not silently go wrong.
+- While a job runs, `sys.stdout` is redirected for the whole process (so that library output does not get mixed into the MCP protocol); the server's main loop uses the output stream saved at start-up and is not affected.
+- The export uses `D:\blender4,5\blender.exe` by default; when that Blender has no add-on installed or a different version, `blender_path` has to be given.
 
-## BUG-004：真实游戏接受发送 API，但 F10 按下状态不可见（已修复，实机验证通过）
+## BUG-004: The real game accepts the send API, but the pressed state of F10 is not visible (fixed, verified in the real game)
 
-- 2026-10-06 晚：原因是 UIPI。`Endfield.exe` 清单要求管理员权限，MCP 服务为普通权限；Windows 丢弃低完整性进程发往高完整性窗口的输入，`SendInput` 仍返回成功。探针 0.1.2 改为在游戏进程内按键，沙盒与实机均通过：PID 43816 上移出的伊冯 mod 在工具重载后消失（XXMI 93 次绘制→0，游戏原始 30 次绘制出现）。同日 20:51 第二次实机，游戏在后台（前台是 Claude 窗口）：探针以 `direct` 方式取得前台，按键持续 1 帧（91844→91845，重载帧 79.8ms），随后把前台还给原窗口（前后为同一 hwnd）；移出的伊冯 mod 同样消失（XXMI 120→0 次绘制，游戏原始 30 次绘制出现），`reload_confirmed=true`。`attach_input` 这条备用取前台路径在实机上没有用到，只在沙盒验证。以下为定位前的记录。
-- Endfield PID41976的两次普通VK请求没有实际刷新。用户移出Yvonne后，画面仍是该模组；用户明确确认失败。普通新帧及IB/VB读回均正常，不能用它们证明重载。一次中间的focus_refused在输入前拒绝，不算发送请求。
-- 扫描码诊断同样失败：前台PID正确、无修饰键，SendInput down/up返回1、错误码0，但约200ms按住期间所有F10异步高位为false；帧160361→160664，XXMI DrawIndexed的IB/次数相同。证据 `captures/verify-reload-scancode-41976-ready/result.json`，独立结论 `assessment.json` 标明 `actual_reload_succeeded=false`；raw报告pass仅表示诊断流程完成。
-- 0.1.3增加 `key_down_observed` 门槛：若API接受但未观察到按下状态，返回input阶段 `keydown_not_observed`，finally释放，不开始capture、不重发。`key_down_sent`继续保留API接受语义。此改动完成错误检测，未解决真实输入不可见问题。
-- 当前Python为medium，游戏token读取access denied；不能据此推定游戏完整性级别或安全软件行为。扫描码不作为修复。继续定位正常输入路径，不自动提权、不修改EFMI、不绕过输入保护。
-- 官方v1.2.2 [input.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/input.cpp) 的 `VKInputButton::CheckState` 使用GetAsyncKeyState高位，未发现扫描码或注入标志过滤逻辑。采样到高位也只是必要诊断证据，不是游戏线程已处理/XXMI重载的回执。
-- `d3dx_user.ini` 时间不变不能判断失败：[IniHandler.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/IniHandler.cpp) 的 `SavePersistentSettings(false)` 未dirty时直接返回；普通重载不是强制写入。探针registry.resources是登记地址数，地址复用会覆盖，亦不是重载计数。
-- 在所查v1.2.2源码及[导出表](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/d3d11Wrapper.def)中未找到受支持的外部reload接口；Core/auto_update.xcmd是启动器更新/启动操作文件，不是运行时通信。现有只改本工具约束下不能把写该文件或调用内部函数当作受支持替代。
+- Evening of 2026-10-06: the cause is UIPI. The manifest of `Endfield.exe` requires administrator rights and the MCP server has ordinary rights; Windows drops input sent by a lower-integrity process to a higher-integrity window while `SendInput` still returns success. Probe 0.1.2 presses the key inside the game process instead, and it passes in the sandbox and in the real game: on PID 43816 the Yvonne mod that had been moved out disappeared after the tool reloaded (XXMI 93 draws → 0, the game's original 30 draws appear). Second real-game run the same day at 20:51, with the game in the background (the Claude window in front): the probe took the foreground by the `direct` method, the key was held for 1 frame (91844→91845, reload frame 79.8 ms), then the foreground was given back to the original window (the same hwnd before and after); the Yvonne mod that had been moved out disappeared likewise (XXMI draws 120→0, the game's original 30 draws appear), `reload_confirmed=true`. The fallback path for taking the foreground, `attach_input`, was not used in the real game and is verified only in the sandbox. What follows is the record from before the cause was located.
+- Two ordinary VK requests to Endfield PID 41976 did not actually refresh. After the user moved Yvonne out, the picture still showed that mod; the user explicitly confirmed the failure. Ordinary new frames and IB/VB read-back were all normal and cannot be used to prove a reload. One focus_refused in between refused before the input and does not count as a sent request.
+- The scan-code diagnosis failed the same way: the foreground PID was correct, no modifier keys, SendInput down/up returned 1 with error code 0, but during the hold of about 200 ms every asynchronous high bit of F10 was false; in frames 160361→160664 the IBs / counts of XXMI's DrawIndexed are the same. Evidence `captures/verify-reload-scancode-41976-ready/result.json`; the independent conclusion `assessment.json` states `actual_reload_succeeded=false`; the pass in the raw report only means that the diagnostic procedure completed.
+- 0.1.3 adds the `key_down_observed` threshold: if the API accepts but the pressed state is not observed, the input stage returns `keydown_not_observed`, releases in `finally`, and neither starts a capture nor resends. `key_down_sent` keeps the meaning "accepted by the API". This change completes error detection and does not solve the real input being invisible.
+- The current Python is medium integrity and reading the game's token gives access denied; the game's integrity level or the behaviour of security software cannot be inferred from this. Scan codes are not a fix. Keep locating the normal input path, without automatic elevation, without modifying EFMI, without bypassing input protection.
+- In the official v1.2.2, `VKInputButton::CheckState` of [input.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/input.cpp) uses the high bit of GetAsyncKeyState; no logic filtering by scan code or injected flag was found. Sampling the high bit is only necessary diagnostic evidence, too, not a receipt that the game thread processed the key / that XXMI reloaded.
+- An unchanged time of `d3dx_user.ini` cannot be used to judge failure: `SavePersistentSettings(false)` in [IniHandler.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/IniHandler.cpp) returns at once when nothing is dirty; an ordinary reload is not a forced write. The probe's registry.resources is the number of registered addresses, which address reuse overwrites, and is not a reload counter either.
+- In the v1.2.2 sources examined and in the [export table](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/d3d11Wrapper.def) no supported external reload interface was found; Core/auto_update.xcmd is a file for the launcher's update/start operations, not run-time communication. Under the existing constraint of changing only this tool, writing that file or calling internal functions cannot be treated as a supported alternative.
 
-## 限制-002：重载证据不是 XXMI 的回执
+## LIMIT-002: Reload evidence is not a receipt from XXMI
 
-- 重载之后 mod 分几帧回来（2026-10-08 实机：按键后第 3 帧 XXMI 绘制 272 次，稳定后 508 次）。“已确认”只说明重载发生了，不说明那一帧里 mod 齐了。服务 0.1.10 起工具等到“用到的新建对象数不再增长”才取返回的帧，并用 `mods_settled` 说明；这个判断靠相隔 0.25 秒的两帧，恢复过程中若有更长的停顿会被当成已恢复完，`mods_settled=false` 或核对不到所改的 mod 时再用 `efmi_capture_frame` 抓。新标准在实机上跑过普通情形（2026-10-08：3 帧、0.36 秒、`mods_settled=true`），“第一帧只恢复一部分”的情形仍只有单元测试。
+- After a reload the mods come back over several frames (real game, 2026-10-08: 272 XXMI draws in the 3rd frame after the key press, 508 once stable). "Confirmed" only says that the reload happened, not that the mods are complete in that frame. From server 0.1.10 the tool takes the returned frame only when "the number of newly created objects in use has stopped growing", and says so with `mods_settled`; this judgement relies on two frames 0.25 seconds apart, so a longer pause during recovery would be taken for a finished recovery; with `mods_settled=false`, or when the changed mod cannot be found, capture again with `efmi_capture_frame`. The new criterion has run on the ordinary case in the real game (2026-10-08: 3 frames, 0.36 seconds, `mods_settled=true`); the case "the first frame has only part of them back" still has unit tests only.
 
-- 0.1.2/0.1.4 起 `reload_confirmed` 依据“新帧所用对象中有 XXMI 在按键之后创建的资源/着色器”。画面上没有任何 mod 或 Core 内容时无从判断，结果为 false；按键前 XXMI 正在自行创建资源时也不作确认。它不证明每个 INI 解析无误，XXMI 绘制所用缓冲早于按键的提示也可能来自 XXMI 自己的叠加层。以下为 0.1.3 的说明，旧探针仍适用。
-- MCP服务0.1.3区分API接受、异步按下状态可见及后续新帧；探针0.1.1没有XXMI解析/重载完成回执，`reload_confirmed`始终为false。即使输入状态门槛通过，仍需核对预期draw/BUF，不能据此认定全部INI解析成功。
-- 默认等待 2 秒不是完成信号；机器慢或模组复杂时可调整 `settle_ms`（250–10000），已发送 F10 后仅需更多画面可调用普通 capture，不自动再重载。捕获 timeout 单独为 1000–30000ms。
-- 会停止 live、release 并清旧捕获；live 不自动恢复。正常 F10 也可能触发 XXMI 保存持久变量配置，因此有运行时及文件副作用。
-- 本轮0.1.3输入21项/工作流32项、MCP39项及compileall通过。历史0.1.2私有沙盒在hunting=0下验证新增规则仅抑制目标IB（`sandbox/build/reload-xuxnsq73/reload-evidence.json`）；本轮游戏运行时未重跑实际F10沙盒。当前实机刷新测试失败，见BUG-004。
-- 单次 F10 按下/释放、约 200ms 按住期间，XXMI 1.2.2 重建按键注册可发生多次内部重载。工具没有重发按下事件，但不能承诺 XXMI 内部 reload 次数恰好为一。
+- From 0.1.2/0.1.4 `reload_confirmed` is based on "among the objects the new frame uses there are resources/shaders that XXMI created after the key press". When nothing of any mod or of Core is on screen it cannot be judged and the result is false; no confirmation is given either when XXMI was creating resources by itself just before the key press. It does not prove that every INI parsed without errors, and the note that buffers used by XXMI's draws are older than the key press may also come from XXMI's own overlay. What follows describes 0.1.3 and still applies to an old probe.
+- MCP server 0.1.3 distinguishes API acceptance, visibility of the asynchronous pressed state and the later new frame; probe 0.1.1 has no receipt for XXMI's parsing / the completion of a reload, and `reload_confirmed` is always false. Even when the input state threshold is passed, the expected draws/BUFs still have to be checked, and it cannot be concluded that all INI files parsed successfully.
+- The default wait of 2 seconds is not a completion signal; on a slow machine or with complex mods `settle_ms` (250–10000) can be adjusted; once F10 has been sent, an ordinary capture can be called when only more pictures are needed, and no further reload is made automatically. The capture timeout is separately 1000–30000 ms.
+- Live mode is stopped, resources released and old captures cleared; live mode is not resumed automatically. A normal F10 may also make XXMI save its persistent variable configuration, so there are run-time and file side effects.
+- In that 0.1.3 round the 21 input checks / 32 workflow checks, the 39 MCP checks and compileall passed. Historically the private sandbox of 0.1.2 verified under hunting=0 that an added rule suppresses only the target IB (`sandbox/build/reload-xuxnsq73/reload-evidence.json`); the real-F10 sandbox was not re-run in that round while the game was running. The refresh test in the real game failed at that time, see BUG-004.
+- With a single F10 down/up held for about 200 ms, XXMI 1.2.2 re-creating its key registrations can lead to several internal reloads. The tool does not resend the key-down event, but it cannot promise that XXMI's internal reload count is exactly one.
 
-## 限制-003：Windows 前台输入与权限
+## LIMIT-003: Windows foreground input and rights
 
-- 0.1.2 由探针取前台并按键：正常请求被拒时借用前台线程的输入状态（`attach_input`）。从切到前台到还回焦点期间，用户的键盘输入会落到游戏里。重载很快（短于 10ms）时仍可能触发两次。前台是管理员窗口时，普通权限的沙盒取不到前台，按键类沙盒测试无法运行。
-- `SendInput` 在系统键盘钩子处理完之前不返回；按住帧必须从读到按下状态起计。
-- 实机（2026-10-07 晚）：连续按键的流程里，第二次 F10 被 `focus_refused` 挡下——用户刚在别的窗口点选作答，Windows 不让游戏取得前台（12 秒前的第一次还是 `direct` 成功）。这时新部署的文件没有被加载，XXMI 里仍是上一份。做法：不重按；先把磁盘恢复成用户原样，再如实说明游戏里现在显示的是什么，由用户决定（把游戏点到前台后继续，或自己按 F10）。需要连按几次的流程，开始前先请用户让游戏留在前台。
-- Windows 可拒绝 `SetForegroundWindow`；`focus_game=false` 要求游戏已处于前台。无可确认窗口、多个候选而目标不在前台、按住修饰键/F10 或焦点丢失时拒绝发送或停止按住。
-- `SendInput` 可能被 UIPI/不同完整性级别拦截，不能仅凭 Win32 错误码判断具体原因；工具不自动提权。窗口检查与发送之间不是原子操作，输入成功也不是游戏实际处理的证明。
-- 异常会尝试释放 F10，绝不重复按下；结果保留 `reload_requested` 为 false/true/null 区分未发送/已发送/未知。若释放也失败，应先按错误提示处理键状态，不能盲目重试。
-- 当前仅支持当前安装两项默认 `no_modifiers VK_F10` 绑定；自定义或重复绑定会拒绝，不自动改配置。无需开启狩猎模式。
+- In 0.1.2 the probe takes the foreground and presses the key: when the normal request is refused it borrows the input state of the foreground thread (`attach_input`). Between switching to the foreground and giving the focus back, the user's keyboard input lands in the game. When the reload is very fast (shorter than 10 ms) it may still be triggered twice. When the foreground is an administrator window, the sandbox with ordinary rights cannot take the foreground, and the key-press sandbox tests cannot run.
+- `SendInput` does not return before the system keyboard hooks have finished; the hold frames must be counted from the moment the pressed state is read.
+- Real game (evening of 2026-10-07): in a flow with several key presses in a row, the second F10 was stopped by `focus_refused`: the user had just clicked in another window to answer, and Windows did not let the game take the foreground (the first one 12 seconds earlier still succeeded with `direct`). The newly deployed files were then not loaded, and XXMI still had the previous set. What to do: do not press again; first restore the disk to the user's original state, then say truthfully what the game shows now and let the user decide (continue after clicking the game to the foreground, or press F10 themselves). For flows that need several presses in a row, ask the user to keep the game in the foreground before starting.
+- Windows may refuse `SetForegroundWindow`; `focus_game=false` requires the game to be in the foreground already. Sending is refused, or the hold stopped, when there is no window that can be confirmed, when there are several candidates and the target is not in the foreground, when a modifier key/F10 is held, or when the focus is lost.
+- `SendInput` may be blocked by UIPI / different integrity levels, and the specific cause cannot be judged from the Win32 error code alone; the tool does not elevate automatically. The window check and the send are not atomic, and successful input is no proof that the game actually processed it.
+- On an exception the tool tries to release F10 and never presses again; the result keeps `reload_requested` as false/true/null to tell not sent / sent / unknown apart. If the release fails too, the key state should be dealt with as the error says first, without retrying blindly.
+- At present only the two default `no_modifiers VK_F10` bindings of the current installation are supported; custom or duplicate bindings are refused, and the configuration is not changed automatically. Hunting mode does not have to be on.
 
-## BUG-001：后建辅助设备导致主画面捕获为空
+## BUG-001: An auxiliary device created later leaves the capture of the main picture empty
 
-- 状态：`0.1.1` 已修复，多设备四场景 `192` 项和最终整套回归通过；新版已在 PID `38252` 的伊冯画面通过非空帧与真实资源读回验证。
-- 现象：探针连接、分辨率和 Present 帧号可用，但完整捕获和 live 均无 draw；此前第 `22964` 帧 draw / 资源 / 着色器均为 `0`。
-- 证据：PID `39000` 的探针日志先挂接主设备并发现交换链，随后记录新设备替换旧跟踪设备；`g_dev/g_ctx` 安装逻辑覆盖旧值，而 `g_swap` 保留。
-- 旧版影响：`h == g_ctx` 丢掉主画面绘制，无法识别或导出角色的 IB/VB/贴图/着色器。
-- 实机结果：帧 `9113` / `14377` 非空，连续摘要正常；伊冯三组网格共 `12` 个 IB/VB 读回 CRC 一致，纹理/CB/着色器均已读取，证据见当前状态。
+- Status: fixed in `0.1.1`; the `192` checks of the four multi-device scenarios and the final full regression pass; the new version has passed non-empty frame and real resource read-back verification on the Yvonne screen of PID `38252`.
+- Symptom: the probe is connected, resolution and Present frame number are available, but neither a full capture nor live mode has any draw; before that, frame `22964` had `0` draws / resources / shaders.
+- Evidence: the probe log of PID `39000` first attaches to the main device and finds the swap chain, then records a new device replacing the old tracked device; the installation logic for `g_dev/g_ctx` overwrites the old values while `g_swap` is kept.
+- Effect in the old version: `h == g_ctx` drops the draws of the main picture, so the IB/VB/textures/shaders of a character cannot be identified or exported.
+- Real-game result: frames `9113` / `14377` are non-empty and the continuous summary is normal; the `12` IB/VB of Yvonne's three mesh groups were read back with matching CRCs, and textures/CBs/shaders were all read; evidence in the current state.
 
-## BUG-002：live 停止后在途帧回填
+## BUG-002: In-flight frames back-filled after live mode stops
 
-- 状态：已修复；新增 `10` 检查，自测 `83` 通过 / `0` 失败，最终整套回归通过。
-- 现象：首轮探针自测 `71` 通过 / `2` 失败；停止并清空连续摘要后，仍在进行中的旧帧可能再次写入，影响快速停止/重启和连接更换的会话隔离。
-- 修复：每帧携带 generation；停止（`enable=false`）或断开连接使 generation 失效，发布时拒绝旧帧；`enable=true` 参数重配不更换 generation。
+- Status: fixed; `10` new checks, self-test `83` passed / `0` failed, the final full regression passes.
+- Symptom: the first probe self-test run showed `71` passed / `2` failed; after stopping and emptying the continuous summary, an old frame still in progress could be written again, affecting session isolation on quick stop/restart and on a change of connection.
+- Fix: every frame carries a generation; a stop (`enable=false`) or a disconnect invalidates the generation, and old frames are refused at publication; re-configuring parameters with `enable=true` does not change the generation.
 
-## ISSUE-003：沙盒 posed VB 浮点输出偶发末位变化
+## ISSUE-003: Occasional last-digit changes in the floating-point output of the sandbox's posed VB
 
-- 状态：测试场景已修，shader 加 HLSL `precise`，严格字节/哈希断言保留；最终整套回归通过。
-- 现象：本轮三种加载顺序中 XXMI hash 对照各 `69` 项零差异，但冷启动 GPU posed VB 再次取哈希的一致性检查有失败。
-- 证据：无 dump、甚至旧探针 + 无 XXMI 时也能观察到 `39` 个 float 各变化 `1 ULP`（最大 `5.96e-8`）；每次探针 hash 都与读回 CRC 一致，不是本轮探针回归，具体优化机理尚属推断。
-- 修后验证：有/无 XXMI 各 `12` 次从 frame `1/2` 开始连续首帧捕获，`11616` 字节 posed VB 逐字节一致，CRC `1b4be723`。
-- 最终结果：三种加载顺序各 `69` 项 hash 对照零差异，二次捕获 IB/VB 哈希一致均通过。沙盒浮点变化不是当前真实角色数据错误的证据。
+- Status: the test scene is fixed, the shader got HLSL `precise`, strict byte/hash assertions are kept; the final full regression passes.
+- Symptom: in that round the XXMI hash parity of three load orders showed zero differences in `69` items each, but the consistency check that hashes the cold-start GPU posed VB again had failures.
+- Evidence: without a dump, and even with the old probe and no XXMI, `39` floats can be observed changing by `1 ULP` each (at most `5.96e-8`); each time the probe hash agrees with the CRC of the read-back, so it is not a probe regression of that round; the exact optimisation mechanism is still an inference.
+- Verification after the fix: with and without XXMI, `12` consecutive first-frame captures each, starting from frame `1/2`; the `11616` bytes of posed VB are byte-identical, CRC `1b4be723`.
+- Final result: zero differences in the `69` hash parity items of each of the three load orders, and the IB/VB hash consistency of the second capture passes everywhere. The floating-point change in the sandbox is no evidence of an error in the data of real characters.
 
-## 限制-001：交换链选择与重建
+## LIMIT-001: Swap chain selection and re-creation
 
-- 当前选择首个发现的交换链，不会自动从多个候选交换链识别主画面。
-- 已绑定目标后，另一个设备提供的替代交换链会被拒绝并提示重启，以免跨设备使用资源/捕获状态。
-- 同设备交换链销毁和重建期间的跨界捕获尚未验证；审查发现可能得到跨帧不完整结果。重建场景不属于本轮多设备专项已覆盖的承诺。
+- At present the first swap chain found is selected; the main picture is not recognised automatically among several candidate swap chains.
+- Once a target is bound, a replacement swap chain provided by another device is refused with a hint to restart, so that resources / capture state are not used across devices.
+- Captures crossing the destruction and re-creation of a swap chain on the same device are not verified; a review found that results incomplete across frames are possible. The re-creation scenario is not among the commitments covered by the multi-device work of that round.
 
-## 已有功能限制
+## Limits of existing functions
 
-- 数据读取的游戏外处理开销已在T-006优化（当前梨诺完整归档1.843→1.220秒）；GPU/管道仍逐资源返回，纹理较多时仍有逐帧等待。没有批量GPU读回接口，本轮不声称解决所有场景的延迟。PNG低压缩保留像素但文件更大；可选CRC库缺失时功能可用、速度回到Python基线。
+- The cost of processing data outside the game was optimised in T-006 (the complete archive of the then current Liino went from 1.843 to 1.220 seconds); the GPU/pipe still return resource by resource, and with many textures there is still a wait per frame. There is no interface for batched GPU read-back, and that round does not claim to solve the latency of all scenarios. PNG with low compression keeps the pixels but the files are larger; when the optional CRC library is missing, everything works and the speed falls back to the Python baseline.
 
-- 合并骨骼桥接的骨SRV不是draw时刻快照；当前静态编辑流程须通过三次独立捕获的几何/骨映射一致性验证。仅凭骨池非零、首尾地址相同或采集完成不能视为正确映射。
-- SRV视图FirstElement/NumElements暂未记录；当前桥接按EFMI默认的完整vs-t0底层池解释偏移，不能推广到任意非零起点子视图。
-- 桥接直接沿用LoyalTools的VB0–2、DrawIndexedInstanced和布局冲突规则，当前不处理Mod替换的普通DrawIndexed，也不从近景自动构造LOD。
+- The bone SRV of the merged-skeleton bridge is not a snapshot from the time of the draw; the current static editing flow has to pass the consistency verification of geometry/bone mapping over three independent captures. A non-zero bone pool, identical first and last addresses or a completed capture alone cannot be regarded as a correct mapping.
+- FirstElement/NumElements of SRV views are not recorded for now; the current bridge interprets offsets against EFMI's default complete underlying vs-t0 pool, which cannot be generalised to arbitrary sub-views with a non-zero start.
+- The bridge uses LoyalTools' rules for VB0–2, DrawIndexedInstanced and layout conflicts directly; at present it does not handle the plain DrawIndexed of meshes replaced by a mod, and does not construct LODs from the close view automatically.
 
-- 探针须在创建 D3D11 设备之前由启动器加载；DLL 固定到进程退出，没有当前会话热更新能力。
-- 延迟上下文中的 draw 不可见；状态可提示是否出现过。
-- 普通资源读取是读取时刻内容；draw 时刻 CB 需在捕获请求中指定 `cb_data=true`。
-- 只保证最新捕获的资源可读；多重采样贴图和三维贴图暂不支持读回。
-- XXMI `shader_hash=bytecode` 未实现；EFMI 默认 `3dmigoto` 模式可用。
-- 被 ShaderRegex 改写过的着色器，探针报的是改写后字节码的哈希，不是 mod INI 和帧分析文件名里的那个。对应关系可以查到（2026-10-09）：探针报的哈希等于 `<EFMI>\ShaderCache\<原始哈希>-ps_regex.bin` 内容的 FNV（对出了本角色的 11 个像素着色器；顶点着色器的 `-vs_regex.bin` 应当同理，本次会话里没有被改写的顶点着色器可核对）；XXMI 同时也创建原始着色器，`efmi_get_shader <原始哈希>` 能取到改写前的反汇编。工具还没有自动给出这个对应（TASKS 的 T-014）。
-- GPU 改写缓冲后，探针按当前字节算出的哈希可能不同于 XXMI 缓存的旧值。
-- mod 替换后可见的是实际提交的 draw；`origin=xxmi` 来自调用栈启发式分类，不是角色识别标签。
+- The probe has to be loaded by the launcher before the D3D11 device is created; the DLL is pinned until the process exits, and there is no hot update within the current session.
+- Draws in a deferred context are not visible; the status can tell whether any occurred.
+- An ordinary resource read gives the content at the time of reading; CBs from the time of the draw need `cb_data=true` in the capture request.
+- Only the resources of the latest capture are guaranteed to be readable; read-back of multisampled and 3D textures is not supported for now.
+- XXMI's `shader_hash=bytecode` is not implemented; EFMI's default `3dmigoto` mode works.
+- For a shader rewritten by a ShaderRegex the probe reports the hash of the rewritten bytecode, not the one in mod INI files and frame analysis file names. The correspondence can be looked up (2026-10-09): the hash the probe reports equals the FNV of the content of `<EFMI>\ShaderCache\<original hash>-ps_regex.bin` (worked out for 11 pixel shaders of the character in question; `-vs_regex.bin` of vertex shaders should work the same way, but that session had no rewritten vertex shader to check against); XXMI also creates the original shader, so `efmi_get_shader <original hash>` returns the disassembly from before the rewrite. The tool does not give this correspondence automatically yet (T-014 in TASKS).
+- After the GPU rewrites a buffer, the hash the probe computes from the current bytes may differ from the old value XXMI has cached.
+- After a mod replacement, what is visible are the draws actually submitted; `origin=xxmi` comes from a heuristic classification of the call stack and is not a character identification label.
 
-以上来自当前 README/源码，不应扩大为本次修复已处理的功能。
+The above comes from the README/sources of the time and should not be widened into functions that a given fix has dealt with.

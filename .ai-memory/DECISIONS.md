@@ -1,188 +1,188 @@
-# EFMI MCP — 技术决策记录
+# EFMI MCP — Technical decisions
 
-## D-001：项目内修复，EFMI/XXMI 只读
+## D-001: Fix inside the project; EFMI/XXMI stay read-only
 
-- 日期：2026-10-05。
-- 决策：修改范围限定 `F:\EFMI MCP`；原版 EFMI/XXMI DLL、INI、Core、启动器配置和现有 mod 不写入。
-- 原因：用户明确要求“不要动 efmi，只动我们的工具”，也与 README 既定边界一致。
-- 实施：测试使用 `sandbox/run/` 私有副本；参考 `E:\loyal tools\.ai-memory` 只读取结构，不修改或迁入无关项目事实。
-- 2026-10-06 补充：用户授权工具自动发送正常 F10 重载；仍不直接编辑上述原版文件，但正常 XXMI 重载可能自行保存持久变量。不得用“工具不编辑文件”推导为“F10 无文件副作用”。
+- Date: 2026-10-05.
+- Decision: changes are limited to `F:\EFMI MCP`; the original EFMI/XXMI DLLs, INI files, Core, the launcher configuration and existing mods are not written to.
+- Reason: the user explicitly asked not to touch EFMI and to change only our own tool, which also matches the boundary already set in the README.
+- Implementation: tests use the private copy in `sandbox/run/`; from the reference `E:\loyal tools\.ai-memory` only the structure is read, and nothing of that unrelated project is modified or brought in.
+- Addition of 2026-10-06: the user authorized the tool to send the normal F10 reload automatically; the original files above are still not edited directly, but a normal XXMI reload may save persistent variables on its own. "The tool does not edit files" must not be taken to mean "F10 has no side effects on files".
 
-## D-002：记忆按七种职责拆分
+## D-002: Memory split by seven responsibilities
 
-- 日期：2026-10-05。
-- 决策：概览、架构、当前状态、决策、问题、任务、会话日志分别存入七个 Markdown 文件，根 `AGENTS.md` 提供恢复与维护入口。
-- 原因：跨会话保持事实和验证边界，避免依赖聊天回忆。
-- 维护：当前状态和任务反映最新事实；日志追加摘要；有新结论时同步决策/问题。历史测量保留来源与范围。
+- Date: 2026-10-05.
+- Decision: overview, architecture, current state, decisions, issues, tasks and session log are kept in seven Markdown files; the root `AGENTS.md` is the entry point for resuming and maintaining them.
+- Reason: keep facts and verification boundaries across sessions instead of relying on chat recollection.
+- Maintenance: current state and tasks reflect the latest facts; the log gets appended summaries; decisions/issues are updated when there is a new conclusion. Historical measurements keep their source and scope.
 
-## D-003：设备/上下文/帧边界必须一致
+## D-003: Device, context and frame boundary must agree
 
-- 日期：2026-10-05。
-- 决策：`hooks_attach_device` 分离钩子安装和目标选择；首个发现的交换链用 `GetDevice` / `GetImmediateContext` 选择目标并持有引用。辅助设备仍可挂钩，但不得覆盖目标。`context1` 能力属于各个上下文，GPU writer 只跟踪所选上下文且要求已发现交换链。
-- 原因：真实游戏会创建额外设备；旧主交换链仍提供 Present 而新上下文没有主画面 draw，产生看似正常连通但全空的捕获。
-- 边界：选定后拒绝另一设备的替代交换链并提示重启；不承诺多交换链自动识别主画面，也不承诺同设备交换链重建时跨界捕获完整。
-- 状态：`0.1.1` 已实现，多设备四场景 `192` 项和最终整套回归通过；新版已在 PID `38252` 的伊冯画面通过非空帧与真实资源读回验证。
+- Date: 2026-10-05.
+- Decision: `hooks_attach_device` separates hook installation from target selection; the first swap chain found selects the target with `GetDevice` / `GetImmediateContext` and holds references. An auxiliary device can still be hooked but must not override the target. The `context1` capability belongs to each context; the GPU writer tracks only the selected context and requires a swap chain to have been found.
+- Reason: the real game creates additional devices; the old main swap chain still provided Present while the new context had no draws of the main picture, which produced captures that looked connected but were entirely empty.
+- Boundary: once selected, a replacement swap chain of another device is refused with a hint to restart; neither automatic recognition of the main picture among several swap chains nor complete captures across a re-creation of the swap chain on the same device is promised.
+- Status: implemented in `0.1.1`; the `192` checks of the four multi-device scenarios and the final full regression pass; the new version has passed non-empty frame and real resource read-back verification on the Yvonne screen of PID `38252`.
 
-## D-004：验证分层记录
+## D-004: Verification recorded by layer
 
-- 日期：2026-10-05。
-- 决策：分别记录注入/连接、非空帧与连续数据、资源读回、角色相关数据识别；沙盒和真实游戏结果分开。
-- 原因：历史沙盒全部通过仍未覆盖本次真实游戏多设备场景。重编译磁盘 DLL 也不会更新现有游戏进程。
+- Date: 2026-10-05.
+- Decision: record separately injection/connection, non-empty frames and continuous data, resource read-back, and recognition of character-related data; keep sandbox and real-game results apart.
+- Reason: all historical sandbox tests passed and still did not cover this multi-device scenario of the real game. Recompiling the DLL on disk does not update the existing game process either.
 
-## D-005：连续模式用 generation 隔离会话
+## D-005: Continuous mode isolates sessions by generation
 
-- 日期：2026-10-05。
-- 决策：live 捕获记录其启动时的 generation；停止（`enable=false`）或断开连接会推进 generation，发布时拒绝已停止或旧 generation 的在途帧。`enable=true` 的参数重配不更换 generation。
-- 原因：只清空 live 环形缓冲不足以阻止正在采集的旧帧稍后回填，首轮自测因此出现 `71` 通过 / `2` 失败。
-- 状态：修复及新增 `10` 项回归检查已构建，自测 `83` 通过 / `0` 失败，最终整套回归通过。
+- Date: 2026-10-05.
+- Decision: a live capture records the generation at its start; a stop (`enable=false`) or a disconnect advances the generation, and at publication in-flight frames that are stopped or of an old generation are refused. Re-configuring parameters with `enable=true` does not change the generation.
+- Reason: emptying the live ring buffer alone is not enough to stop an old frame that is being captured from being back-filled a little later; the first self-test run therefore showed `71` passed / `2` failed.
+- Status: the fix and `10` new regression checks are built; the self-test shows `83` passed / `0` failed, and the final full regression passes.
 
-## D-006：沙盒 shader 稳定浮点基准，保留严格哈希断言
+## D-006: Sandbox shaders get a stable floating-point baseline; strict hash assertions stay
 
-- 日期：2026-10-05。
-- 证据：posed VB 在无 dump、甚至无 XXMI 时仍可能有 `39` 个 float 变化 `1 ULP`，最大 `5.96e-8`；每次探针 hash 与读回 CRC 一致，说明缓冲内容实际变化。
-- 决策：在测试 shader 使用 HLSL `precise` 稳定字节基准，不放宽哈希或字节比较来隐藏差异。旧探针 + 无 XXMI 同样复现变化，说明不是本轮回归；具体编译优化机理仅为推断。
-- 状态：测试场景已修；有/无 XXMI 各 `12` 次连续首帧捕获的 `11616` 字节 posed VB 逐字节一致，CRC `1b4be723`。最终整套三种 parity 的二次捕获一致检查均通过。
+- Date: 2026-10-05.
+- Evidence: the posed VB may still have `39` floats changing by `1 ULP`, at most `5.96e-8`, without a dump and even without XXMI; each time the probe hash agrees with the CRC of the read-back, so the buffer content really changes.
+- Decision: use HLSL `precise` in the test shader to stabilise the byte baseline, rather than loosening hash or byte comparisons to hide the difference. The old probe without XXMI reproduces the change too, so it is not a regression of this round; the exact compiler optimisation mechanism is only inferred.
+- Status: the test scene is fixed; with and without XXMI, the `11616` bytes of posed VB of `12` consecutive first-frame captures each are byte-identical, CRC `1b4be723`. The second-capture consistency checks of all three parity runs of the final full suite pass.
 
-## D-007：完成修改后主动提交并推送代码
+## D-007: Commit and push code unprompted after finishing a change
 
-- 日期：2026-10-05。
-- 用户明确要求：“每次改完记得提交代码”。
-- 原决策（2026-10-05）：每轮修改经相关验证后同步项目记忆、检查差异并创建 Git 本地提交；当时未授权自动 push。
-- 更新（2026-10-06）：用户本轮明确要求完成后及未来轮次也推送 `https://github.com/loyal37/EFMI-MCP`。新约定为验证、同步记忆、检查差异、提交并推送指定仓库；不强制覆盖远端历史。历史日志中的“不 push”保持为当时执行事实，不再作为当前约束。
-- 补充（2026-10-06 晚）：用户确认该约定同样适用于 Claude 会话（“按要求提交并推送，以后也一样”）。
-- 捕获原始文件仍放在已忽略的 `captures/`，本地代码提交不混入游戏截图、大型二进制或构建产物。
+- Date: 2026-10-05.
+- The user explicitly asked to remember to commit the code after every change.
+- Original decision (2026-10-05): after each round of changes has passed its verification, sync the project memory, review the diff and create a local Git commit; automatic push was not authorized at the time.
+- Update (2026-10-06): the user explicitly asked that this round and future rounds also be pushed to `https://github.com/loyal37/EFMI-MCP`. The new agreement is: verify, sync the memory, review the diff, commit and push to the specified repository; remote history is not force-overwritten. "No push" in the historical log remains a fact of what was done then and is no longer a current constraint.
+- Addition (evening of 2026-10-06): the user confirmed that the agreement applies to Claude sessions as well ("commit and push as required, and the same from now on").
+- Raw capture files stay in the ignored `captures/`; local code commits do not mix in game screenshots, large binaries or build output.
 
-## D-008：复用原合并算法，以多采样验证静态编辑契约
+## D-008: Reuse the original merge algorithm; verify the static-editing contract with several samples
 
-- 日期：2026-10-06。
-- 用户指定参考E:\loyal tools，把当前角色输出至E:\Endfield mods\liimo merge；该输出目录属于明确授权例外，EFMI及参考工具继续只读。
-- 使用LoyalTools原生角色识别、骨矩阵精确去重和工作空间写出，不复制其他角色骨映射，不把普通OBJ导出称为合并骨骼提取。
-- 0.1.1未提供骨SRV的draw时刻快照，且游戏骨池地址动态变化。任务目标是可编辑静态网格和全局VG，采用三份独立采样：完整几何不变、canonical(组件身份,localVG)一致、带权跨组件合并非空、骨矩阵有效且实际随采样变化。报告明确晚读时刻，不承诺指定帧姿态或所有动画动作。
-- 生成原生workplace后，在后台Blender用已安装插件真实导入，验证通过才保存新工程；不覆盖用户既有工作空间或blend。
+- Date: 2026-10-06.
+- The user named the reference E:\loyal tools and asked for the current character to be written to E:\Endfield mods\liimo merge; that output directory is an explicitly authorized exception, while EFMI and the reference tool stay read-only.
+- Use LoyalTools' native character recognition, exact de-duplication of bone matrices and workspace writing; do not copy the bone mapping of other characters, and do not call an ordinary OBJ export a merged-skeleton extraction.
+- 0.1.1 offers no snapshot of the bone SRV as it was at the draw, and the address of the game's bone pool changes dynamically. The goal of the task is an editable static mesh with global vertex groups, using three independent samples: the complete geometry is unchanged, canonical (component identity, local VG) agrees, the weighted merge across components is not empty, and the bone matrices are valid and really change between samples. The report states the late-read time and promises neither the pose of a specified frame nor all animation actions.
+- After generating the native workplace, it is really imported in a background Blender with the installed add-on, and a new project is saved only when verification passes; the user's existing workspace or blend is not overwritten.
 
-## D-009：先优化游戏外处理，保留完整验证
+## D-009: Optimise the processing outside the game first; keep full verification
 
-- 日期：2026-10-06；用户反馈读取绘制数据慢。
-- 实测后采用独立C ABI CRC32C helper（绝对路径加载、CPU检测、自测、Python回退），不改注入DLL或强制新增pip依赖。保持旧增量seed和buffer语义。
-- 紧凑JSON省编码开销，PNG低压缩无损但文件稍大；MCP同次读取的完整图/缩略图共用一次解码，不跨帧缓存实时纹理。第二次角色身份复核只省VB哈希，保留IB、CB及原有identity门槛；主帧完整几何验证仍执行。
-- 桥接缓存限制在同次离线归档导出，先检查完整大小/SHA，再把相同已验字节供原生reader使用；三采样几何逐字节/骨组canonical一致性、变化骨矩阵和非空带权合并不能删减。
-- 性能证据分别标明microbenchmark、真实完整归档、离线转换；不能把CRC的约924倍加速声称为整条采集的提升。真实归档三轮中位改善33.8%；PNG空间换时间的代价明确记录。
+- Date: 2026-10-06; the user reported that reading draw data was slow.
+- After measuring, an independent C ABI CRC32C helper was adopted (loaded by absolute path, CPU detection, self-test, Python fallback), without changing the injected DLL or forcing a new pip dependency. The old incremental seed and buffer semantics are kept.
+- Compact JSON saves encoding cost; PNG with low compression is lossless but the files are slightly larger; the full picture and the thumbnail of one MCP read share a single decode, and live textures are not cached across frames. The second character identity check only skips the VB hashes and keeps IB, CB and the existing identity thresholds; the complete geometry validation of the main frame is still performed.
+- The bridge cache is limited to one offline archive export; it first checks the complete size/SHA and then gives the same verified bytes to the native reader. The byte-for-byte geometry / canonical bone group consistency of the three samples, changing bone matrices and a non-empty weighted merge must not be cut.
+- Performance evidence is labelled separately as microbenchmark, real complete archive, and offline conversion; the roughly 924-fold speed-up of the CRC must not be claimed as an improvement of the whole capture path. The median of three real archive runs improved by 33.8%; the cost of trading PNG space for time is recorded explicitly.
 
-## D-010：单次 F10 请求与重载完成分开证明
+## D-010: A single F10 request and the completion of the reload are proven separately
 
-- 日期：2026-10-06；用户要求修改 MCP，让 agent 自动执行 F10、等待和重新采集。
-- 决策：服务增加 `efmi_reload_and_capture`，通过 Win32 固定 F10 输入，复用探针既有 capture；服务升至 0.1.2，探针保持 0.1.1，只需重启 MCP。无需狩猎模式，不改 Core/启动器，也不重新注入现有进程。
-- 门槛：同一管道/PID、当前 EFMI 安装、所选 device/context/swap chain；本安装原始 `reload_config` 与 `reload_fixes` 均为单条 `no_modifiers VK_F10`。确认有效前台窗口和修饰键状态，无法确认即报错，不强制抢焦点或自动提升权限。
-- 数据边界：停止 live、release、清旧捕获和 mod 索引，单次 F10 后默认等 2000ms，再建立 barrier 并捕获严格更晚的非空帧；新帧前后复核目标。live 保持停止，输入后错误不自动重发。
-- 证明边界：`reload_requested=true` 仅证明输入发送；探针无重载回执，`reload_confirmed` 保持 false，目标 mod 仍需 draw/资源验证。异常时保留已发送/未发送/未知状态；正常 F10 可让 XXMI 保存持久变量，不能声明此工具完全只读。
-- 当时验证：离线输入19项、工作流/MCP边界30项及既有MCP39项通过；私有沙盒实际F10在hunting=0下使目标skip规则生效，证据 `sandbox/build/reload-xuxnsq73/reload-evidence.json`。后续本轮真实游戏测试失败，更新见D-011；历史沙盒结果不能代替实机。
-- 输入边界：一次约 200ms F10 down/up 脉冲期间，XXMI 1.2.2 重建按键注册可能触发多次内部重载。只保证工具单次输入且不重发，不保证 XXMI 只执行一次内部 reload；保留无回执和正常持久变量保存的说明。
+- Date: 2026-10-06; the user asked for the MCP to be changed so that the agent presses F10, waits and captures again automatically.
+- Decision: the server gets `efmi_reload_and_capture`, with a fixed F10 input through Win32, reusing the probe's existing capture; the server goes to 0.1.2, the probe stays at 0.1.1, and only the MCP has to be restarted. No hunting mode, no change to Core/the launcher, and no re-injection into the existing process.
+- Thresholds: the same pipe/PID, the current EFMI installation, the selected device/context/swap chain; the original `reload_config` and `reload_fixes` of this installation are each a single `no_modifiers VK_F10`. The effective foreground window and the modifier key state are confirmed; if they cannot be confirmed an error is reported, without forcing the focus or elevating rights automatically.
+- Data boundary: stop live mode, release, clear old captures and the mod index, wait the default 2000 ms after the single F10, then establish the barrier and capture a strictly later non-empty frame; the target is re-checked before and after the new frame. Live mode stays stopped, and after an error following the input the key is not resent automatically.
+- Proof boundary: `reload_requested=true` proves only that the input was sent; the probe has no reload receipt, `reload_confirmed` stays false, and the target mod still has to be verified through draws/resources. On an exception the sent / not sent / unknown state is kept; a normal F10 can make XXMI save persistent variables, so the tool cannot be declared completely read-only.
+- Verification at the time: 19 offline input checks, 30 workflow/MCP boundary checks and the existing 39 MCP checks passed; a real F10 in the private sandbox under hunting=0 made the target skip rule take effect, evidence `sandbox/build/reload-xuxnsq73/reload-evidence.json`. The later real-game test of that round failed, see the update in D-011; historical sandbox results cannot replace the real game.
+- Input boundary: during one F10 down/up pulse of about 200 ms, XXMI 1.2.2 re-creating its key registrations may trigger several internal reloads. Only a single input by the tool without resending is guaranteed, not that XXMI performs exactly one internal reload; the notes about the missing receipt and the normal saving of persistent variables stay.
 
-## D-011：输入 API 接受与按下状态分开验证，保留实机失败结论
+## D-011: Input accepted by the API and the pressed state are verified separately; the real-game failure stands
 
-- 日期：2026-10-06；用户移出Yvonne并明确确认自动F10没有卸载该模组。两次普通VK发送虽API接受/新帧读取正常，实际刷新失败；扫描码诊断进一步显示F10高位整个按住期间不可见，故不将扫描码作为修复。
-- 决策：服务升0.1.3，在既有约200ms按住期采样GetAsyncKeyState，至少一次高位才继续；API接受写 `key_down_sent`，状态可见另写 `key_down_observed`。未观察到按下返回input阶段 `keydown_not_observed`，finally尝试释放、不capture、不重发；不改变 `reload_confirmed=false` 的回执边界。
-- 这是错误检测修复，真实输入不可见原因未定位，T-007实机目标仍未完成。当前Python medium、目标token access denied不能认定具体权限或安全软件原因；不自动提权、不修改EFMI/启动器，不以内部函数地址或非公开入口替代受支持接口。
-- 源码依据：官方v1.2.2 [input.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/input.cpp)轮询GetAsyncKeyState；[IniHandler.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/IniHandler.cpp)在未dirty时不写user.ini。文件时间不变不作为失败判据；用户观察和旧模组绘制保留才是本次实际失败证据。
-- 验证：本轮输入21项、工作流32项、MCP stdio私有沙盒39项及compileall通过。用户游戏仍运行，未重跑会拒绝其他探针的真实F10沙盒；不自动重复实际输入。扫描码报告及独立assessment在 `captures/verify-reload-scancode-41976-ready/`，保留原始证据、不将诊断pass改称重载成功。
+- Date: 2026-10-06; the user moved Yvonne out and explicitly confirmed that the automatic F10 did not unload that mod. Two ordinary VK sends were accepted by the API and new frames were read normally, yet the actual refresh failed; the scan-code diagnosis further showed that the high bit of F10 was not visible during the whole hold, so scan codes are not taken as the fix.
+- Decision: the server goes to 0.1.3 and samples GetAsyncKeyState during the existing hold of about 200 ms, continuing only when the high bit is seen at least once; API acceptance is written to `key_down_sent`, visibility of the state separately to `key_down_observed`. When the press is not observed, the input stage returns `keydown_not_observed`, `finally` tries to release, there is no capture and no resend; the receipt boundary `reload_confirmed=false` is unchanged.
+- This is a fix of error detection; the cause of the real input being invisible is not located, and the real-game goal of T-007 is still not reached. From the current Python being medium integrity and access to the target token being denied, no specific permission or security-software cause can be concluded; no automatic elevation, no change to EFMI/the launcher, and no internal function address or non-public entry point in place of a supported interface.
+- Source basis: in the official v1.2.2, [input.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/input.cpp) polls GetAsyncKeyState; [IniHandler.cpp](https://github.com/SpectrumQT/XXMI-Libs-Package/blob/v1.2.2/DirectX11/IniHandler.cpp) does not write user.ini when nothing is dirty. An unchanged file time is not a failure criterion; the user's observation and the old mod still being drawn are the actual evidence of this failure.
+- Verification: in that round the 21 input checks, 32 workflow checks, the 39 checks of the MCP stdio private sandbox and compileall passed. The user's game was still running, so the real-F10 sandbox test, which refuses other probes, was not re-run; real input is not repeated automatically. The scan-code report and an independent assessment are in `captures/verify-reload-scancode-41976-ready/`, keeping the original evidence and not relabelling the diagnostic pass as a successful reload.
 
-## D-012：重载按键由探针在游戏进程内发出，并以资源重建作为重载证据
+## D-012: The reload key is pressed by the probe inside the game process, and re-created resources are the evidence of the reload
 
-- 日期：2026-10-06 晚；用户要求让 MCP 真正能执行 F10 刷新（此前 Codex 的外部按键实机无效）。
-- 依据：游戏清单 `requireAdministrator`，MCP 服务为普通权限，UIPI 使外部 `SendInput` 无效且不报错。探针已在游戏进程内，同完整性级别。
-- 决策：探针 0.1.2 提供固定功能的 `reload_key`（只能是 F10、只发给前台的本进程窗口、核对默认绑定）；服务 0.1.4 在探针支持时使用它，旧探针保留外部路径并提示重启游戏。不自动提权，不修改 XXMI/EFMI/启动器，不调用 XXMI 内部函数，不改 XXMI 的导入表。
-- 对 D-010/D-011 的更新：`focus_game=true` 时，正常取前台被拒后允许借用前台线程输入状态（`attach_input`），并默认把焦点还回原窗口；不发送 Alt 等其他按键，不改系统设置。`reload_confirmed` 不再恒为 false，改由“XXMI 在按键后创建了新帧所用的资源/着色器”判定；这是行为证据，不是 XXMI 的回执。
-- 边界：管道对同一用户的进程开放，因此命令不接受键值或目标窗口参数。若实机上进程内按键仍被过滤，视为另一道保护，不再绕过。沙盒不是管理员进程，实机通过前本任务不算完成。
+- Date: evening of 2026-10-06; the user asked that the MCP really be able to perform the F10 refresh (the external key press done by Codex before had no effect in the real game).
+- Basis: the game's manifest says `requireAdministrator`, the MCP server has ordinary rights, and UIPI makes an external `SendInput` ineffective without an error. The probe is already inside the game process, at the same integrity level.
+- Decision: probe 0.1.2 provides a fixed-function `reload_key` (it can only be F10, is sent only to this process's window in the foreground, and checks the default bindings); server 0.1.4 uses it when the probe supports it, and keeps the external path for an old probe with a hint to restart the game. No automatic elevation, no change to XXMI/EFMI/the launcher, no call into XXMI's internal functions, no change to XXMI's import table.
+- Update to D-010/D-011: with `focus_game=true`, when taking the foreground normally is refused, borrowing the input state of the foreground thread (`attach_input`) is allowed, and by default the focus is given back to the original window; no other key such as Alt is sent and no system setting is changed. `reload_confirmed` is no longer always false; it is now decided by "XXMI created, after the key press, resources/shaders that the new frame uses"; this is behavioural evidence, not a receipt from XXMI.
+- Boundary: the pipe is open to processes of the same user, so the command accepts neither a key value nor a target window parameter. If the in-process key press were still filtered in the real game, that would be regarded as another layer of protection and not bypassed. The sandbox is not an administrator process; until it passes in the real game this task does not count as done.
 
-## D-013：模型编辑闭环复用 LoyalTools，预览材质仅漫射（已实现，见 D-014）
+## D-013: The model editing loop reuses LoyalTools; preview materials are diffuse only (implemented, see D-014)
 
-- 日期：2026-10-06；用户明确要求模型提取、Blender 编辑后导出游戏 INI／BUF、严格使用 LoyalTools 导出逻辑，并在导出后刷新查看目标模组实际绘制。
-- 方案：复用原生完整蓝图导出入口及前后处理；MCP 管理任务、文件身份、输出检查、指定测试目录部署和已授权的正常 F10，不另写替代 INI／BUF 生成算法。
-- Blender 仅连接漫射贴图；原始其他 DDS／槽位信息继续保存供游戏导出。导出预检允许合法编辑，不套用导入时原始顶点数不变的条件。
-- 验收：区分导出产物有效、部署一致、重载证据和本次目标模组实际绘制；逐组件核对 BUF／贴图，明确主控／LOD 和分支覆盖。详细计划见 `docs/model-extraction-export-plan.md`。写下本条时 T-008 尚未实现；实现方式与验证范围见 D-014。
+- Date: 2026-10-06; the user explicitly asked for model extraction, export of game INI / BUF after editing in Blender, strict use of LoyalTools' export logic, and a refresh after export to look at what the target mod actually draws.
+- Approach: reuse the native complete blueprint export entry point with its pre- and post-processing; the MCP manages jobs, file identity, output checks, deployment into the specified test folder and the authorized normal F10, and writes no substitute INI / BUF generation algorithm.
+- Blender connects only the diffuse texture; the other original DDS / slot information is still kept for the game export. The export pre-check allows legitimate edits and does not apply the import-time condition that the original vertex count is unchanged.
+- Acceptance: distinguish valid export output, consistent deployment, reload evidence, and what the target mod actually draws this time; check BUF / textures per component, and state the main / LOD and branch coverage clearly. The detailed plan is in `docs/model-extraction-export-plan.md`. When this entry was written T-008 was not implemented yet; how it was implemented and what was verified is in D-014.
 
-## D-014：模型流程以接入 LoyalTools 为主
+## D-014: The model workflow is built on integrating LoyalTools
 
-- 日期：2026-10-07；用户要求按计划书接入模型流程并补充 LOD 匹配，随后明确：“主要还是以接入为主，不然就好像如果我 loyaltools 更新了，你 mcp 也要进行更新”。
-- 决策：只调用 LoyalTools 的入口，不保存其算法的副本。默认使用所选 Blender 中已安装的插件作为唯一的 LoyalTools，服务进程和 Blender 内运行同一份代码；显式配置才改用其他目录，结果里写明路径、版本和来源。
-- LOD：帧匹配调用 `map_merged_skeleton_lod`，两帧各自可以是帧分析目录或探针归档；JSON 匹配调用 `restore_merged_skeleton_lod`。主控与 LOD 共用一份编辑网格，入口和缓冲变体由插件导出时生成；不推算未采集的 LOD。
-- 检查不依赖插件的命名或日志措辞：导出成败以产物为准，插件日志里的失败语句作为否决；游戏内核对按缓冲内容，并沿 INI 的 `run`／`ref` 引用关联入口与文件。
-- 项目目录就是 LoyalTools 自定义工作空间根目录（目录名即模组名），取消计划里的 `project/` 一层，与用户已有项目的布局一致。
-- 写入边界：部署只写 `<EFMI>\Mods` 下由本工具创建并带标记文件的目录；被替换的旧文件移到项目的 `verification/` 下，在 XXMI 加载范围之外。其余 EFMI 内容仍只读（AGENTS.md 已同步）。
-- 未解决的耦合：归档版提取器替换了 `DumpWorkspaceExtractor` 的几个内部方法。把探针数据写成帧分析目录格式可以去掉这层依赖，需在游戏运行时与 XXMI 的帧分析对照后再实施。
-- 计划书此前按用户要求只留在本地。实现时曾把它随代码一并提交（`5518332` 起的三个提交），用户随后明确“不要上传计划书到 GitHub”：已从仓库移除并加入 `.gitignore`，文件保留在本地，README 改为自带项目布局和 LOD 说明。那三个提交的历史里仍有它，彻底清除需要改写历史并强制推送，未经用户明确同意不做。此后“只留本地”的要求不因笼统的“提交并推送”而失效。
+- Date: 2026-10-07; the user asked for the model workflow to be integrated according to the plan document, with LOD matching added, and then made clear that it should mainly be an integration: otherwise an update of LoyalTools would force an update of the MCP as well.
+- Decision: only call LoyalTools' entry points and keep no copy of its algorithms. By default the add-on installed in the selected Blender is the one and only LoyalTools, and the server process and Blender run the same code; another directory is used only when configured explicitly, and the result states path, version and origin.
+- LOD: frame matching calls `map_merged_skeleton_lod`, and each of the two frames can be a frame analysis directory or a probe archive; JSON matching calls `restore_merged_skeleton_lod`. Main model and LOD share one edited mesh, and entry points and buffer variants are generated by the add-on at export; LODs that were not captured are not inferred.
+- Checks do not depend on the add-on's naming or the wording of its log: success or failure of an export is decided by the output, a failure statement in the add-on's log acts as a veto; the in-game check goes by buffer content and follows the `run` / `ref` references of the INI to connect entry points with files.
+- The project directory is the root of a LoyalTools custom workspace (the directory name is the mod name); the `project/` level of the plan is dropped, matching the layout of the user's existing projects.
+- Write boundary: deployment writes only into a directory under `<EFMI>\Mods` that this tool created and that carries the marker file; old files that are replaced are moved to the project's `verification/`, outside what XXMI loads. All other EFMI content stays read-only (AGENTS.md updated accordingly).
+- Unresolved coupling: the archive extractor replaces a few internal methods of `DumpWorkspaceExtractor`. Writing the probe data in the format of a frame analysis directory would remove this dependency; it should be done only after a comparison with XXMI's frame analysis while the game is running.
+- The plan document had been kept local at the user's request. During implementation it was once committed along with the code (three commits starting at `5518332`), after which the user said not to upload the plan document to GitHub: it was removed from the repository and added to `.gitignore`, the file stays local, and the README now carries its own project layout and LOD description. The history of those three commits still contains it; removing it completely would need rewriting history and a force push, which is not done without the user's explicit consent. From then on the "local only" requirement is not overridden by a general "commit and push".
 
-## D-015：用 EFMI 自带的 F11 开关 mod，状态取自 EFMI 的提示
+## D-015: Switch mods with EFMI's own F11; the state comes from EFMI's notification
 
-- 日期：2026-10-07；用户要求 agent 能随时启用或禁用所有 mod 以对比原始绘制和 mod 绘制，并点名 F11。
-- 决策：不自己实现“禁用”，而是按 EFMI 已有的键。`[KeyToggleMods]` 翻转 `$enable_mods`，核心据此决定是否匹配 IB 哈希。这样不移动、不改写任何 mod 文件，不重载，也不改 XXMI 的内存，符合“不修改原版工具”。
-- 探针只增加第二个固定动作（F11），仍不接受客户端指定按键；两个动作共用同一套前台、修饰键和帧同步保护。绑定不是默认值、或 F11 单独按下还会触发 `[Hunting]` 里的其他功能时拒绝发送。
-- 状态来源：XXMI 没有读取变量的接口，服务端在按键后的帧里读取 EFMI 打印的提示文字。两段文字从本机 `main.ini` 读出，不写死英文；读不到就报告未知并停止，不靠猜。`on`／`off` 因此实现为“按一次，看结果，不对再按一次”，最多两次。会话里记住的状态只是上次提示的结果，手动按 F11 不会被看到，文案中已说明。
-- 不停止 live、不清旧捕获：开关不销毁资源，旧捕获正好用来和新帧比较。
-- 自己挂着色器的 mod 不受 `$enable_mods` 控制，这是 EFMI 的行为，工具说明里写明，不另做处理。
-- 用完恢复为开启写进了工具说明、服务说明和 AGENTS.md。
+- Date: 2026-10-07; the user asked that the agent be able to enable or disable all mods at any time to compare the original draws with the mods' draws, and named F11.
+- Decision: do not implement "disable" ourselves but press the key EFMI already has. `[KeyToggleMods]` flips `$enable_mods`, and the core decides from it whether IB hashes are matched. This moves or rewrites no mod file, does not reload and does not change XXMI's memory, in line with "do not modify the original tools".
+- The probe only gains a second fixed action (F11) and still accepts no key chosen by the client; both actions share the same foreground, modifier key and frame synchronisation protection. Sending is refused when the binding is not the default, or when F11 pressed alone would also trigger other functions in `[Hunting]`.
+- Source of the state: XXMI has no interface for reading variables, so the server reads the notification text EFMI prints in the frame after the key press. Both texts are read from the local `main.ini` instead of hard-coding the English wording; if it cannot be read, the state is reported as unknown and the tool stops instead of guessing. `on` / `off` are therefore implemented as "press once, look at the result, press once more if it is wrong", at most twice. The state remembered in the session is only the result of the last notification; a manual F11 is not seen, which the tool text says.
+- Live mode is not stopped and old captures are not cleared: the switch destroys no resources, and old captures are exactly what a new frame is compared with.
+- Mods that hook shaders on their own are not controlled by `$enable_mods`; this is EFMI's behaviour, stated in the tool description, with no further handling.
+- Switching back on afterwards is written into the tool description, the server instructions and AGENTS.md.
 
-## D-016：实机验证后对几处核对方式的修正
+## D-016: Corrections to several checks after verification in the real game
 
-- 日期：2026-10-07；实机提取和部署伊冯时连续遇到“过严、假设不成立或取错了帧”的检查（见 CURRENT_STATE 首节）。
-- CPU 姿态组件：不放宽“读到的必须是某次绘制实际用的数据”，而是换一个能证明这一点的时机——另采一帧轻量帧后立刻读范围，以探针的范围写入记录和该帧的绘制时哈希为证，失败重采。代价是这些顶点属于稍后几帧的姿态，这与“骨骼缓冲本来就是稍后读回、不复现某一帧姿态”的既有范围一致，并写入归档与报告。未采用：整缓冲读取（永远被判已改写）、直接接受未经证明的读回、为此改探针（需要再次重启游戏，留作以后）。
-- 身份核对：原先用实例常量的前 64 字节（世界矩阵）当作身份，物体一动就变。核对的本意是骨骼缓冲在读取期间没有换，改为只比较骨骼缓冲指针；出入画面的网格不相干。
-- 骨骼合并：不要求各采样的合并结果逐项相同（游戏矩阵的末位噪声使它天然不同），改为验证导出所用采样的每个合并在所有采样里都成立（矩阵容差 1e-5）。真正要防的“两根不同骨头碰巧重合”仍会被拒绝；少合并只多出重复顶点组。合并算法本身仍是 LoyalTools 的，没有复制或改动。
-- F11 的 `on`／`off` 增加“不按键”的捷径：需要两个条件同时成立——本服务读过 EFMI 的提示且为目标状态、现采一帧的绘制与之相符。单凭记忆会漏掉用户手动按键，单凭绘制在没有 mod 网格时不可判定，所以两者都要。
-- 重载后的判定帧：等待从游戏恢复出帧算起，而不是从松键算起；模组还没画出东西的帧不作判定。仍然只按一次 F10。
-- 核对以内容为准：记录的哈希与导出文件不符时不直接下结论（它可能是旧值），读回整缓冲比较。只有 `vb0`（INI 从文件绑定的流）内容不同才判失败，其余槽位可能是游戏留下的绑定，只列出。
-- 停用用户的 mod 属于“现有 mod 只读”的例外，仅在用户当场明确要求时做，改名、用完改回，并在结果里写明；工具本身不提供这个动作。
+- Date: 2026-10-07; extracting and deploying Yvonne in the real game ran into a series of checks that were too strict, assumed something that does not hold, or took the wrong frame (see the first section of CURRENT_STATE).
+- CPU-posed components: "what is read must be data that some draw actually used" is not loosened; instead a moment is chosen that can prove it: an additional light frame is captured and the range is read immediately, with the probe's range write records and the draw-time hash of that frame as proof, re-sampling on failure. The price is that these vertices belong to the pose of a few frames later, which matches the existing scope "the bone buffer is read back later anyway and does not reproduce the pose of one frame", and is written into the archive and the report. Not adopted: reading the whole buffer (always judged as rewritten), accepting an unproven read-back, or changing the probe for this (needs another game restart; left for later).
+- Identity check: the first 64 bytes of the instance constants (the world matrix) used to serve as identity, which changes as soon as the object moves. The point of the check is that the bone buffer was not swapped during reading, so now only the bone buffer pointer is compared; meshes entering or leaving the picture are irrelevant.
+- Bone merging: the merge results of the samples are no longer required to be identical item by item (noise in the last digits of the game's matrices makes them differ naturally); instead it is verified that every merge of the sample used for the export holds in all samples (matrix tolerance 1e-5). What really has to be prevented, two different bones coinciding by chance, is still rejected; merging less only produces duplicate vertex groups. The merge algorithm itself is still LoyalTools', neither copied nor changed.
+- F11 `on` / `off` get a shortcut that presses nothing, which needs two conditions at once: this server has read EFMI's notification and it was the target state, and the draws of a freshly captured frame agree with it. Memory alone would miss a manual key press by the user, and draws alone are undecidable when no mod mesh is in view, so both are required.
+- The frame judged after a reload: the wait counts from the game resuming to present frames, not from the key release; frames in which the mods do not draw anything yet are not judged. F10 is still pressed only once.
+- Checks go by content: when a recorded hash does not match the exported file, no conclusion is drawn directly (it may be an old value); the whole buffer is read back and compared. Only different content of `vb0` (the stream the INI binds from a file) is a failure; other slots may be bindings left by the game and are only listed.
+- Disabling a mod of the user's is an exception to "existing mods are read-only", done only when the user explicitly asks on the spot, by renaming, renaming back afterwards and stating it in the result; the tool itself does not offer this action.
 
-## D-017：区域哈希缓存按缓冲对象而不是按地址
+## D-017: The region hash cache is keyed by buffer object, not by address
 
-- 日期：2026-10-07；用户要求处理实机部署核对中记下的疑点，沙盒复现证实是探针缺陷（BUG-005）。
-- 决策：缓存条目记下缓冲对象的创建序号，查缓存时与当前对象比对。没有采用“在销毁时清条目”，因为探针不挂缓冲的 Release，补挂会给每个资源多一层钩子；也没有采用“每次创建都清空缓存”，那会让游戏频繁建缓冲时缓存失效、连续采集退回每帧读回。
-- 探针用特性 `region_hash_per_object` 表明这一点，服务端据此提示而不是比较版本号。旧探针下服务端不做重连清缓存之类的补救，只在状态和重载结果里说明并建议读内容，部署核对则一律以内容为准。
-- 复现方式写成沙盒程序的一个选项加自测项，而不是依赖 XXMI 重载：地址复用由测试程序自己制造，并从采集结果里的地址和序号确认确实发生，测试才有意义。
-- 实机上重载未改动的 mod 得不到反例（新旧内容相同），已如实记录为“不能当作验证”。
+- Date: 2026-10-07; the user asked for the doubt noted during the real-game deployment check to be dealt with, and a sandbox reproduction confirmed a probe defect (BUG-005).
+- Decision: a cache entry records the creation serial of the buffer object, which is compared with the current object on lookup. "Clear the entry on destruction" was not adopted because the probe does not hook the buffers' Release, and adding that would put another hook layer on every resource; "empty the cache on every creation" was not adopted either, since it would invalidate the cache whenever the game creates buffers frequently and push continuous capture back to a read-back every frame.
+- The probe signals this with the feature `region_hash_per_object`, and the server bases its hints on that rather than on a version comparison. With an old probe the server attempts no remedy such as clearing caches on reconnect; it only explains this in the status and the reload result and recommends reading contents, and the deployment check always goes by content.
+- The reproduction is an option of the sandbox program plus a self-test check, rather than depending on an XXMI reload: the test program creates the address reuse itself and confirms from addresses and serials in the capture that it really happened, which is what makes the test meaningful.
+- Reloading an unchanged mod in the real game yields no counter-example (old and new content are the same); this is recorded honestly as "cannot count as verification".
 
-## D-018：旧提交里的计划书保留，不改写历史
+## D-018: The plan document in old commits stays; history is not rewritten
 
-- 日期：2026-10-07。计划书曾随三个提交（`5518332`、`c673447`、`919db60`）进入仓库，之后已移出并加入忽略；两次询问是否改写历史以彻底清除，用户答复“不用彻底清除”。
-- 决策：保持现状，不改写历史、不强制推送；计划书今后只留本地（`AGENTS.md`）。此事已定，不必再问。
+- Date: 2026-10-07. The plan document once entered the repository with three commits (`5518332`, `c673447`, `919db60`), was then moved out and added to the ignore list; asked twice whether history should be rewritten to remove it completely, the user answered that it does not need to be removed completely.
+- Decision: leave things as they are, with no history rewrite and no force push; from now on the plan document stays local only (`AGENTS.md`). This is settled and need not be asked again.
 
-## D-019：归档只收可提取的对象；LOD 抓帧任务中途让出探针
+## D-019: Archives take only extractable objects; an LOD capture job hands the probe back midway
 
-- 日期：2026-10-07 晚；第一次在大世界的画面上做 LOD 抓帧，归档因无关的绘制整帧失败。
-- 归档的范围：只保留“至少有一个网格在 GPU 上蒙皮”的对象的绘制，对象按每对象常量（实例常量块的前 64 字节）区分。合并骨骼的提取和 LOD 匹配都需要骨骼权重，没有 GPU 蒙皮组件的对象无从谈起；LoyalTools 自己也用同一段常量区分对象并丢弃这类对象，所以这一步不会拿掉它本来会用的绘制。没有采用“全部归档、遇到读不了的再跳过”：大世界一帧要多读 160 MiB 缓冲和几十张贴图，而且关着 mod 等待的时间更长。
-- 索引数据被游戏重写的绘制：不再让整帧失败，改为略过并记录；它所属的对象在候选列表里标为不完整，提取时拒绝。原先的整帧拒绝是为了不产出缺组件的模型，现在这个保证落在对象上。
-- 被重写的顶点数据按缓冲一次读回，而不是按网格逐个读：数据只保持几帧，几个角色时逐个读必然有晚的。
-- `method=capture` 的任务在帧落盘后就把探针让出来（`Job.probe_done`），而不是新增一个“只抓帧”的工具：匹配要几十秒且不需要游戏，关着 mod 的时间应当只有抓帧那几秒；已有的 `method=frame` 加归档目录仍可用于离线重跑。
-- 部署核对的重载证据在最终判定的那一帧上再取一次：核对本来就会跳过“还没有 mod 在画”的头几帧，证据应取自同一帧，否则会把已发生的重载报成未确认。
+- Date: evening of 2026-10-07; the first LOD capture on an open-world screen failed for the whole frame because of unrelated draws.
+- Scope of the archive: only the draws of objects with "at least one mesh skinned on the GPU" are kept, objects being told apart by the per-object constants (the first 64 bytes of the instance constant block). Merged-skeleton extraction and LOD matching both need bone weights, so objects without a GPU-skinned component are out of the question; LoyalTools itself uses the same constants to tell objects apart and discards such objects, so this step removes no draw it would have used. "Archive everything and skip what cannot be read" was not adopted: an open-world frame would mean reading 160 MiB more of buffers and dozens of textures, and waiting longer with mods switched off.
+- Draws whose index data the game rewrites: they no longer fail the whole frame but are skipped and recorded; the object they belong to is marked incomplete in the candidate list and refused at extraction. The earlier whole-frame refusal was meant to prevent models with missing components; that guarantee now rests on the object.
+- Rewritten vertex data is read back once per buffer rather than mesh by mesh: the data stays for only a few frames, and with several characters reading one by one is bound to be late for some.
+- A job with `method=capture` hands the probe back as soon as the frames are on disk (`Job.probe_done`), instead of adding a "capture only" tool: matching takes tens of seconds and does not need the game, and the time with mods off should be only the few seconds of capturing; the existing `method=frame` with an archive directory can still be used for offline re-runs.
+- The reload evidence of the deployment check is taken again on the frame that is finally judged: the check already skips the first frames in which no mod is drawing yet, and the evidence should come from the same frame, otherwise a reload that did happen is reported as unconfirmed.
 
-## D-020：管线状态只增不改地加进协议；渲染目标拷贝由探针在绘制前后各做一次
+## D-020: Pipeline state is added to the protocol without changing anything; render target copies are made by the probe before and after the draw
 
-- 日期：2026-10-08；用户要求做完善清单里的 1、4、5。
-- 协议号不变（仍是 1）：新内容都是新增的键和新增的命令（`read_rt`、`release_rt`、抓取的 `rt` 选项），并各有一个 `features` 项。旧服务读新探针、新服务读旧探针都照常工作，服务端按 `features` 说明缺什么，而不是比较版本号。
-- 状态对象和视图按内容识别，不按地址：探针没有它们的创建／销毁钩子，一帧之内对象销毁后同地址再建的可能性虽小，BUG-005 已经说明“地址即身份”的假设会在某次重载后悄悄给出错的数据。每次绑定都取一次描述并与记录比对，代价是每个绘制十几次取描述，实测完整抓取没有变慢。没有选“录制期间持有引用”：那会改变游戏对象的生命周期。
-- D3D11 不保留的字段不显示（见限制-006）：显示运行时填的默认值会让人以为那是游戏设置的。
-- 重载后多看几帧（①）放在服务端、用轻量抓取轮询，不在探针里做“等到 XXMI 开始画”：判断依据（按键之后 XXMI 新建的对象是否被用到）本来就在服务端，探针不需要知道什么是重载。
-- “画了什么”用绘制前后两份拷贝的差来回答，而不是只拷贝绘制之后：只有“之后”看不出这一个绘制的贡献。按原始字节比较，不解码，所以任何格式都能给出改动范围。
-- 拷贝的位置：之前的在 `cap_on_draw`（原函数调用之前），之后的在钩子里原函数返回之后，由一个全局标志触发，平时每个绘制只多一次读标志。拷贝进各自的暂存纹理，像缓冲一样等客户端来读时才映射，渲染线程不等 GPU。
-- 选择用“索引缓冲对象＋范围”而不是绘制编号：绘制编号每帧都会变，区域哈希要等读回之后才知道，绘制发出时可用的只有对象身份、参数和着色器哈希。
-- 没有颜色目标的通道不占名额：一个网格通常先画几遍阴影和深度，按帧内顺序它们排在前面，会把默认的 8 个名额用完而什么也拷贝不到。
-- 拷贝读完就释放，另加 `release_rt` 命令，而不是“读一次即失效”：自测需要重复读，释放也应当是明确的一步。
+- Date: 2026-10-08; the user asked for items 1, 4 and 5 of the improvement list.
+- The protocol number is unchanged (still 1): everything new is an added key or an added command (`read_rt`, `release_rt`, the `rt` option of a capture), each with a `features` entry. An old server reading a new probe and a new server reading an old probe both work as before, and the server says what is missing by `features` instead of comparing version numbers.
+- State objects and views are recognised by content, not by address: the probe has no creation / destruction hooks for them, and although an object being destroyed and another created at the same address within a frame is unlikely, BUG-005 has already shown that the assumption "address is identity" quietly gives wrong data after some reload. The description is fetched at every binding and compared with the record; the cost is a dozen or so description fetches per draw, and measurements show no slowdown of a full capture. "Hold references while recording" was not chosen: that would change the lifetime of the game's objects.
+- Fields that D3D11 does not keep are not shown (see LIMIT-006): showing the defaults the runtime fills in would make people think the game set them.
+- Looking at several more frames after a reload (item 1) lives in the server and polls with light captures, instead of "wait until XXMI starts drawing" in the probe: the basis of the decision (whether objects XXMI created after the key press are used) is in the server anyway, and the probe does not need to know what a reload is.
+- "What was drawn" is answered by the difference of two copies, before and after the draw, rather than a copy after the draw only: "after" alone does not show the contribution of this one draw. The comparison is on raw bytes without decoding, so the changed area can be given for any format.
+- Where the copies are made: the one before in `cap_on_draw` (before the original function is called), the one after in the hook after the original function returns, triggered by a global flag, so that normally each draw costs only one more read of the flag. Each copy goes into its own staging texture and, like buffers, is mapped only when the client comes to read it; the render thread does not wait for the GPU.
+- Selection is by "index buffer object + range" rather than by draw number: draw numbers change every frame, the region hash is known only after a read-back, and what is available when the draw is issued is only object identity, arguments and shader hashes.
+- Passes without a colour target take no quota: a mesh is usually drawn in several shadow and depth passes first, which come earlier in the frame and would use up the default quota of 8 without anything being copied.
+- Copies are released when reading is done, plus a `release_rt` command, instead of "invalid after one read": the self-test needs to read repeatedly, and releasing should be an explicit step.
 
-## D-021：重载后以“mod 画的量不再增长”为准取帧
+## D-021: After a reload, the frame is taken when "what the mods draw has stopped growing"
 
-- 日期：2026-10-08；实机上第二次按 F10（最短等待）拿到一帧只恢复了一半 mod 的画面，而当时的标准已判为确认并返回。
-- “重载是否发生”和“mod 是否回齐”是两件事：前者看有没有按键后新建的对象被用到（不变），后者看这个数量是否还在增长。工具返回的帧是给 agent 接着核对所改内容用的，应以后者为准。
-- 量的选取：`reload_evidence` 已经在算的“按键后新建且被该帧用到的资源数＋着色器数”，轻量帧里就有。没有用 XXMI 的绘制次数：它随视角和阴影级联每帧波动；也没有去读探针状态里的创建计数：它包含画面外的创建。
-- 连续两次不增长即停，而不是三次：恢复期间帧很慢（实机那一次，恢复后的 250 毫秒里帧号只前进了一帧），而每次抓取记录的都是请求之后的下一帧，所以相邻两次看到的是先后两次加载之后的画面；多等一轮的代价落在每一次重载上。视野里 mod 变少（数量下降）也算稳定。
-- 完整帧放在最后只抓一次：探针只保证最近一次抓取可读，先抓完整帧再看轻量帧会让它作废。
-- 默认的 `settle_ms`（2000）没有改：没有数据说明缩短它是安全的。
+- Date: 2026-10-08; in the real game a second F10 (with the shortest wait) returned a frame in which only half of the mods were back, while the standard of the time had judged it confirmed and returned.
+- "Did the reload happen" and "are the mods all back" are two things: the former looks at whether objects created after the key press are used (unchanged), the latter at whether that number is still growing. The frame the tool returns is for the agent to go on checking what it changed, so the latter should decide.
+- Choice of the quantity: "resources + shaders created after the key press and used by the frame", which `reload_evidence` already computes and which a light frame contains. XXMI's draw count was not used: it fluctuates every frame with the view and the shadow cascades; the creation counters of the probe status were not read either: they include creations outside the picture.
+- Stop after two consecutive polls without growth, not three: frames are slow during recovery (that time in the real game the frame number advanced by only one in the 250 ms after recovery), and each capture records the next frame after the request, so two neighbouring polls see the picture after two successive loads; the cost of waiting one more round would fall on every reload. Fewer mods in view (the number going down) counts as stable too.
+- The full frame is captured only once, at the end: the probe guarantees only that the latest capture can be read, so capturing the full frame first and looking at light frames afterwards would invalidate it.
+- The default `settle_ms` (2000) was not changed: there is no data showing that shortening it is safe.
 
-## D-022：调用当时的内容用“写前拷贝”，不在绘制时拷贝
+## D-022: Contents as they were at the call use "copy before write", not a copy at draw time
 
-- 日期：2026-10-08；用户要求“基本能获取帧分析文件夹中的所有类型的数据”（T-013）。
-- 样本目录的量：一帧去重后 38 份缓冲 315 MiB、DDS 1.5 GiB，加上每次绘制之后的渲染目标，整帧数 GiB。XXMI 的做法是每次调用后同步拷贝并写盘，一帧要几十秒。在游戏里实时做，不能照搬。
-- 选定：记录时只登记版本，等到有东西要改写资源时才把旧内容存下来。理由：绝大多数资源在一帧里不变（网格、贴图），绘制时逐个拷贝是白花；会变的资源（动态缓冲、UAV、渲染目标）每个被用到的版本各拷一次，这是下限。缓冲只存被覆盖的字节，避免“16 MiB 的网格堆每追加一个网格就整块拷一次”。
-- 代价：正确性依赖“每条写入路径都经过钩子”。已挂上 D3D11 即时上下文的全部写入入口；看不到的（command list、视频、跨设备共享）在结果里标出或写进限制。换来的是可以对全帧所有调用的输入开着这个功能而几乎不增加当帧开销。
-- `NO_OVERWRITE` 不另起版本：这种 Map 直接把内存交给应用，排在它之前的 GPU 拷贝也会读到新写的字节，除非先等 GPU 做完——每次追加都同步一次代价太大。调用读到的字节仍然确切（D3D 的约定保证），所以默认信任这个约定，另留 `strict` 供逐字节对照。
-- 验收用 XXMI 自己：沙盒场景每帧字节相同，探针抓一帧、XXMI 导出另一帧，逐文件逐字节比较。这比只和自己预期的字节比多一个独立的见证。
-- 没有做“导出与 XXMI 完全相同的文件夹”作为目标本身：调用编号（XXMI 数的是游戏的调用，探针数的是发到 D3D11 的调用）和它的内部日志不可能一致；导出器做到的是同样的布局和文件格式，够现有读取器和按帧分析目录工作的工具使用。
+- Date: 2026-10-08; the user asked for "essentially every type of data in a frame analysis folder" to be obtainable (T-013).
+- Volume of the sample directory: one frame has, after de-duplication, 38 buffers with 315 MiB and 1.5 GiB of DDS, plus the render targets after each draw: several GiB for the whole frame. XXMI copies synchronously after every call and writes to disk, which takes tens of seconds per frame. Doing this live in the game cannot simply copy that approach.
+- Chosen: while recording, only versions are registered, and old content is set aside only when something is about to rewrite a resource. Reason: the vast majority of resources do not change within a frame (meshes, textures), so copying each at draw time is wasted; resources that do change (dynamic buffers, UAVs, render targets) are copied once per version that was used, which is the lower bound. For buffers only the overwritten bytes are stored, avoiding "a 16 MiB mesh heap copied whole every time a mesh is appended".
+- Cost: correctness depends on "every write path goes through a hook". All write entry points of the D3D11 immediate context are hooked; what cannot be seen (command lists, video, sharing across devices) is flagged in the result or written into the limits. In return the feature can be switched on for the inputs of all calls of a whole frame with almost no extra cost in that frame.
+- `NO_OVERWRITE` does not start a new version: such a Map hands memory straight to the application, and a GPU copy queued before it would also read the newly written bytes unless the GPU is waited for first, and a synchronisation at every append is too expensive. The bytes the call reads are still exact (D3D's contract guarantees it), so the contract is trusted by default, with `strict` for byte-for-byte comparisons.
+- Acceptance uses XXMI itself: the sandbox scene has identical bytes in every frame, the probe captures one frame, XXMI dumps another, and the files are compared byte for byte. That adds an independent witness compared with checking only against the bytes we expect ourselves.
+- "Exporting exactly the same folder as XXMI" was not made a goal in itself: the call numbers (XXMI counts the game's calls, the probe counts the calls that reach D3D11) and its internal log cannot agree; what the exporter achieves is the same layout and file formats, enough for the existing reader and for tools that work on frame analysis directories.

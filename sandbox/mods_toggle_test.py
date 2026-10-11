@@ -240,13 +240,14 @@ class ToggleTests(unittest.TestCase):
         self.assertEqual((result["presses"], result["mods_enabled"], self.keys()), (2, False, 2))
 
     def test_text_is_recognised_from_what_the_installed_core_defines(self):
-        self.write("Core/EFMI/main.ini", MAIN.replace("Mods Display: Disabled", "模组显示：关闭"))
+        wording = "\u6a21\u7ec4\u663e\u793a\uff1a\u5173\u95ed"      # as a localised core might print it; not ASCII on purpose
+        self.write("Core/EFMI/main.ini", MAIN.replace("Mods Display: Disabled", wording))
         TEXTS_BEFORE = dict(TEXTS)
-        TEXTS[False] = "模组显示：关闭".encode("utf-8")
+        TEXTS[False] = wording.encode("utf-8")
         self.addCleanup(TEXTS.update, TEXTS_BEFORE)
         result, error = self.call()
         self.assertFalse(error, result)
-        self.assertEqual((result["mods_enabled"], result["state_evidence"]["text"]), (False, "模组显示：关闭"))
+        self.assertEqual((result["mods_enabled"], result["state_evidence"]["text"]), (False, wording))
 
     def test_text_is_found_even_if_its_draw_is_not_labelled_as_xxmi(self):
         self.probe.notice_origin = "game"
