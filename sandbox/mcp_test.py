@@ -253,6 +253,23 @@ def main() -> int:
         if verbose: print(text)
         check("get_shader disassembly", not err and "vs_5_0" in text and "dcl_input" in text, text)
 
+        text, err, _ = mcp.call("efmi_get_texture_slots", draws=[draw_idx])
+        slots = json.loads(text) if not err else {}
+        group = next((g for g in slots.get("groups", []) if g["stage"] == "ps"), {})
+        textures = {t["slot"]: t for t in group.get("textures", [])}
+        check("texture slots: actual shader samples and bound metadata", not err
+              and set(textures) == {f"ps-t{i}" for i in range(7)}
+              and textures["ps-t2"]["w"] == 64 and "BC7" in textures["ps-t2"]["fmt_name"]
+              and all(t["reference"] == "referenced" for t in textures.values()), text)
+        listing = slots.get("shaders", {}).get(group.get("shader"), {})
+        check("texture slots: inline sampling evidence", listing.get("profile") == "ps_5_0"
+              and all(r["instruction_count"] >= 1 and r["instructions"][0]["access"] == "sample"
+                      for r in listing.get("resources", {}).values()), text)
+        check("shader and slot queries create no shader files by default", not (OUT / "shaders").exists())
+        text, err, _ = mcp.call("efmi_get_shader", hash=vs_hash, save=True)
+        check("get_shader explicit export", not err and (OUT / "shaders" / f"{vs_hash}-vs.asm").exists()
+              and (OUT / "shaders" / f"{vs_hash}-vs.bin").exists(), text)
+
         text, err, _ = mcp.call("efmi_export_mesh", draw=draw_idx)
         m = json.loads(text)
         obj = Path(m["obj"]).read_text().splitlines() if m.get("obj") else []

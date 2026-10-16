@@ -43,9 +43,12 @@ Once a target is chosen, a replacement swap chain created by another device is r
 | `efmi_mcp/model_tools.py` | The seven MCP tools of the model workflow |
 | `efmi_mcp/probe_client.py` | Finds `\\.\pipe\efmi-probe-<PID>` and sends requests; each probe serves one client at a time |
 | `efmi_mcp/capture_model.py`, `decode.py`, `shader.py` | Capture model, buffer/texture decoding, disassembly |
+| `efmi_mcp/texture_slots.py` | Batch texture-slot selection, static shader references, grouped bindings and inline sampling evidence; no file exports |
 | `efmi_mcp/pipeline.py` | Names and wording for fixed pipeline state, samplers, view parameters and indirect draw arguments (data of probe 0.1.5) |
 | `efmi_mcp/draw_outputs.py` | `efmi_capture_draw_outputs`: turns the selection into match conditions, captures, reads back the render target copies from before and after the draws, compares, saves pictures, releases |
 | `efmi_mcp/mods.py`, `fa_dump.py`, `hashes.py`, `parity.py` | Read-only parsing of mods / frame dumps, hashes and parity verification |
+
+Server 0.1.14 adds `Session.shader_listing`: a per-connection LRU of bytecode, disassembly and parsed SM4/5.0 SRV references, shared by `efmi_get_texture_slots` and `efmi_get_shader` (128 entries / 32 MiB listing budget). Reconnecting clears the shader cache; bindings are always resolved from the requested capture and are not cached across frames. Slot results distinguish instruction references, declaration-only slots and leftover bindings; failures leave usage unknown. Queries do not read texture payloads or write files. Full shader export is explicit with `save=true`; the probe and protocol are unchanged. See D-023.
 
 A pipe message is `[u32 header_len][u32 payload_len][header JSON][payload]`. The server keeps the records of the last six captures and the bytes of CB / indirect-argument snapshots it has fetched, but the probe only guarantees that the ordinary resources of the latest capture can still be read. An ordinary read returns the content at the time of reading; for the CB as it was at the draw, use `cb_data=true`.
 

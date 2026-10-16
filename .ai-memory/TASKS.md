@@ -1,6 +1,12 @@
 # EFMI MCP — Tasks
 
-> Last updated: 2026-10-10.
+> Last updated: 2026-10-16.
+
+## T-015: Efficient texture-slot queries (done, 2026-10-16)
+
+- Added read-only `efmi_get_texture_slots` with batch draw/IB/shader selection, per-pass grouping, bound resource metadata and inline sampling evidence. Shared bounded memory caching also makes `efmi_get_shader` paging file-free; exporting BIN/ASM now requires `save=true`. Server 0.1.14 / probe 0.1.6; restart the MCP server for the new tool, no game restart.
+- Verified 25 dedicated tests, contents 33 / draw outputs 41 and 106 sandbox stdio checks. Current Endfield PID 35796 / frame 92208: 125 mod draws, 28 shaders, 237 binding comparisons pass; cold 156.922 ms, warm median 27.696 ms, zero query files. Evidence and scope are in CURRENT_STATE / `captures/texture-slot-query-20261016/`.
+- Static references include conditional fallbacks; material roles are not guessed, and unavailable/indexed shader analysis is reported. No input, injection or external file edits. No outstanding work for this request.
 
 ## Current state
 

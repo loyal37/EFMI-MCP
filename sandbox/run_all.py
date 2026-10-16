@@ -46,6 +46,7 @@ def main() -> int:
         ("mods switch MCP contract (fake probe)", ["sandbox/mods_toggle_test.py"]),
         ("draw outputs and pipeline state (fake probe)", ["sandbox/draw_outputs_test.py"]),
         ("contents: slots, tools and the folder writer (fake probe)", ["sandbox/contents_unit_test.py"]),
+        ("texture slots, shader evidence and memory cache (fake probe)", ["sandbox/texture_slots_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")

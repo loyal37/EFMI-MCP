@@ -109,6 +109,8 @@ After updating the probe the game has to be quit and started again; the DLL in t
 
 **MCP server 0.1.13** (2026-10-09; only the server has to pick up the new code): `efmi_capture_frame` gets one more level, `contents=buffers`, which keeps buffers only (index, vertex, constant, and buffers bound as shader resources) without textures; it is the cheapest level and enough for geometry and skinning data. `efmi_list_writes bindings=true` additionally lists what each call has bound differently from the previous call of its kind (shaders, buffers, constant buffer windows, textures, targets, state), and `log.txt` of `efmi_dump_frame` has these `bind` lines too: this is the information the Set* calls of a frame analysis log give, except that it is worked out by comparing the bindings of the calls and is not a record of individual calls. It works with any full capture, contents are not needed.
 
+**MCP server 0.1.14** (2026-10-16; restart the MCP server, probe unchanged): `efmi_get_texture_slots` performs batch slot lookup directly from a capture, with inline shader evidence and texture metadata. Queries and shader paging share a bounded memory cache and create no shader files by default. Use `efmi_get_shader save=true` when a BIN/ASM export is wanted.
+
 Uninstalling: untick "Inject Libraries" in the launcher; the probe leaves nothing elsewhere.
 
 ## Tools
@@ -121,13 +123,14 @@ Uninstalling: untick "Inject Libraries" in the launcher; the probe leaves nothin
 | `efmi_toggle_mods` | Switches all mods off or on with EFMI's own F11 and records a new frame, to compare the game's original draws with the mods' draws; returns the on / off state EFMI itself reports |
 | `efmi_list_draws` | Lists draw calls, filtered by hash, call type, origin and so on |
 | `efmi_get_draw` | Everything bound for one draw call: arguments, IB/VB, input layout, shaders, constant buffers, textures, render targets, viewport; for a full capture also blend, depth-stencil and rasterizer state, scissor rectangles, samplers, view parameters and the actual arguments an indirect draw read (probe 0.1.5) |
+| `efmi_get_texture_slots` | Batch texture-slot lookup by draw numbers, IB hash or shader: referenced slots, bound texture metadata and sampling evidence; merges repeated material bindings and caches shader analysis in memory, without files |
 | `efmi_find_hash` | In which roles a hash occurs in this frame, and which mods' ini files refer to it |
 | `efmi_read_buffer` | Reads indices, vertices (decoded with the input layout), constant buffers, buffers bound as shader resources (`vs-t0` and so on) or unordered access views (`u0`); `whole=true` reads the whole buffer; the result says where the bytes come from and whether they are exact (`source`, `exact`) |
 | `efmi_read_texture` | Reads a texture, a render target or a texture UAV, saves DDS/PNG and returns a preview; when the capture kept contents it gives the texture as it was at the call; supports 3D textures and multisampled colour textures (resolved) |
 | `efmi_capture_draw_outputs` | What a draw painted: records a new frame, copies the render target once before and once after each selected draw, reports the number and area of changed pixels, saves the before, after and changed pictures and returns previews (probe 0.1.5) |
 | `efmi_list_writes` | Writes between calls: Map, UpdateSubresource, Copy, Clear, GenerateMips, Resolve, listing in order which part of which resource was changed (needs a capture with contents); `bindings=true` also lists what each call has bound differently (any full capture) |
 | `efmi_dump_frame` | Writes a number of calls of a capture as a folder with the same layout as an XXMI frame analysis directory: BUF / TXT / DDS, de-duplication in `deduped`, `log.txt` |
-| `efmi_get_shader` | Shader disassembly |
+| `efmi_get_shader` | Cached shader disassembly, paged without files; `save=true` explicitly exports BIN/ASM |
 | `efmi_export_mesh` | Exports the mesh of a draw (OBJ + raw buffers + description) |
 | `efmi_live_start` / `efmi_live_now` / `efmi_watch_hash` / `efmi_live_stop` | Continuous mode: what is being drawn right now, whether a hash appears frame by frame |
 | `efmi_diff_captures` | Which meshes were added/removed between two captures |
@@ -139,6 +142,16 @@ Uninstalling: untick "Inject Libraries" in the launcher; the probe leaves nothin
 | `efmi_model_project` / `efmi_model_job` | Model workflow: state of the project; follow or cancel a job |
 
 The `ib` hash is the region hash that mods use in `[TextureOverride] hash =`.
+
+### Reading texture slots
+
+After `efmi_capture_frame detail=full`, call `efmi_get_texture_slots draws=[97,103]` to inspect several draws at once, or `efmi_get_texture_slots ib_hash=<8-digit hash>` to inspect a mesh across its passes. The default stage is `ps`; `stage=all` includes the other shader stages. `origin=xxmi` selects mod draws. Large selections use `offset` / `limit` and return `next_offset`.
+
+The result groups identical shader/material/target bindings, preserves draw numbers and mesh ranges, and lists each unique shader's sample/load/query instructions once. Each texture includes its slot, bound state, hash, dimensions, format and recorded view. Shader bytecode, disassembly and parsed references are reused in memory across queries and `efmi_get_shader` pages, for the current probe connection (up to 128 listings within a 32 MiB listing budget). No shader, texture or helper-script files are needed for a lookup. `instruction_limit=0` suppresses the evidence text while retaining reference counts.
+
+Default results include slots referenced by instructions; `include_unused=true` additionally distinguishes declaration-only and leftover bindings. `include_buffers=true` adds raw/structured/typed buffers bound to t-slots. A referenced but unbound fallback is shown as unbound. Unavailable or unsupported shader analysis is reported explicitly and leaves bound slots marked unknown; it does not claim that they are unused. Shader Model 4/5.0 fixed registers are supported; indexed/ranged resource registers are not resolved.
+
+References include conditional paths and do not prove that every pixel executed the instruction. Material roles such as diffuse and normal are not assigned from fixed slot numbers: inspect the instruction evidence and use `efmi_get_shader first_line=<line>` for more context. This distinction follows the separate [resource declaration](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dcl-resource) and [texture sampling instruction](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/sample--sm4---asm-) in the D3D assembly format. A game update or another pass can change the slots.
 
 ### Coverage of live capture compared with FrameAnalysis
 

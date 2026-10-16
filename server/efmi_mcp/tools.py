@@ -8,8 +8,8 @@ import time
 from collections import Counter, OrderedDict
 from pathlib import Path
 
-from . import __version__, contents, decode, draw_outputs, model_tools, pipeline, slot_data
-from .capture_model import Capture
+from . import __version__, contents, decode, draw_outputs, model_tools, pipeline, slot_data, texture_slots
+from .capture_model import Capture, STAGES
 from .draw_outputs import capture_draw_outputs
 from .fa_dump import DRAW_NAMES, MARKS, find_frame_dumps, parse_frame_dump
 from .hashes import crc32c, hex32, index_region
@@ -21,7 +21,7 @@ from .mods_toggle import toggle_mods
 from .parity import compare_sets
 from .probe_client import ProbeClient, ProbeError, ProbeNotFound, find_probes
 from .reload_workflow import reload_and_capture
-from .shader import disassemble
+from .shader import ShaderCache
 
 INSTRUCTIONS = """\
 Live view of what Arknights: Endfield is drawing, taken from inside the running game by a probe DLL that sits \
@@ -35,6 +35,11 @@ Hashes are the ones XXMI uses: the `ib` hash of a draw is the region hash that m
 Typical flow: efmi_status -> efmi_capture_frame -> efmi_list_draws / efmi_find_hash -> efmi_get_draw -> \
 efmi_read_buffer / efmi_read_texture / efmi_get_shader. For "what is on screen right now, continuously" use \
 efmi_live_start, then efmi_live_now or efmi_watch_hash.
+
+For texture slots use efmi_get_texture_slots after a full capture: select draw numbers or an IB hash to get \
+per-shader sampling evidence and texture bindings in one batch. It filters stale bindings by default and \
+caches shader analysis in memory; do not write helper scripts or export shaders just to look up slots. \
+efmi_get_shader pages through the cached assembly without writing files; save=true explicitly exports it.
 
 After changing mod INI/BUF files, use efmi_reload_and_capture. It brings the game to the front, has the probe \
 press the configured unmodified F10 inside the game, hands the focus back and retains a fresh frame. (The game \
@@ -125,6 +130,8 @@ class Session:
         self.jobs = JobManager()
         self._loyaltools: dict[str, dict] = {}
         self.client: ProbeClient | None = None
+        self._shader_client: ProbeClient | None = None
+        self._shader_cache = ShaderCache()
         self.captures: "OrderedDict[int, Capture]" = OrderedDict()
         self.latest: int | None = None
         self.mods = ModCache(efmi_root)
@@ -187,6 +194,19 @@ class Session:
             if not client.connected:
                 self.client = None
             raise ToolError(str(e))
+
+    def shader_listing(self, h: str):
+        h = texture_slots._hash(h, 16, "shader hash")
+        if not h:
+            raise ToolError("shader hash must be 16 hex digits")
+        client = self.probe()
+        if client is not self._shader_client:
+            self._shader_cache.clear()
+            self._shader_client = client
+        try:
+            return self._shader_cache.get(h, lambda: self.call(lambda c: c.shader(h)))
+        except OSError as exc:
+            raise ToolError(f"shader {h} could not be disassembled: {exc}") from exc
 
     # -- captures -------------------------------------------------------
     def add_capture(self, cap: Capture) -> None:
@@ -1148,31 +1168,31 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                                     preview=preview)
 
     # ================================================================ shaders
-    @srv.tool("efmi_get_shader", "Disassembly of a shader the game (or a mod) created, by hash. The full listing is saved to a file; "
-                                 "`first_line`/`max_lines` page through it.",
+    @srv.tool("efmi_get_shader", "Disassembly of a shader the game (or a mod) created, by hash. Cached in memory; "
+                                 "`first_line`/`max_lines` page through it without writing files. Use "
+                                 "efmi_get_texture_slots for batch slot lookup; save=true explicitly exports BIN/ASM.",
               {"hash": {"type": "string"}, "first_line": {"type": "integer", "default": 1},
-               "max_lines": {"type": "integer", "default": 160}}, ["hash"], read_only=False)
-    def efmi_get_shader(hash: str, first_line: int = 1, max_lines: int = 160):
+               "max_lines": {"type": "integer", "default": 160},
+               "save": {"type": "boolean", "default": False}}, ["hash"], read_only=False)
+    def efmi_get_shader(hash: str, first_line: int = 1, max_lines: int = 160, save: bool = False):
         h = _norm_hash(hash)
-        folder = s.out_dir / "shaders"
-        folder.mkdir(parents=True, exist_ok=True)
-        asm_path = None
-        for cand in folder.glob(f"{h}-*.asm"):
-            asm_path = cand
-        if asm_path is None:
-            info, code = s.call(lambda c: c.shader(h))
-            (folder / f"{h}-{info['type']}.bin").write_bytes(code)
-            try:
-                text = disassemble(code)
-            except OSError as e:
-                raise ToolError(f"bytecode saved to {folder / (h + '-' + info['type'] + '.bin')} but it could not be disassembled: {e}")
-            asm_path = folder / f"{h}-{info['type']}.asm"
-            asm_path.write_text(text, encoding="utf-8")
-        lines = asm_path.read_text(encoding="utf-8").splitlines()
+        listing = s.shader_listing(h)
+        label = f"shader {h}"
+        if save:
+            folder = s.out_dir / "shaders"
+            folder.mkdir(parents=True, exist_ok=True)
+            stage = listing.info.get("type")
+            if stage not in STAGES:
+                raise ToolError(f"unknown shader stage {stage!r}")
+            (folder / f"{h}-{stage}.bin").write_bytes(listing.bytecode)
+            asm_path = folder / f"{h}-{stage}.asm"
+            asm_path.write_text(listing.text, encoding="utf-8")
+            label = str(asm_path)
+        lines = listing.lines
         first_line = max(1, int(first_line))
         max_lines = max(1, min(int(max_lines), 600))
         page = lines[first_line - 1:first_line - 1 + max_lines]
-        head = f"{asm_path} ({len(lines)} lines); showing {first_line}-{first_line + len(page) - 1}"
+        head = f"{label} ({len(lines)} lines); showing {first_line}-{first_line + len(page) - 1}"
         return head + "\n" + "\n".join(page)
 
     # ================================================================ continuous mode
@@ -1378,5 +1398,6 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         verdict = "AGREES" if res.ok else ("DISAGREES" if res.mismatches else "NOTHING IN COMMON TO COMPARE")
         return "\n".join([f"capture {cap.frame} vs {p.name}: {verdict} ({res.checks} comparisons, {res.mismatches} mismatches)"] + res.messages)
 
+    texture_slots.register(srv, s, CAPTURE_PROP)
     model_tools.register(srv, s)
     return srv
