@@ -1,5 +1,11 @@
 # EFMI MCP — Tasks
 
+## T-016 update: capture coverage and primary variants (2026-10-18)
+
+- Fixed misleadingly sparse material output in server 0.1.18/schema 3: retain each main pipeline mapping, independent known roles beside ambiguous roles, all observed keys and explicit unresolved reasons. Show whole-cache/filtered coverage, plus post-analysis label coverage. No auxiliary slots in the material table, no mod-guided role inference.
+- Verified 56 related tests and current recorded-game snapshot: all 164 mod-labelled components retained (previously only 81 displayed), 131 with primary candidates and 33 unresolved; across all native keys, 214 primary candidates / 248 variants. All previous records retained, all exported keys accounted for, comparison cannot change native evidence. No live visual validation or game input this round.
+- Still open: analyze unresolved shader semantics and primary identity, distinguish character components from continually changing skinned-layout draws (29868 keys under one PS), and implement cross-version shader alignment/INI repair. Raw IB counts do not establish a complete character roster. No need to repeat character browsing to recover the 83 already-captured but previously hidden labelled components.
+
 ## T-016 update: native evidence before mod comparison (2026-10-18)
 
 - User withdrew the tentative slot-number/order observation as an inference rule. Rebuilt server 0.1.17 with native-only shader dataflow, independent later INI comparison and primary-only material output. No mod resource names, texture hashes, numeric thresholds, adjacency or format role guesses in native analysis.

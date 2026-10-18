@@ -189,9 +189,96 @@ class SlotTableTests(unittest.TestCase):
 
     def test_no_fabricated_binding_from_record_union(self):
         self.write([record(), record(views=[view(s) for s in (0, 2, 99)])])
-        p = self.build()["rows"][0]["passes"][0]
+        row = self.build()["rows"][0]
+        p = row["passes"][0]
         self.assertIsNone(p["roles"]["diffuse"])
         self.assertEqual(next(s for s in p["slots"] if s["slot"] == 7)["bound_records"], 1)
+        self.assertIsNone(row["primary"]["roles"]["diffuse"])
+        self.assertEqual(row["primary"]["roles"]["normal"]["slot"], 2)
+        self.assertEqual(row["primary_variants"][0]["role_status"]["diffuse"], "unstable_binding")
+
+    def test_ambiguous_color_keeps_independent_normal_and_lighting(self):
+        code = ASSEMBLY.replace("sample r0.xyzw, v7.xyxx, t7.xyzw, s0", "if_nz cb0[8].x\n"
+                                "sample r0.xyzw, v7.xyxx, t8.xyzw, s0\nelse\n"
+                                "sample r0.xyzw, v7.xyxx, t7.xyzw, s0\nendif")
+        code = code.replace("dcl_output", "dcl_resource_texture2d (float,float,float,float) t8\ndcl_output")
+        self.analysis = analyze(code)
+        self.write([record(views=[view(s) for s in (0, 2, 7, 8, 99)])])
+        t = self.build()
+        r = t["rows"][0]
+        self.assertEqual(r["primary_status"], "partial")
+        self.assertIsNone(r["primary"]["roles"]["diffuse"])
+        self.assertEqual(r["primary"]["roles"]["normal"]["slot"], 2)
+        self.assertEqual(r["primary"]["roles"]["lightmap"]["slot"], 0)
+        self.assertEqual(r["primary_variants"][0]["role_candidates"]["diffuse"], [7, 8])
+        self.assertIn("unresolved: t7, t8 (ambiguous)", slot_table.to_markdown(t))
+        self.mod(diffuse=7, normal=2, light=0)
+        compared = slot_table.compare_mods(t, self.folder)
+        checks = {c["role"]: c["status"] for c in compared["mod_comparison"]["meshes"]["aa000000/300"]["checks"]}
+        self.assertEqual(checks, {"diffuse": "unresolved_native", "normal": "matches_candidate", "lightmap": "matches_candidate"})
+        self.assertEqual(compared["rows"], t["rows"])
+
+    def test_different_primary_shaders_keep_their_own_slots(self):
+        other = "c" * 16
+        code = re.sub(r"\bt(\d+)\b", lambda m: f"t{int(m[1]) + 20}", ASSEMBLY)
+        analyses = {PS: self.analysis, other: analyze(code)}
+        self.write([record(), record(ps=other, views=[view(s + 20) for s in (0, 2, 7, 99)])])
+        t = slot_table.build(self.folder, reader=analyses.__getitem__)
+        r = t["rows"][0]
+        self.assertIsNone(r["primary"])
+        self.assertEqual(r["primary_status"], "shader_variants")
+        mappings = {v["ps"]: [v["roles"][role]["slot"] for role in slot_table.ROLES] for v in r["primary_variants"]}
+        self.assertEqual(mappings, {PS: [7, 0, 2], other: [27, 20, 22]})
+        self.assertEqual(t["coverage"]["primary_evidence_meshes"], 1)
+        self.assertEqual(t["coverage"]["primary_variant_rows"], 2)
+        md = slot_table.to_markdown(t)
+        self.assertIn(other, md)
+        self.assertIn("t27 (candidate)", md)
+        self.assertEqual(md.count("`aa000000` / 300"), 2)
+        self.mod(diffuse=7, light=0, normal=2)
+        compared = slot_table.compare_mods(t, self.folder)
+        checks = compared["mod_comparison"]["meshes"]["aa000000/300"]["checks"]
+        self.assertEqual({c["status"] for c in checks}, {"requires_shader_context"})
+        self.assertEqual(compared["rows"], t["rows"])
+
+    def test_partial_primary_does_not_fill_role_from_another_pipeline(self):
+        a, b = record(), record()
+        b["vs"] = "d" * 16
+        b["ps_srv"] = [view(s) for s in (0, 2, 99)]
+        self.write([a, b])
+        r = self.build()["rows"][0]
+        self.assertIsNone(r["primary"]["roles"]["diffuse"])
+        self.assertEqual(r["primary"]["roles"]["normal"]["slot"], 2)
+        self.assertEqual(len(r["primary_variants"]), 2)
+        self.assertEqual(sum(v["roles"]["diffuse"] is not None for v in r["primary_variants"]), 1)
+
+    def test_captured_unresolved_keys_remain_visible_with_reasons(self):
+        self.write([record(rt=[]), record(ib="aa000001", rt=[])])
+        self.mod()
+        native = self.build()
+        t = slot_table.compare_mods(native, self.folder)
+        md = slot_table.to_markdown(t)
+        self.assertIn("`aa000000` / 300", md)
+        self.assertIn("`aa000001` / 300", md)
+        self.assertIn("only depth passes observed", md)
+        self.assertIn("| Misleading | 1 | 0 | 1 | 0 |", md)
+        self.assertNotIn("t7 (candidate)", md)
+        self.assertEqual(t["coverage"]["observed_meshes"], 2)
+        self.assertEqual(t["coverage"]["primary_evidence_meshes"], 0)
+        q = slot_table.query(t, character="Misleading")
+        self.assertEqual(q["matching_coverage"]["observed_meshes"], 1)
+        self.assertEqual(q["rows"][0]["primary_reason"], "only_depth_passes_observed")
+        self.assertEqual(slot_table.query(t, ib_hash="deadbeef")["matching_coverage"]["observed_meshes"], 0)
+
+    def test_unobserved_mod_key_is_not_added_to_native_inventory(self):
+        self.write([record(ib="aa000001")])
+        self.mod()
+        native = self.build()
+        t = slot_table.compare_mods(native, self.folder)
+        self.assertEqual(t["coverage"], native["coverage"])
+        self.assertEqual(t["rows"], native["rows"])
+        self.assertIn("| Misleading | 0 | 0 | 0 | 1 |", slot_table.to_markdown(t))
+        self.assertEqual(t["mod_comparison"]["unseen_components"][0]["ib"], "aa000000")
 
     def test_unknown_shader_never_uses_mod_labels(self):
         self.analysis = {"resources": {}, "error": "missing shader", "limitations": []}
@@ -215,6 +302,10 @@ class SlotTableTests(unittest.TestCase):
         self.assertEqual(q["matching_meshes"], 2)
         self.assertTrue(q["shader_evidence"])
         self.assertNotIn("passes", q["rows"][0])
+        self.assertEqual(q["coverage"]["observed_meshes"], 2)
+        self.assertEqual(q["matching_coverage"]["observed_meshes"], 2)
+        self.assertEqual(len(q["rows"]), 1)
+        self.assertTrue(q["rows"][0]["primary_variants"])
         self.assertIn("passes", slot_table.query(t, include_passes=True)["rows"][0])
         self.assertEqual(slot_table.query(t, include_evidence=False)["shader_evidence"], {})
         self.assertEqual(before, sorted(self.folder.rglob("*")))
@@ -265,7 +356,7 @@ class SlotTableTests(unittest.TestCase):
             reply = server._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
                 "name": "efmi_get_slot_table", "arguments": {"folder": str(self.folder)}}})
         self.assertFalse(reply["result"]["isError"])
-        self.assertEqual(json.loads(reply["result"]["content"][0]["text"])["schema"], 2)
+        self.assertEqual(json.loads(reply["result"]["content"][0]["text"])["schema"], 3)
 
     def test_explicit_cli_export(self):
         with patch.object(slot_table, "shader_reader", return_value=lambda _: self.analysis):

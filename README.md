@@ -159,7 +159,7 @@ References include conditional paths and do not prove that every pixel executed 
 
 ### Slot cache (probe 0.1.7 / 0.1.8)
 
-Server **0.1.17** rebuilds `efmi_get_slot_table(folder=..., ib_hash=..., character=..., offset=0, limit=40)`
+Server **0.1.18** provides `efmi_get_slot_table(folder=..., ib_hash=..., character=..., offset=0, limit=40)`
 from game-origin bindings and shader dataflow. The material table and default query show **primary
 slots only**. `include_evidence=true` returns sample instructions, coordinates, channel uses and
 output paths; `include_passes=true` also exposes the other passes for audit. Queries write no files.
@@ -177,10 +177,20 @@ normals, interpolated 2D RGB tint/transfer for color, and independent scalar cha
 normal/shadow-dependent arithmetic for packed lighting parameters. The last is a light-map
 candidate, not proof of the asset's original name. Primary candidates need bound comparison-shadow
 or cube sampling plus texture-normal or packed-lighting evidence; color-only lighting is insufficient
-to identify a main surface-material pass. Competing passes/role candidates remain unresolved. Static
+to identify a main surface-material pass. Each primary VS/PS/output variant keeps its own mapping;
+ambiguous roles remain unresolved without discarding independently supported roles or the whole IB. Static
 paths do not prove runtime execution, and game-origin draws may use shaders patched by XXMI.
 Unsupported control flow limits analysis; unaffected local evidence is retained. This is neither
 a complete shader decompiler nor a verified automatic INI repair.
+
+Schema 3 separates capture coverage from role recognition. `coverage` counts the whole cache;
+`matching_coverage` counts the filtered results before paging. Each row contains `primary_variants`,
+per-role candidate/ambiguity/binding status, and `primary_reason`. `primary` is only the shared mapping:
+a role appears there when every observed primary variant independently resolves to the same slot.
+Different main shaders can legitimately use different slots; a null shared mapping does not mean that
+the IB was not captured. INI comparisons that span different mappings require shader context.
+Raw IB/count totals are not character counts; changing geometry can generate many hashes, and the
+cache does not contain a character roster.
 
 To explicitly export from the server directory:
 
@@ -188,7 +198,11 @@ To explicitly export from the server directory:
 python -m efmi_mcp.slot_table '<absolute version folder>' --efmi-root '<EFMI folder>'
 ```
 
-`slot-table.json` and `slot-table.md` contain only primary material rows. `slot-evidence.json`
+`slot-table.json` and `slot-table.md` show primary slots only, retaining every captured IB/count key
+and explicit unresolved reasons. Markdown lists all mod-labelled keys, then other primary candidates;
+unlabelled keys without primary evidence remain in an expandable inventory. Label coverage distinguishes
+captured components, primary evidence, unresolved primary identity and INI keys not observed in the cache.
+Labels and unseen INI keys are not proof that every character or LOD was shown. `slot-evidence.json`
 separately keeps all passes and complete instruction evidence. The optional EFMI root is read only,
 for comparison after native analysis. Cross-version shader alignment and INI repair remain pending.
 

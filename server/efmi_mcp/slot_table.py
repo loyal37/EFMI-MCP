@@ -10,13 +10,14 @@ import hashlib
 import json
 import re
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from .shader import disassemble
 from .shader_semantics import analyze
 
 ROLES = ("diffuse", "lightmap", "normal")
+SCHEMA = 3
 RULES = {
     "analysis": "Per IB/count and VS/PS/output pass, from game-origin bindings and static component provenance only.",
     "roles": "Candidates: diffuse = UV RGB tint/transfer; normal = signed XY and sqrt(1-dot(XY,XY)); "
@@ -24,7 +25,8 @@ RULES = {
              "Observed uses do not prove authored texture names or runtime paths.",
     "primary": "Primary candidates require bound comparison-shadow/cube sampling plus texture-normal or packed-lighting evidence. "
                "Color-only lighting passes are insufficient to identify a main surface-material pass. "
-               "No selection by slot number, count, format or mod agreement. Conflicting pass mappings remain unresolved.",
+               "No selection by slot number, count, format or mod agreement. Keep each primary pipeline variant; "
+               "ambiguity withholds only the affected role. A shared mapping requires agreement across variants.",
     "mods": "INI labels and bindings are compared only after native analysis and cannot fill or change its roles.",
     "limits": "Game-origin draws may use patched shaders. Conditional replacement slots remain explicit. "
               "Loops/unsupported operations limit dataflow; only unaffected local role evidence is used.",
@@ -115,15 +117,62 @@ def _pass(records, analysis):
 
 
 def primary_of(passes):
-    candidates = [p for p in passes if p["category"] == "lighting_candidate"
-                  and (p["role_candidates"]["normal"] or p["role_candidates"]["lightmap"])]
-    signatures = {tuple((p["roles"][r] or {}).get("slot") for r in ROLES) for p in candidates}
-    if len(signatures) != 1 or not any(s is not None for s in next(iter(signatures), ())):
+    """Only roles independently resolved to the same slot in every primary variant."""
+    candidates = _primary_passes(passes)
+    roles = {}
+    for role in ROLES:
+        slots = {(p["roles"][role] or {}).get("slot") for p in candidates}
+        roles[role] = candidates[0]["roles"][role] if len(slots) == 1 and None not in slots else None
+    if not any(roles.values()):
         return None
-    if any(len(p["role_candidates"][r]) > 1 for p in candidates for r in ROLES):
-        return None
-    return {"roles": candidates[0]["roles"], "pixel_shaders": sorted({p["ps"] for p in candidates}),
-            "basis": "consistent dataflow candidates across observed lighting passes"}
+    return {"roles": roles, "pixel_shaders": sorted({p["ps"] for p in candidates}),
+            "basis": "per-role agreement across observed primary pipeline candidates"}
+
+
+def _primary_passes(passes):
+    return [p for p in passes if p["category"] == "lighting_candidate"
+            and (p["role_candidates"]["normal"] or p["role_candidates"]["lightmap"])]
+
+
+def primary_variants_of(passes):
+    """Compact primary-only evidence; never replace an ambiguous role with an INI guess."""
+    variants = []
+    for p in _primary_passes(passes):
+        status = {r: "candidate" if p["roles"][r] else
+                  "ambiguous" if len(p["role_candidates"][r]) > 1 else
+                  "unstable_binding" if p["role_candidates"][r] else "no_role_evidence" for r in ROLES}
+        variants.append({**{k: p[k] for k in ("ps", "vs", "targets", "depth", "roles", "role_candidates")},
+                         "role_status": status})
+    return variants
+
+
+def primary_state(passes, variants):
+    if not variants:
+        reason = ("shader_analysis_unavailable" if any(not p["reads_known"] for p in passes) else
+                  "only_depth_passes_observed" if all(not p["targets"] for p in passes) else
+                  "color_only_lighting_evidence" if any(p["category"] == "lighting_candidate" for p in passes) else
+                  "no_primary_lighting_evidence" if any(p["category"] == "material_outputs" for p in passes) else
+                  "no_primary_material_evidence")
+        return "unresolved", reason
+    signatures = {tuple((tuple(v["role_candidates"][r]), (v["roles"][r] or {}).get("slot"))
+                        for r in ROLES) for v in variants}
+    if len(signatures) > 1:
+        return "shader_variants", "per_pipeline_mappings"
+    issues = {s for v in variants for s in v["role_status"].values()} & {"ambiguous", "unstable_binding"}
+    if issues:
+        status = "partial" if any(any(v["roles"].values()) for v in variants) else "ambiguous"
+        return status, "ambiguous_roles" if "ambiguous" in issues else "unstable_bindings"
+    return "candidate", "dataflow_candidates"
+
+
+def coverage(rows):
+    return {"observed_meshes": len(rows),
+            "primary_evidence_meshes": sum(bool(r["primary_variants"]) for r in rows),
+            "primary_variant_rows": sum(len(r["primary_variants"]) for r in rows),
+            "shared_mapping_meshes": sum(r["primary"] is not None for r in rows),
+            "status_counts": dict(sorted(Counter(r["primary_status"] for r in rows).items())),
+            "reason_counts": dict(sorted(Counter(r["primary_reason"] for r in rows).items())),
+            "note": "Counts are observed IB/count keys, not character counts or a complete roster."}
 
 
 def build(folder, reader=None):
@@ -142,17 +191,19 @@ def build(folder, reader=None):
             groups[(r.get("ps") or "-", r.get("vs"), tuple(r.get("rt", [])), r.get("ds"))].append(r)
         passes = [_pass(rs, analyses[k[0]]) for k, rs in sorted(groups.items(), key=lambda kv: str(kv[0]))]
         primary = primary_of(passes)
+        variants = primary_variants_of(passes)
+        status, reason = primary_state(passes, variants)
         rows.append({"ib": ib, "index_count": count, "records": len(observations), "passes": passes,
-                     "primary": primary, "primary_status": "candidate" if primary else "unresolved",
+                     "primary": primary, "primary_variants": variants, "primary_status": status, "primary_reason": reason,
                      "first_observed_frame": min(r["frame"] for r in observations)})
     try:
         version = json.loads((folder / "version.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         version = {}
     digest = hashlib.sha256(json.dumps({"rows": rows, "shaders": analyses}, sort_keys=True).encode()).hexdigest()
-    return {"schema": 2, "version": version.get("key", folder.name), "generated_unix": int(time.time()),
+    return {"schema": SCHEMA, "version": version.get("key", folder.name), "generated_unix": int(time.time()),
             "records": len(records), "meshes": len(rows), "rows": rows, "shaders": analyses,
-            "native_analysis_sha256": digest, "rules": RULES,
+            "native_analysis_sha256": digest, "rules": RULES, "coverage": coverage(rows),
             "mod_comparison": {"performed": False, "meshes": {}, "unseen_components": []}}
 
 
@@ -172,8 +223,13 @@ def compare_mods(table, root):
         native = (row["primary"] or {}).get("roles", {})
         for role, bound in assigned.get(key, {}).items():
             expected = (native.get(role) or {}).get("slot")
+            variants = [{"ps": v["ps"], "vs": v["vs"], "targets": v["targets"], "depth": v["depth"],
+                         "slot": (v["roles"][role] or {}).get("slot"), "status": v["role_status"][role]}
+                        for v in row["primary_variants"]]
+            differing = len({v["slot"] for v in variants if v["slot"] is not None}) > 1
             checks.append({"role": role, "ini_slots": sorted(bound), "native_candidate": expected,
-                           "status": "unresolved_native" if expected is None else
+                           "native_variants": variants,
+                           "status": "requires_shader_context" if differing else "unresolved_native" if expected is None else
                                      "matches_candidate" if bound == {expected} else "differs_from_candidate"})
         comparison[f"{key[0]}/{key[1]}"] = {"mod_sections": [{"mod": n, "section": s} for n, s in names[key]], "checks": checks}
     return {**table, "mod_comparison": {"performed": True, "meshes": comparison,
@@ -190,7 +246,8 @@ def _labels(table, row):
 
 def material_row(table, row):
     return {"ib": row["ib"], "index_count": row["index_count"], "primary": row["primary"],
-            "primary_status": row["primary_status"], "labels": _labels(table, row)}
+            "primary_variants": row["primary_variants"], "primary_status": row["primary_status"],
+            "primary_reason": row["primary_reason"], "labels": _labels(table, row)}
 
 
 def query(table, ib_hash="", character="", offset=0, limit=40, include_evidence=False, include_passes=False):
@@ -214,8 +271,9 @@ def query(table, ib_hash="", character="", offset=0, limit=40, include_evidence=
                 "evidence": {k: paths[:2] for k, paths in info["evidence"].items()}}
                 for slot, info in analysis["resources"].items()},
                 "paging_note": "First three references/samples and two paths per evidence kind; full data in explicit CLI export."}
-    return {"schema": 2, "version": table["version"], "native_analysis_sha256": table["native_analysis_sha256"],
+    return {"schema": SCHEMA, "version": table["version"], "native_analysis_sha256": table["native_analysis_sha256"],
             "matching_meshes": len(selected), "rows": page if include_passes else [material_row(table, r) for r in page],
+            "coverage": table["coverage"], "matching_coverage": coverage(selected),
             "mod_comparison": comparisons,
             "shader_evidence": evidence,
             "next_offset": offset + limit if offset + limit < len(selected) else None, "rules": table["rules"],
@@ -226,46 +284,83 @@ def _role_text(primary, role):
     item = (primary or {}).get("roles", {}).get(role)
     if item:
         return f"t{item['slot']} (candidate)"
+    candidates = (primary or {}).get("role_candidates", {}).get(role, [])
+    if candidates:
+        slots = ", ".join(f"t{s}" for s in candidates)
+        status = primary["role_status"][role].replace("_", " ")
+        return f"unresolved: {slots} ({status})"
     return "unresolved"
 
 
 def to_markdown(table):
-    primary_count = sum(r["primary"] is not None for r in table["rows"])
+    counts = table["coverage"]
     lines = [f"# Slot evidence table {table['version']}", "",
              f"{table['meshes']} IB/count meshes, {table['records']} game-origin records. "
              "Every pass is analyzed independently before reading mods. Roles are dataflow candidates; "
              "no register threshold/order, format, texture hash or mod binding assigns them. "
              "Game-origin draws may use patched shaders. Missing roles are not filled from INIs.", "",
-             f"{primary_count} primary candidates are listed below; {table['meshes'] - primary_count} unresolved meshes "
-             "remain explicitly marked in slot-table.json and slot-evidence.json.", "",
+             f"{counts['primary_evidence_meshes']} IB/count keys have primary-pass candidates "
+             f"({counts['primary_variant_rows']} pipeline variants). "
+             f"{table['meshes'] - counts['primary_evidence_meshes']} have unresolved primary-pass identity. "
+             "These are capture/analysis counts, not character counts. Every captured key appears below, "
+             "including unresolved entries. Unlabelled entries without primary evidence are in the expandable inventory.", "",
              "Normal means signed-XY hemisphere reconstruction; diffuse means UV RGB tint/transfer reaching color output; "
              "light map means a candidate packed lighting-parameter texture, not proof of its authored name. "
              "Loop limitations and conditional alternatives are retained in JSON. "
              "This table contains primary slots only. slot-evidence.json separately preserves every pass, "
              "instruction line, sample coordinate, channel use and output for audit.", ""]
-    named, unnamed = [], []
+    named, unnamed, unresolved = [], [], []
     for row in table["rows"]:
-        if row["primary"] is None:
-            continue
-        (named if _labels(table, row) else unnamed).append(row)
+        (named if _labels(table, row) else unnamed if row["primary_variants"] else unresolved).append(row)
+    comparison = table["mod_comparison"]
+    if comparison["performed"]:
+        lines += ["## Capture coverage by label", "",
+                  "Names are attached only after native analysis. Unseen INI keys may be unobserved LODs, "
+                  "outdated hashes or other draws; they do not establish a missing character. "
+                  "A candidate is not live verification.", "",
+                  "| label | captured IB/count keys | primary evidence | primary unresolved | INI keys not observed |",
+                  "|---|---|---|---|---|"]
+        labels = sorted({n for r in named for n in _labels(table, r)} |
+                        {n for u in comparison["unseen_components"] for n in u["mods"]})
+        for label in labels:
+            members = [r for r in named if label in _labels(table, r)]
+            count = sum(bool(r["primary_variants"]) for r in members)
+            unseen = sum(label in u["mods"] for u in comparison["unseen_components"])
+            lines.append(f"| {_cell(label)} | {len(members)} | {count} | {len(members) - count} | {unseen} |")
+        lines.append("")
     for title, rows in (("IBs named by mods (labels attached after analysis)", named), ("Other observed IBs", unnamed)):
-        lines += [f"## {title}", "", "| IB / indices | label | primary pixel shaders | diffuse | light map | normal | mod comparison |",
+        lines += [f"## {title}", "", "Each line is one primary pipeline candidate. Distinct shader mappings are retained; "
+                  "an ambiguous role does not hide other roles or the IB. No auxiliary-pass slots are listed.", "",
+                  "| IB / indices | label | primary PS / VS | diffuse | light map | normal | status / reason |",
                   "|---|---|---|---|---|---|---|"]
         for row in rows:
-            labels = ", ".join(_labels(table, row)).replace("|", "\\|")
-            comparison = table["mod_comparison"]["meshes"].get(f"{row['ib']}/{row['index_count']}", {})
-            checks = "; ".join(f"{c['role']}: {c['status']}" for c in comparison.get("checks", []))
-            p = row["primary"]
-            shaders = ", ".join(f"`{s}`" for s in p["pixel_shaders"]) if p else "unresolved"
-            lines.append(f"| `{row['ib']}` / {row['index_count']} | {labels} | {shaders} | "
-                         f"{_role_text(p, 'diffuse')} | {_role_text(p, 'lightmap')} | {_role_text(p, 'normal')} | {checks} |")
+            labels = _cell(", ".join(_labels(table, row)))
+            for p in row["primary_variants"] or [None]:
+                shaders = f"`{p['ps']}` / `{p['vs']}`" if p else "unresolved"
+                reason = row["primary_reason"].replace("_", " ")
+                lines.append(f"| `{row['ib']}` / {row['index_count']} | {labels} | {shaders} | "
+                             f"{_role_text(p, 'diffuse')} | {_role_text(p, 'lightmap')} | {_role_text(p, 'normal')} | "
+                             f"{row['primary_status']}: {reason} |")
         lines.append("")
+    if unresolved:
+        lines += ["## Captured but not identified as primary materials", "",
+                  "These unlabelled IBs are retained without assigning character identity or primary slots. "
+                  "Repeated dynamic geometry can create many distinct IB hashes. Full bindings remain in slot-evidence.json.", "",
+                  f"<details><summary>{len(unresolved)} captured IB/count keys with unresolved primary identity</summary>", "",
+                  "| IB / indices | reason |", "|---|---|"]
+        for row in unresolved:
+            lines.append(f"| `{row['ib']}` / {row['index_count']} | {row['primary_reason'].replace('_', ' ')} |")
+        lines += ["", "</details>", ""]
     return "\n".join(lines) + "\n"
+
+
+def _cell(text):
+    return text.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
 def export(table, folder):
     folder = Path(folder)
-    material = {k: table[k] for k in ("schema", "version", "records", "meshes", "native_analysis_sha256", "rules", "mod_comparison")}
+    material = {k: table[k] for k in ("schema", "version", "records", "meshes", "native_analysis_sha256", "rules", "mod_comparison", "coverage")}
     material["rows"] = [material_row(table, r) for r in table["rows"]]
     (folder / "slot-table.json").write_text(json.dumps(material, indent=1), encoding="utf-8")
     (folder / "slot-table.md").write_text(to_markdown(table), encoding="utf-8")
@@ -298,7 +393,8 @@ def register(server, session):
     @server.tool("efmi_get_slot_table",
                  "Read per-IB/per-pass shader dataflow evidence without contacting the game or writing files. "
                  "Native analysis is independent of mods; INI bindings are compared afterwards. Roles remain candidates. "
-                 "Returns primary slots only by default; include_evidence/include_passes expose the audit. Refresh after INI edits.",
+                 "Returns primary slots per pipeline variant, unresolved reasons and capture coverage by default; "
+                 "include_evidence/include_passes expose the audit. Refresh after INI edits.",
                  {"folder": {"type": "string", "description": "Absolute version folder containing draws.jsonl and shaders."},
                   "ib_hash": {"type": "string", "default": ""}, "character": {"type": "string", "default": ""},
                   "offset": {"type": "integer", "minimum": 0, "default": 0},
