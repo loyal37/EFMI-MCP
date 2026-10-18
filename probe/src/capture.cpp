@@ -2002,6 +2002,37 @@ static void slot_srvs(Capture* c, DrawRec* d, int stage)
 	}
 }
 
+// LoyalTools takes a draw for a character's only when a buffer (the bone pool) is bound at vs-t0.
+static bool vs_t0_is_buffer(ID3D11DeviceContext* ctx)
+{
+	ID3D11ShaderResourceView* srv = nullptr;
+	OCTX(VSGetShaderResources)(ctx, 0, 1, &srv);
+	if (!srv)
+		return false;
+	ID3D11Resource* res = nullptr;
+	ID3D11View_GetResource((ID3D11View*)srv, &res);
+	bool buffer = false;
+	if (res) {
+		D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+		ID3D11Resource_GetType(res, &dim);
+		buffer = dim == D3D11_RESOURCE_DIMENSION_BUFFER;
+		ID3D11Resource_Release(res);
+	}
+	ID3D11ShaderResourceView_Release(srv);
+	return buffer;
+}
+
+static const char* usage_name(uint32_t usage)
+{
+	switch (usage) {
+	case D3D11_USAGE_DEFAULT: return "default";
+	case D3D11_USAGE_IMMUTABLE: return "immutable";
+	case D3D11_USAGE_DYNAMIC: return "dynamic";
+	case D3D11_USAGE_STAGING: return "staging";
+	default: return "unknown";
+	}
+}
+
 static void slot_record(Capture* c, uint8_t type, const DrawArgs& a)
 {
 	if (type == DT_DISPATCH || type == DT_DISPATCH_INDIRECT || !a.index_count)
@@ -2022,12 +2053,19 @@ static void slot_record(Capture* c, uint8_t type, const DrawArgs& a)
 		if (il) ID3D11InputLayout_Release(il);
 		return;
 	}
+	const int32_t rid = res_id(c, (ID3D11Resource*)ib);
+	if (slot_static_only() && c->res[rid].live.buf.Usage == D3D11_USAGE_DYNAMIC) {
+		// Index data the CPU rewrites (the game's dynamic batches): another hash every frame, never
+		// a mesh a mod could name.
+		ID3D11Buffer_Release(ib);
+		if (il) ID3D11InputLayout_Release(il);
+		return;
+	}
 	ID3D11VertexShader* vs = nullptr;
 	OCTX(VSGetShader)(ctx, &vs, nullptr, nullptr);
 	ID3D11PixelShader* ps = nullptr;
 	OCTX(PSGetShader)(ctx, &ps, nullptr, nullptr);
 
-	const int32_t rid = res_id(c, (ID3D11Resource*)ib);
 	const int32_t vsid = shader_id(c, vs), psid = shader_id(c, ps);
 	SlotSeen k;
 	k.ib = ib;
@@ -2040,7 +2078,9 @@ static void slot_record(Capture* c, uint8_t type, const DrawArgs& a)
 	k.ps_sn = psid >= 0 && c->shaders[psid].known ? c->shaders[psid].info.serial : (uint64_t)(uintptr_t)ps;
 
 	if (g_slot_seen.find(k) == g_slot_seen.end()) {
-		if (c->slot_new >= slot_max_new()) {
+		if (slot_bones_only() && !vs_t0_is_buffer(ctx)) {
+			g_slot_seen.insert(k);         // not a character's draw: not asked about again
+		} else if (c->slot_new >= slot_max_new()) {
 			c->slot_deferred++;
 		} else {
 			g_slot_seen.insert(k);
@@ -2199,6 +2239,7 @@ static void slot_push(const Capture& c)
 		w.ks("ib_state", region_state_name(st));
 		if (d.ib_res >= 0 && c.res[d.ib_res].known) w.kh32("ib_resource", c.res[d.ib_res].hash);
 		w.ks("ib_format", dxgi_format_name((DXGI_FORMAT)d.ib_fmt));
+		if (d.ib_res >= 0) w.ks("ib_usage", usage_name(c.res[d.ib_res].live.buf.Usage));
 		w.ku("ib_offset", d.ib_off);
 		w.ku("first_index", d.a.first_index);
 		w.ku("index_count", d.a.index_count);

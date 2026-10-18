@@ -115,6 +115,8 @@ After updating the probe the game has to be quit and started again; the DLL in t
 
 **Probe 0.1.8** (2026-10-18; **the game has to be restarted to load the new probe**; verified in the sandbox): records are keyed by what is drawn rather than where. The first run of 0.1.7 in the game recognised the version `1.6.3+5e73da7cad5e` and wrote 4881 records in 3.6 minutes: the game keeps meshes in large shared buffers and places the same mesh at other offsets over time, and textures the size of the screen follow the dynamic resolution, so position and size made new records of known passes. Keyed by content, the same data gives 1952 records, and the count grows when new scenes or characters appear, not while the picture stays the same. Records of 0.1.7 are moved to `draws-fmt1.jsonl` when 0.1.8 first opens the folder.
 
+**Probe 0.1.9** (2026-10-18; **the game has to be restarted to load the new probe**; verified in the sandbox): the slot cache records only what LoyalTools takes for a character's draw. In the open world the game draws geometry it builds on the CPU every frame (dynamic batches: skinned layout, bone pool, about 3450 indices, from a `D3D11_USAGE_DYNAMIC` index buffer); each frame gave another region hash, and 39,870 such records arrived within an hour. Now a draw is recorded only when its input layout has `BLENDINDICES`, a buffer (the bone pool) is bound at `vs-t0` and its index buffer is not `DYNAMIC`; the three filters are settings (`skinned_only`, `bones_only`, `static_only`), and records carry `ib_usage`. Records that 0.1.8 wrote from dynamic index data are not removed by the probe.
+
 Uninstalling: untick "Inject Libraries" in the launcher; the probe leaves nothing elsewhere.
 
 ## Tools
@@ -221,15 +223,17 @@ Texture slots written as `ps-tN = …` move when a game update changes a shader 
 enable=1          ; 0 switches it off
 every=30          ; look at one frame in this many
 skinned_only=1    ; 0 records every indexed draw (also XXMI's overlay text, see below)
+bones_only=1      ; 0 also records draws without a buffer (the bone pool) at vs-t0 (0.1.9)
+static_only=1     ; 0 also records index data the CPU rewrites, which hashes differently every frame (0.1.9)
 max_new=256       ; new draws recorded per frame looked at; the rest wait for a later one
 dir=slot-cache    ; folder next to the DLL, a plain name
 ```
 
-The probe command `slot_cache` changes the same settings in a running game (`enable`, `every`, `skinned_only`, `max_new`, `subdir`) and with `flush=true` waits until everything is on disk; its reply and `efmi_status` show the version, the folder and counters (`frames_looked_at`, `new_draws`, `deferred`, `records_written`, `duplicates`, `shaders_written`, `record_ms_last`). There is no MCP tool for it yet.
+The probe command `slot_cache` changes the same settings in a running game (`enable`, `every`, `skinned_only`, `bones_only`, `static_only`, `max_new`, `subdir`) and with `flush=true` waits until everything is on disk; its reply and `efmi_status` show the version, the folder and counters (`frames_looked_at`, `new_draws`, `deferred`, `records_written`, `duplicates`, `shaders_written`, `record_ms_last`). There is no MCP tool for it yet.
 
 **Cost.** A draw that was seen costs a few queries of the bound state and a table lookup in a frame looked at; the stack walk that tells `game` from `xxmi` is done only for new draws. Sandbox, about 3000 draws per frame with XXMI: no measurable difference of the frame time even when every frame is looked at, and 0.13–0.3 ms by the probe's own timing per frame looked at. Index data is read back only for new draws, asynchronously like a capture. Not yet measured in the real game.
 
-**Limits.** With `skinned_only=0` XXMI's own overlay is recorded too, and keeps adding lines. Slots are recorded as bound: a texture an earlier draw left at a slot this shader does not read is in the line as well, and can give the same pass a second line; the bytecode next to the records tells which slots a shader reads. Only vertex and pixel shader slots are recorded. A draw whose index data could not be read back (staging memory full) is tried again in a later frame. Lines are only ever added; a folder is never cleaned up by the probe.
+**Limits.** The three filters are LoyalTools' notion of a character draw (weight semantics, a bone pool at `vs-t0`) plus static index data; LoyalTools also asks for a 4096-constant per-object window and reads a flag from it, which the probe does not, since reading constants back costs a copy per draw. Characters posed on the CPU, whose index data the game rewrites, are left out, as the user asked. With `skinned_only=0` XXMI's own overlay is recorded too, and keeps adding lines. Slots are recorded as bound: a texture an earlier draw left at a slot this shader does not read is in the line as well, and can give the same pass a second line; the bytecode next to the records tells which slots a shader reads. Only vertex and pixel shader slots are recorded. A draw whose index data could not be read back (staging memory full) is tried again in a later frame. Lines are only ever added; a folder is never cleaned up by the probe.
 
 ### Coverage of live capture compared with FrameAnalysis
 

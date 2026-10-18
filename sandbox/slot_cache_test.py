@@ -1,4 +1,5 @@
-"""Does the probe fill its slot cache by itself? (probe 0.1.7, records keyed by content from 0.1.8)
+"""Does the probe fill its slot cache by itself? (probe 0.1.7; records keyed by content from 0.1.8;
+character draws only from 0.1.9)
 
 While the game runs, the probe looks at one frame in so many, records the indexed draws it has not
 seen before (index buffer region hash, range, shaders, what sits in the vertex and pixel shader
@@ -7,9 +8,15 @@ to the DLL, together with the bytecode of their shaders. A record stands for a m
 (index buffer region hash and count) with its shaders and slot shapes, wherever the game placed the
 mesh: two of the sandbox's draws draw the same index data with the same shaders and share a record.
 
+The probe records what LoyalTools would take for a character's draw: an input layout with
+BLENDINDICES, a buffer (the bone pool) at vs-t0, and index data the CPU does not rewrite. The sandbox
+has none of the first two, so the tests switch those filters off; the third is tested with the
+sandbox's --dynamic-ib draw, whose index data is rewritten every frame.
+
 With XXMI loaded, as in the game:
   - by default only skinned draws are recorded; the sandbox draws nothing skinned and XXMI's overlay
-    (the notification text) is not skinned either, so nothing is recorded;
+    (the notification text) is not skinned either, so nothing is recorded; with the skinned filter
+    off, the bone pool filter still records nothing;
   - with skinned_only off, every indexed draw of the sandbox in an ordinary full capture has a
     record that agrees with it: index buffer hash, range, base vertex, instances, shaders, layout,
     the slots of the shader resources with their kind, size and format, and the output formats; the
@@ -22,6 +29,8 @@ Without XXMI, where every draw is the sandbox's own and the counts are exact:
     duplicate that the writer drops;
   - another folder (with max_new=1, so new draws are spread over several frames) receives the same
     records, and going back to the first one adds nothing to it;
+  - the draw from a rewritten index buffer is left out until static_only is switched off, and then
+    gets a record with another hash in every frame;
   - after a restart the records already in the folder are recognised, nothing is written again, and
     a line the last session left unfinished does not run into the next one; records of the older
     format (probe 0.1.7, no "fmt") are moved to draws-fmt1.jsonl instead of being mixed in.
@@ -50,6 +59,8 @@ from selftest import PROBE, Sandbox  # noqa: E402
 SUB_X = "slot-cache-test-xxmi"
 SUB_A = "slot-cache-test-a"
 SUB_B = "slot-cache-test-b"
+SUB_C = "slot-cache-test-c"
+USAGE = {0: "default", 1: "immutable", 2: "dynamic", 3: "staging"}
 CUT = '{"frame":0,"key":"cut-off'
 
 failures: list[str] = []
@@ -119,8 +130,8 @@ def folder_of(st: dict) -> Path:
     return Path(st["folder"])
 
 
-def start(xxmi: bool) -> tuple[Sandbox, ProbeClient | None]:
-    sb = Sandbox(["--seconds", "90"], xxmi=xxmi)
+def start(xxmi: bool, extra: list[str] | None = None) -> tuple[Sandbox, ProbeClient | None]:
+    sb = Sandbox(["--seconds", "90"] + (extra or []), xxmi=xxmi)
     if not check("the sandbox started", sb.ready.wait(30)):
         return sb, None
     client = connect(sb.pid)
@@ -133,17 +144,22 @@ def draw_identity(origin: str, ib: str | None, count: int, vs: str | None, ps: s
     return (origin, ib, count, vs, ps)
 
 
+def static_draws(cap: Capture) -> list[dict]:
+    """The sandbox's indexed draws from index data the CPU does not rewrite: what the cache records."""
+    return [d for d in cap.draws() if "ib" in d and d["args"].get("index_count") and d["origin"] == "game"
+            and (cap.resource(d["ib"]["res"]) or {}).get("usage") != 2]
+
+
 def game_identities(cap: Capture) -> set[tuple]:
     return {draw_identity(d["origin"], d["ib"]["hash"], d["args"]["index_count"], d["shaders"].get("vs"),
-                          d["shaders"].get("ps"))
-            for d in cap.draws() if "ib" in d and d["args"].get("index_count") and d["origin"] == "game"}
+                          d["shaders"].get("ps")) for d in static_draws(cap)}
 
 
 def compare_with_capture(cap: Capture, recs: list[dict]) -> None:
     by_id: dict[tuple, list[dict]] = {}
     for r in recs:
         by_id.setdefault(draw_identity(r["origin"], r["ib"], r["index_count"], r["vs"], r["ps"]), []).append(r)
-    indexed = [d for d in cap.draws() if "ib" in d and d["args"].get("index_count") and d["origin"] == "game"]
+    indexed = static_draws(cap)
     check("the full capture has the sandbox's indexed draws to compare with", len(indexed) >= 4, str(len(indexed)))
     check("two of them draw the same index data with the same shaders", len(game_identities(cap)) < len(indexed),
           str(sorted(game_identities(cap))))
@@ -165,6 +181,9 @@ def compare_with_capture(cap: Capture, recs: list[dict]) -> None:
             problems.append(f"ib_state {r['ib_state']}")
         if r.get("ib_resource") != d["ib"]["resource_hash"]:
             problems.append(f"ib_resource {r.get('ib_resource')} != {d['ib']['resource_hash']}")
+        usage = USAGE.get((cap.resource(d["ib"]["res"]) or {}).get("usage"))
+        if r.get("ib_usage") != usage:
+            problems.append(f"ib_usage {r.get('ib_usage')} != {usage}")
         # Where the mesh lay and how it was drawn belong to the draw that was recorded.
         if (r["first_index"], r["base_vertex"]) == (a.get("first_index", 0), a.get("first_vertex", 0)):
             if r["ib_offset"] != d["ib"]["offset"]:
@@ -258,9 +277,9 @@ def with_xxmi(base: Path) -> None:
         check("XXMI is loaded", hello.get("xxmi", {}).get("present") is True, json.dumps(hello.get("xxmi")))
         check("the probe offers the slot cache", "slot_cache" in hello.get("features", []),
               json.dumps(hello.get("features")))
-        check("the defaults: on, one frame in 30, skinned draws only",
-              st["enabled"] and st["every"] == 30 and st["skinned_only"] and st["subdir"] == "slot-cache",
-              json.dumps(st))
+        check("the defaults: on, one frame in 30, skinned draws with a bone pool from static index data",
+              st["enabled"] and st["every"] == 30 and st["skinned_only"] and st["bones_only"] and st["static_only"]
+              and st["subdir"] == "slot-cache", json.dumps(st))
 
         configure(client, every=2)
         st = wait_looked_at(client, 6)
@@ -274,9 +293,15 @@ def with_xxmi(base: Path) -> None:
             check("a folder that is not a plain name is refused", "subdir" in str(e) or "plain" in str(e), str(e))
         check("a refused folder leaves the settings alone", status(client)["subdir"] == "slot-cache")
 
-        reply = configure(client, skinned_only=False, subdir=SUB_X)
+        configure(client, skinned_only=False)
+        st = wait_looked_at(client, 6)
+        check("skinned filter off, bone pool filter on: nothing has a buffer at vs-t0 here, nothing is recorded",
+              st["new_draws"] == 0 and st["records_written"] == 0, json.dumps(st))
+
+        reply = configure(client, bones_only=False, subdir=SUB_X)
         check("the slot_cache command answers with the settings",
-              reply["slot_cache"]["subdir"] == SUB_X and not reply["slot_cache"]["skinned_only"], json.dumps(reply))
+              reply["slot_cache"]["subdir"] == SUB_X and not reply["slot_cache"]["skinned_only"]
+              and not reply["slot_cache"]["bones_only"] and reply["slot_cache"]["static_only"], json.dumps(reply))
         wait_looked_at(client, 8)
         st = frozen(client)
         folder = folder_of(st)
@@ -315,11 +340,11 @@ def with_xxmi(base: Path) -> None:
 
 # ---------------------------------------------------------------- without XXMI
 def strict(base: Path) -> tuple[Path, set[str]] | None:
-    sb, client = start(xxmi=False)
+    sb, client = start(xxmi=False, extra=["--dynamic-ib"])
     try:
         if not client:
             return None
-        configure(client, every=2, skinned_only=False, subdir=SUB_A)
+        configure(client, every=2, skinned_only=False, bones_only=False, subdir=SUB_A)
         wait_looked_at(client, 8)
         st = frozen(client)
         folder = folder_of(st)
@@ -329,7 +354,14 @@ def strict(base: Path) -> tuple[Path, set[str]] | None:
               f"in all, last {st['record_ms_last']:.3f} ms")
         doc, blob = client.capture(detail="full", timeout_ms=8000)
         cap = Capture(doc, blob)
-        n_draws = sum(1 for d in cap.draws() if "ib" in d and d["args"].get("index_count") and d["origin"] == "game")
+        dynamic = [d for d in cap.draws() if "ib" in d and d["args"].get("index_count") and d["origin"] == "game"
+                   and (cap.resource(d["ib"]["res"]) or {}).get("usage") == 2]
+        n_draws = len(static_draws(cap))
+        check("the scene has one draw from an index buffer the CPU rewrites", len(dynamic) == 1
+              and dynamic[0]["args"]["index_count"] == 6, str([(d["index"], d["args"]) for d in dynamic]))
+        check("it is not recorded while static_only is on",
+              all(r.get("ib_usage") != "dynamic" for r in recs) and all(r["index_count"] != 6 for r in recs),
+              str([(r["ib"], r["index_count"], r.get("ib_usage")) for r in recs]))
         check("one record per mesh and shaders; the second draw of the same mesh is recognised",
               st["records_written"] == len(recs) == len(game) == st["records_in_folder"] == len(game_identities(cap))
               and st["new_draws"] == n_draws and st["duplicates"] == n_draws - len(game)
@@ -375,6 +407,30 @@ def strict(base: Path) -> tuple[Path, set[str]] | None:
               folder_of(st) == folder and st["records_written"] == before["records_written"]
               and st["duplicates"] == before["duplicates"] + n_draws and keys(records(folder)) == game
               and len(records(folder)) == len(game), f"{json.dumps(before)} -> {json.dumps(st)}")
+
+        print("\n== index data the CPU rewrites")
+        folder_c = base / SUB_C / folder.name
+        configure(client, enable=True, subdir=SUB_C)
+        wait_looked_at(client, 4)
+        st = frozen(client)
+        recs_c = records(folder_c)
+        check("static_only: the same records as before, none from the rewritten index buffer",
+              keys(recs_c) == game and all(r.get("ib_usage") != "dynamic" for r in recs_c),
+              f"{sorted(keys(recs_c))[:4]} vs {sorted(game)[:4]}")
+        configure(client, enable=True, static_only=False)
+        wait_looked_at(client, 4)
+        st = frozen(client)
+        dyn = [r for r in records(folder_c) if r.get("ib_usage") == "dynamic"]
+        check("static_only off: it is recorded, under another hash in every frame looked at",
+              len(dyn) >= 2 and len({r["ib"] for r in dyn}) == len(dyn) and all(r["index_count"] == 6 for r in dyn)
+              and keys(records(folder_c)) - {r["key"] for r in dyn} == game,
+              f"{[(r['ib'], r['frame']) for r in dyn]} {json.dumps(st)}")
+        configure(client, enable=True, static_only=True)
+        wait_looked_at(client, 4)
+        st = frozen(client)
+        check("static_only on again: no more of it",
+              sum(r.get("ib_usage") == "dynamic" for r in records(folder_c)) == len(dyn), json.dumps(st))
+        configure(client, subdir=SUB_A)
         return folder, game, n_draws
     finally:
         sb.quit()
@@ -393,7 +449,7 @@ def restart(folder: Path, game: set[str], n_draws: int) -> None:
     try:
         if not client:
             return
-        configure(client, every=2, skinned_only=False, subdir=SUB_A)
+        configure(client, every=2, skinned_only=False, bones_only=False, subdir=SUB_A)
         wait_looked_at(client, 8)
         st = frozen(client)
         check("the same version folder", folder_of(st) == folder, st["folder"])
@@ -422,7 +478,7 @@ def main() -> int:
         print(f"no probe at {PROBE}")
         return 1
     base = PROBE.parent
-    folders = [base / SUB_X, base / SUB_A, base / SUB_B]
+    folders = [base / SUB_X, base / SUB_A, base / SUB_B, base / SUB_C]
     for f in folders:
         if f.exists():
             shutil.rmtree(f)

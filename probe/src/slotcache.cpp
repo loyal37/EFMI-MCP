@@ -16,7 +16,7 @@ static CRITICAL_SECTION g_cs;
 static CONDITION_VARIABLE g_cv_work, g_cv_idle;
 static bool g_inited = false;
 static SlotCacheConfig g_sc;                  // guarded by g_cs
-static volatile LONG g_enable = 0, g_every = 30, g_skinned = 1, g_max_new = 256;
+static volatile LONG g_enable = 0, g_every = 30, g_skinned = 1, g_bones = 1, g_static = 1, g_max_new = 256;
 static volatile LONG g_gen = 0;
 static HANDLE g_thread = nullptr;             // guarded by g_cs
 
@@ -79,6 +79,8 @@ void slot_init()
 	c.enable = GetPrivateProfileIntW(L"SlotCache", L"enable", 1, path) != 0;
 	c.every = (uint32_t)GetPrivateProfileIntW(L"SlotCache", L"every", 30, path);
 	c.skinned_only = GetPrivateProfileIntW(L"SlotCache", L"skinned_only", 1, path) != 0;
+	c.bones_only = GetPrivateProfileIntW(L"SlotCache", L"bones_only", 1, path) != 0;
+	c.static_only = GetPrivateProfileIntW(L"SlotCache", L"static_only", 1, path) != 0;
 	c.max_new = (uint32_t)GetPrivateProfileIntW(L"SlotCache", L"max_new", 256, path);
 	wchar_t sub[128] = {};
 	GetPrivateProfileStringW(L"SlotCache", L"dir", L"slot-cache", sub, 128, path);
@@ -86,8 +88,9 @@ void slot_init()
 	if (plain_name(s))
 		c.subdir = s;
 	slot_set_config(c);
-	plog("slot cache: %s, one frame in %u, %s draws, folder %s", c.enable ? "on" : "off", c.every,
-	     c.skinned_only ? "skinned" : "all", c.subdir.c_str());
+	plog("slot cache: %s, one frame in %u, %s draws%s%s, folder %s", c.enable ? "on" : "off", c.every,
+	     c.skinned_only ? "skinned" : "all", c.bones_only ? " with a bone pool" : "",
+	     c.static_only ? " from static index data" : "", c.subdir.c_str());
 }
 
 void slot_get_config(SlotCacheConfig* out)
@@ -107,13 +110,17 @@ bool slot_set_config(const SlotCacheConfig& cfg)
 	if (c.max_new < 1) c.max_new = 1;
 	if (c.max_new > 4096) c.max_new = 4096;
 	EnterCriticalSection(&g_cs);
-	const bool moved = g_sc.subdir != c.subdir;
+	// Another folder, or a filter that lets more through: what was seen is looked at again.
+	const bool again = g_sc.subdir != c.subdir || (g_sc.skinned_only && !c.skinned_only) ||
+	                   (g_sc.bones_only && !c.bones_only) || (g_sc.static_only && !c.static_only);
 	g_sc = c;
 	LeaveCriticalSection(&g_cs);
-	if (moved)
-		InterlockedIncrement(&g_gen);   // another folder: what was seen is recorded there again
+	if (again)
+		InterlockedIncrement(&g_gen);
 	InterlockedExchange(&g_every, (LONG)c.every);
 	InterlockedExchange(&g_skinned, c.skinned_only ? 1 : 0);
+	InterlockedExchange(&g_bones, c.bones_only ? 1 : 0);
+	InterlockedExchange(&g_static, c.static_only ? 1 : 0);
 	InterlockedExchange(&g_max_new, (LONG)c.max_new);
 	InterlockedExchange(&g_enable, c.enable ? 1 : 0);
 	return true;
@@ -126,6 +133,8 @@ bool slot_due(uint32_t frame)
 }
 
 bool slot_skinned_only() { return g_skinned != 0; }
+bool slot_bones_only() { return g_bones != 0; }
+bool slot_static_only() { return g_static != 0; }
 uint32_t slot_max_new() { return (uint32_t)g_max_new; }
 LONG slot_generation() { return g_gen; }
 
@@ -546,6 +555,8 @@ void slot_status_object(std::string* out)
 	w.kb("enabled", g_sc.enable);
 	w.ku("every", g_sc.every);
 	w.kb("skinned_only", g_sc.skinned_only);
+	w.kb("bones_only", g_sc.bones_only);
+	w.kb("static_only", g_sc.static_only);
 	w.ku("max_new", g_sc.max_new);
 	w.ks("subdir", g_sc.subdir);
 	w.ks("version", g_status_key);

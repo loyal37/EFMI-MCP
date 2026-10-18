@@ -249,6 +249,8 @@ static bool g_state_pass = false;           // --state-pass: one more draw, indi
 static bool g_content_pass = false;         // --content-pass: calls between which buffers and textures of every
                                             // kind are rewritten with bytes that say when they were written
 static bool g_content_static = false;       // --content-static: the same bytes in every frame (to compare two frames)
+static bool g_dynamic_ib = false;           // --dynamic-ib: one more draw of mesh 3 from an index buffer the CPU
+                                            // rewrites every frame, as the game's dynamic batches are drawn
 static uint32_t g_frame_counter = 0;
 static int g_vsync = 1;                     // --novsync sets this to 0
 static unsigned g_skip = 0;                 // --skip bit mask, for bisecting a scene
@@ -267,6 +269,7 @@ struct Scene {
 	ID3D11Buffer* cb_heap = nullptr;     // 64 KB constant buffer
 	ID3D11Buffer* cb_pose = nullptr;
 	ID3D11Buffer* vb3a = nullptr, *vb3b = nullptr, *ib3 = nullptr;
+	ID3D11Buffer* ib_dyn = nullptr;            // --dynamic-ib
 	ID3D11Buffer* posed = nullptr;
 	ID3D11UnorderedAccessView* posed_uav = nullptr;
 
@@ -445,6 +448,14 @@ static bool build_scene(Scene& s)
 	// ---- a mesh in its own immutable buffers
 	if (!create_mesh3(s, 0))
 		return false;
+	if (g_dynamic_ib) {
+		D3D11_BUFFER_DESC dd = {};
+		dd.ByteWidth = 32 * sizeof(uint16_t);
+		dd.Usage = D3D11_USAGE_DYNAMIC;
+		dd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+		dd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		hr = s.dev->CreateBuffer(&dd, nullptr, &s.ib_dyn); CHECK(hr, "dynamic ib");
+	}
 
 	// ---- a vertex buffer written by a compute shader every frame
 	{
@@ -1235,6 +1246,23 @@ static void render(Scene& s, float time)
 		bind_object(s, 2);
 		if (!(g_skip & 8))
 			s.ctx->DrawIndexed((UINT)s.m3.idx.size(), 0, 0);
+		if (g_dynamic_ib && s.ib_dyn) {
+			// 3b) two triangles of mesh 3's vertices from index data the CPU rewrites every frame,
+			// drawn from another place in the buffer each time, as the game's dynamic batches are:
+			// the bytes under the draw differ from frame to frame (mesh 3 has 64 vertices).
+			static unsigned turn = 0;
+			D3D11_MAPPED_SUBRESOURCE dm;
+			if (SUCCEEDED(s.ctx->Map(s.ib_dyn, 0, D3D11_MAP_WRITE_DISCARD, 0, &dm))) {
+				uint16_t* out = (uint16_t*)dm.pData;
+				for (unsigned i = 0; i < 32; i++)
+					out[i] = (uint16_t)((turn * 7 + i * 11) % 64);
+				s.ctx->Unmap(s.ib_dyn, 0);
+			}
+			s.ctx->IASetIndexBuffer(s.ib_dyn, DXGI_FORMAT_R16_UINT, 0);
+			s.ctx->DrawIndexed(6, (turn % 5) * 6, 0);
+			s.ctx->IASetIndexBuffer(s.ib3, DXGI_FORMAT_R32_UINT, 0);
+			turn++;
+		}
 		// 4) the same vertices without an index buffer. Like the game's engine
 		// this goes through DrawInstanced: XXMI 1.2.0's frame analysis never
 		// returns from a plain Draw() in this program (verified with XXMI
@@ -1448,6 +1476,7 @@ int wmain(int argc, wchar_t** argv)
 		else if (a == L"--primary-screen") primary_screen = true;
 		else if (a == L"--content-pass") g_content_pass = true;
 		else if (a == L"--content-static") g_content_pass = g_content_static = true;
+		else if (a == L"--dynamic-ib") g_dynamic_ib = true;
 	}
 
 	wchar_t exe[MAX_PATH];
