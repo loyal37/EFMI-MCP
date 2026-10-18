@@ -1,5 +1,9 @@
 # EFMI MCP — Tasks
 
+## T-014 update: a missing hash mapping cost one F10 (2026-10-18)
+
+- While building the translucent part for Yvonne (`F:\EFMI TTL`), an INI was written with the shader hashes `efmi_list_draws` / `efmi_get_draw` report; for pixel shaders a ShaderRegex rewrote they are not the hashes `[ShaderOverride]` matches, and nothing in the output says so. Still open: report XXMI's original hash next to the probe's for rewritten shaders (the FNV of `ShaderCache\<original>-ps_regex.bin`), and say when a shader carries a regex filter index.
+
 ## T-016 update: capture coverage and primary variants (2026-10-18)
 
 - Fixed misleadingly sparse material output in server 0.1.18/schema 3: retain each main pipeline mapping, independent known roles beside ambiguous roles, all observed keys and explicit unresolved reasons. Show whole-cache/filtered coverage, plus post-analysis label coverage. No auxiliary slots in the material table, no mod-guided role inference.
