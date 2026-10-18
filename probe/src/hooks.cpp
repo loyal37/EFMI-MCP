@@ -169,6 +169,22 @@ void classify_caller(void* const* frames, unsigned count, CallerInfo* out)
 		classify_caller(fr_, n_, &ci); \
 	}
 
+void caller_from_probe(CallerInfo* out)
+{
+	*out = CallerInfo();
+	if (!g_cfg.stack_origin)
+		return;
+	static ModuleRange self;
+	static const bool have_self = module_from_address((const void*)&caller_from_probe, &self);
+	void* fr[24];
+	USHORT n = RtlCaptureStackBackTrace(0, 24, fr, nullptr);
+	USHORT d = 0;
+	while (have_self && d < n && ptr_in(self, fr[d]))
+		d++;
+	USHORT rest = (USHORT)(n - d);
+	classify_caller(fr + d, rest > 10 ? 10u : rest, out);
+}
+
 void hooks_find_xxmi()
 {
 	if (g_xxmi.base)
@@ -599,7 +615,12 @@ static inline HookedObj* ctx_of(void* This)
 
 #define RECORD_DRAW(type_, args_, tg_, ibuf_, ioff_) \
 	if (g_recording && h == g_ctx) { \
-		CALLER(ci); \
+		CallerInfo ci; \
+		if (g_cfg.stack_origin && !g_caller_late) { \
+			void* fr_[10]; \
+			USHORT n_ = RtlCaptureStackBackTrace(1, 10, fr_, nullptr); \
+			classify_caller(fr_, n_, &ci); \
+		} \
 		cap_on_draw(type_, args_, tg_, ibuf_, ioff_, ci); \
 	}
 

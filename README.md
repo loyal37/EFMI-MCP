@@ -111,6 +111,8 @@ After updating the probe the game has to be quit and started again; the DLL in t
 
 **MCP server 0.1.14** (2026-10-16; restart the MCP server, probe unchanged): `efmi_get_texture_slots` performs batch slot lookup directly from a capture, with inline shader evidence and texture metadata. Queries and shader paging share a bounded memory cache and create no shader files by default. Use `efmi_get_shader save=true` when a BIN/ASM export is wanted.
 
+**Probe 0.1.7** (2026-10-18; **the game has to be restarted to load the new probe**; verified in the sandbox, not yet in the real game): the slot cache. While the game runs, the probe notes by itself, for every skinned mesh draw it has not seen before, the index buffer hash and range, the shaders and what sits in each vertex and pixel shader resource slot, and keeps it in a folder per game version next to the DLL; switching characters in the game is enough to fill it. It is the material for following texture slots from one game version to the next; nothing reads it yet. See "Slot cache" below.
+
 Uninstalling: untick "Inject Libraries" in the launcher; the probe leaves nothing elsewhere.
 
 ## Tools
@@ -152,6 +154,33 @@ The result groups identical shader/material/target bindings, preserves draw numb
 Default results include slots referenced by instructions; `include_unused=true` additionally distinguishes declaration-only and leftover bindings. `include_buffers=true` adds raw/structured/typed buffers bound to t-slots. A referenced but unbound fallback is shown as unbound. Unavailable or unsupported shader analysis is reported explicitly and leaves bound slots marked unknown; it does not claim that they are unused. Shader Model 4/5.0 fixed registers are supported; indexed/ranged resource registers are not resolved.
 
 References include conditional paths and do not prove that every pixel executed the instruction. Material roles such as diffuse and normal are not assigned from fixed slot numbers: inspect the instruction evidence and use `efmi_get_shader first_line=<line>` for more context. This distinction follows the separate [resource declaration](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dcl-resource) and [texture sampling instruction](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/sample--sm4---asm-) in the D3D assembly format. A game update or another pass can change the slots.
+
+### Slot cache (probe 0.1.7)
+
+Texture slots written as `ps-tN = …` move when a game update changes a shader (all of them by one, or only those from some slot on). To be able to tell, for any mod, which slot a texture belongs in after an update, the probe keeps a record of the slots of every version by itself, like a cache that fills itself while the game is played.
+
+**What it records.** One frame in 30 is looked at. In it, every indexed draw whose input layout has `BLENDINDICES` (skinned meshes; this is how the game draws its characters) and that was not seen before gets one line in `draws.jsonl`: `ib` (the region hash mods use), `ib_resource`, `ib_format`, `ib_offset`, `first_index`, `index_count`, `base_vertex`, `instances`, `vs` / `ps`, the input `layout`, `vs_srv` / `ps_srv` (per slot: kind, size, mips, array size, format and the view's format, plus the texture hash as information), the formats of the render targets `rt` and of the depth buffer `ds`, `origin` (`game` or `xxmi`) and `key`. The key is made of the origin, the index buffer hashes and range, the shaders and the shape of the slots (slot, kind, format, size), not of the texture hashes, so a line is written once per mesh pass and version, also across game sessions. The bytecode of each shader goes to `shaders\<hash>-vs.bin` / `-ps.bin` once, as the game created it, so that two versions can be compared instruction by instruction.
+
+**Where.** `<folder of efmi_probe.dll>\slot-cache\<version>\` with `version.json`, `draws.jsonl` and `shaders\`. The version is `<label>+<fingerprint>`: the label is the client version Unity keeps in `Endfield_Data\globalgamemanagers` (for example `1.6.3`); the fingerprint covers the contents of the two resource indexes `Endfield_Data\Persistent\index_main.json` and `Endfield_Data\StreamingAssets\index_main.json` and the size and time of `Endfield.exe`, `GameAssembly.dll` and `globalgamemanagers`. The resource indexes are what changes with a resource update that leaves the client files alone, which is how the slots moved on 2026-10-15. `version.json` lists the inputs.
+
+**Mods on or off.** With mods on, a character a mod replaces is drawn by XXMI (`origin: xxmi`) with the mod's buffers, and the game's own draw of it does not happen; the lines then say which slots the mod's draws fill. For the game's own index buffer hashes and slots of a modded character, switch the mods off with F11 (`efmi_toggle_mods state='off'`) while that character is on screen, and back on.
+
+**Settings.** `efmi_probe.ini` next to the DLL, read when the game starts:
+
+```ini
+[SlotCache]
+enable=1          ; 0 switches it off
+every=30          ; look at one frame in this many
+skinned_only=1    ; 0 records every indexed draw (also XXMI's overlay text, see below)
+max_new=256       ; new draws recorded per frame looked at; the rest wait for a later one
+dir=slot-cache    ; folder next to the DLL, a plain name
+```
+
+The probe command `slot_cache` changes the same settings in a running game (`enable`, `every`, `skinned_only`, `max_new`, `subdir`) and with `flush=true` waits until everything is on disk; its reply and `efmi_status` show the version, the folder and counters (`frames_looked_at`, `new_draws`, `deferred`, `records_written`, `duplicates`, `shaders_written`, `record_ms_last`). There is no MCP tool for it yet.
+
+**Cost.** A draw that was seen costs a few queries of the bound state and a table lookup in a frame looked at; the stack walk that tells `game` from `xxmi` is done only for new draws. Sandbox, about 3000 draws per frame with XXMI: no measurable difference of the frame time even when every frame is looked at, and 0.13–0.3 ms by the probe's own timing per frame looked at. Index data is read back only for new draws, asynchronously like a capture. Not yet measured in the real game.
+
+**Limits.** With `skinned_only=0` XXMI's own overlay is recorded too: its quads come from a ring buffer at a different place in most frames, so it keeps adding lines. Only vertex and pixel shader slots are recorded. A draw whose index data could not be read back (staging memory full) is tried again in a later frame. Lines are only ever added; a folder is never cleaned up by the probe.
 
 ### Coverage of live capture compared with FrameAnalysis
 
@@ -410,7 +439,7 @@ It copies the runtime from the EFMI directory to `sandbox\run` (the original dir
 probe\      probe sources (C++, MSVC x64)
 server\     MCP server (Python)
 sandbox\    test program and test scripts, not part of what is delivered
-dist\       the built efmi_probe.dll and run-time logs
+dist\       the built efmi_probe.dll and run-time logs; slot-cache\ is written there by the probe
 captures\   exported meshes, textures, shader disassembly
 ```
 

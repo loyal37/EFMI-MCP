@@ -11,6 +11,8 @@
   9. draw output and pipeline state unit tests (fake probe)
  10. contents: what each call saw, against bytes the sandbox is known to have written; byte for byte
      against XXMI's own frame analysis of the same calls; and the tools on top (fake probe)
+ 11. slot cache: the records the probe writes by itself, against a full capture; dedupe across frames,
+     folders and restarts
 """
 from __future__ import annotations
 
@@ -37,6 +39,7 @@ def main() -> int:
         ("probe self-test", ["sandbox/selftest.py"]),
         ("contents: what each call saw", ["sandbox/contents_test.py"]),
         ("contents: byte for byte against XXMI's frame analysis", ["sandbox/contents_parity_test.py"]),
+        ("slot cache written by the probe", ["sandbox/slot_cache_test.py"]),
         ("multiple-device regression", ["sandbox/multidevice_test.py"]),
         ("multiple-device regression with XXMI", ["sandbox/multidevice_test.py", "--xxmi"]),
         ("MCP server end to end", ["sandbox/mcp_test.py"]),

@@ -82,6 +82,8 @@ extern volatile LONG g_tracking;    // buffer write tracking is on (a client is 
 extern volatile LONG g_after;       // the call being issued has something to be done once it has run
 extern volatile LONG g_barrier;     // a capture keeps contents: every write has to be announced first
 extern volatile LONG g_events;      // the frame being recorded lists its writes
+extern volatile LONG g_caller_late; // the frame being recorded works out the caller of a draw itself,
+                                    // only for the draws it keeps (caller_from_probe)
 
 void cap_init();
 void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,

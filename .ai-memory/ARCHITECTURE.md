@@ -17,6 +17,7 @@ The probe lives in the game process next to XXMI. `bootstrap.cpp` redirects, in 
 | `probe/src/capture.cpp` / `capture.h` | Single-frame and continuous capture, pipeline binding snapshots, GPU data read-back, summaries |
 | `probe/src/hash.cpp` / `hash.h` | Computation of XXMI-compatible hashes |
 | `probe/src/ipc.cpp` | Named pipe server and request dispatch |
+| `probe/src/slotcache.cpp` / `slotcache.h` | Slot cache (0.1.7): settings, folder per game version, writer thread for records and shader bytecode |
 | `probe/src/util.cpp` / `common.h` | Logging, configuration, module information, shared declarations |
 
 Device, immediate context and swap chain must belong to the same render target; draw records are filtered by the selected context, and Present decides the frame boundary of a capture. In `0.1.1`, `hooks_attach_device` separates installing hooks from choosing the capture target: hooks are set up for the device first, the first swap chain found binds the corresponding target through `GetDevice` / `GetImmediateContext` and holds references to device and context; an auxiliary device does not override a target that has been chosen. The `context1` capability is stored per context, and GPU writer tracking is also limited to the selected context and requires a swap chain to exist.
@@ -53,6 +54,11 @@ Server 0.1.14 adds `Session.shader_listing`: a per-connection LRU of bytecode, d
 A pipe message is `[u32 header_len][u32 payload_len][header JSON][payload]`. The server keeps the records of the last six captures and the bytes of CB / indirect-argument snapshots it has fetched, but the probe only guarantees that the ordinary resources of the latest capture can still be read. An ordinary read returns the content at the time of reading; for the CB as it was at the draw, use `cb_data=true`.
 
 On import, `hashes.py` tries to load `dist/efmi_crc32c.dll` by absolute path and accelerates CRC once the CPU SSE4.2 check and known vectors pass; when the library is missing or unsupported it keeps the Python fallback. Sources and build are in `server/native/`, completely independent of the injected probe. `decode.texture_to_pngs` produces the full PNG and the preview from one decode; compression level 1 keeps the pixels.
+
+### Probe 0.1.7: slot cache
+
+- `cap_on_frame_boundary` starts a "slots" recording when nothing else is recorded, fewer than 4 frames are finishing and `slot_due(frame)`; an explicit capture and the continuous stream take precedence. `cap_on_draw` hands such a frame to `slot_record`, which queries the input layout (skinned filter, cached per layout), index buffer, VS/PS and checks `g_slot_seen` (render thread only; cleared when `slot_generation()` changes or it grows past 200,000). New draws get a `DrawRec` with the IB region (read back and hashed like a capture), the VS/PS SRVs and RTV/DSV views, and the caller via `caller_from_probe` (`g_caller_late` suppresses the per-draw stack walk in the hook).
+- `complete_capture` passes such a frame to `slot_push`, which writes one JSON record per draw and calls `slot_submit`; draws whose region was skipped or still pending are removed from `g_slot_seen` to be tried again. `slotcache.cpp` works out the version key, opens `draws.jsonl` for appending, loads the keys already there, de-duplicates and saves bytecode through `reg_get_bytecode`, all on its own thread; a change of version in the same place raises the generation, and `slot_set_config` raises it when the folder changes.
 
 ### Probe 0.1.6 / server 0.1.12: contents as they were at the call
 

@@ -1,6 +1,13 @@
 # EFMI MCP — Tasks
 
-> Last updated: 2026-10-16.
+> Last updated: 2026-10-18.
+
+## T-016: Keep slot-style texture bindings working across game versions (step 1 done in the sandbox, 2026-10-18)
+
+- Goal (user): for every game version, a general tool that recognises how texture slots moved and repairs the slot bindings of any mod; texture hashes are not used.
+- Step 1, the probe's slot cache (probe 0.1.7): implemented, verified in the sandbox, installed in `dist`. First check at the next game start: `efmi_status` / `slot_cache` shows the version key (label expected `1.6.3`), records grow while characters are switched, cost per looked-at frame; with F11 off/on the native draws of modded characters are recorded too.
+- Step 2 (to do): server side. Read the cache folders, pair versions by mesh (IB hash and range) and shader, align the bytecode of old/new shader pairs (resource declarations and sample instructions) to derive the slot migration per shader pair, and show it through an MCP tool. Possibly a probe command that exports every shader seen.
+- Step 3 (to do): a general offline fixer that rewrites the `ps-tN` lines of any mod's INI from a migration table (the user's own mods only with the backup rules of `AGENTS.md`), checked against the bulk slot repair of 2026-10-15.
 
 ## T-015: Efficient texture-slot queries (done, 2026-10-16)
 

@@ -50,6 +50,8 @@ struct CallerInfo {
 	uint32_t rva = 0;         // return address relative to XXMI's base (0 if caller is not XXMI)
 };
 void classify_caller(void* const* frames, unsigned count, CallerInfo* out);
+// The same for the hooked call being executed, from anywhere further down the probe's own stack.
+void caller_from_probe(CallerInfo* out);
 
 struct HookStats {
 	volatile LONG draws, creates, presents, maps, exec_cmdlists, revptr;

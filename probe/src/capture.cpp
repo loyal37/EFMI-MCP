@@ -1,7 +1,9 @@
 #include "capture.h"
 #include "registry.h"
 #include "json.h"
+#include "slotcache.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <deque>
 #include <map>
@@ -9,6 +11,7 @@
 #include <string.h>
 
 volatile LONG g_recording = 0;
+volatile LONG g_caller_late = 0;
 volatile LONG g_tracking = 0;
 volatile LONG g_after = 0;
 volatile LONG g_barrier = 0;
@@ -172,6 +175,30 @@ struct RKeyHash {
 };
 struct FrameRegion { int32_t idx; uint64_t epoch; };
 
+// The slot cache tells draws apart by what is bound, before anything is hashed: the index buffer
+// object and its creation serial, the range, and the shaders by creation serial.
+struct SlotSeen {
+	void*    ib = nullptr;
+	uint64_t ib_sn = 0;
+	uint32_t ib_off = 0, ib_fmt = 0, first = 0, count = 0;
+	int32_t  base = 0;
+	uint64_t vs_sn = 0, ps_sn = 0;
+	bool operator==(const SlotSeen& o) const
+	{
+		return ib == o.ib && ib_sn == o.ib_sn && ib_off == o.ib_off && ib_fmt == o.ib_fmt && first == o.first &&
+		       count == o.count && base == o.base && vs_sn == o.vs_sn && ps_sn == o.ps_sn;
+	}
+};
+struct SlotSeenHash {
+	size_t operator()(const SlotSeen& k) const
+	{
+		uint64_t h = (uint64_t)(uintptr_t)k.ib * 0x9E3779B97F4A7C15ull;
+		h ^= (k.ib_sn + ((uint64_t)k.first << 32 | k.count)) * 0xC2B2AE3D27D4EB4Full;
+		h ^= (k.vs_sn * 31 + k.ps_sn + (uint64_t)(uint32_t)k.base + ((uint64_t)k.ib_off << 20)) * 0x165667B19E3779F9ull;
+		return (size_t)(h ^ (h >> 31));
+	}
+};
+
 // A draw-time copy waiting to be read back from its staging chunk.
 struct Pending {
 	uint8_t  kind;       // 0 = region hash, 1 = constant buffer snapshot
@@ -243,6 +270,10 @@ struct Capture {
 	size_t   chunk_cursor = 0;       // next chunk to read back
 	uint32_t wait_frames = 0;        // frames spent waiting for the GPU
 	bool     live = false;           // part of the continuous stream, summarised and dropped
+	bool     slots = false;          // looked at for the slot cache: only draws not seen before
+	uint32_t slot_new = 0;           // draws recorded for it
+	uint32_t slot_deferred = 0;      // new draws left for a later frame (over max_new)
+	std::vector<SlotSeen> slot_keys; // one per recorded draw
 	uint64_t live_generation = 0;    // stream session that requested this frame
 	bool     hash_volatile = false;
 	uint32_t volatile_skips = 0;
@@ -1916,12 +1947,322 @@ void cap_after_draw()
 	c->out_after.clear();
 }
 
+// ================================================================ slot cache
+// Every so often a frame is looked at for the slot cache (slotcache.cpp). In that frame only
+// indexed draws that were not seen before are recorded: the index buffer region, the shaders,
+// what is bound to the vertex and pixel shader resource slots and the output formats. A draw
+// that was seen costs the queries that tell it apart and one lookup.
+static std::unordered_set<SlotSeen, SlotSeenHash> g_slot_seen;   // render thread
+static LONG g_slot_seen_gen = -1;
+static std::unordered_map<void*, bool> g_layout_skinned;          // input layout -> has BLENDINDICES
+static uint32_t g_slot_frames = 0;
+
+static bool layout_skinned(void* il)
+{
+	auto it = g_layout_skinned.find(il);
+	if (it != g_layout_skinned.end())
+		return it->second;
+	LayoutInfo li;
+	bool skinned = false;
+	if (reg_get_layout(il, &li))
+		for (const LayoutElem& e : li.elems)
+			if (_stricmp(e.semantic, "BLENDINDICES") == 0) { skinned = true; break; }
+	g_layout_skinned[il] = skinned;
+	return skinned;
+}
+
+static void slot_prepare()
+{
+	LONG gen = slot_generation();
+	if (gen != g_slot_seen_gen || g_slot_seen.size() > 200000) {
+		g_slot_seen.clear();
+		g_slot_seen_gen = gen;
+	}
+	// An address can be taken over by another input layout: what is known about them is
+	// forgotten now and then, which costs a registry lookup per layout.
+	if (++g_slot_frames % 64 == 0)
+		g_layout_skinned.clear();
+}
+
+static void slot_srvs(Capture* c, DrawRec* d, int stage)
+{
+	static ID3D11ShaderResourceView* srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+	memset(srvs, 0, sizeof(srvs));
+	get_srvs(stage, srvs);
+	for (UINT i = 0; i < _countof(srvs); i++) {
+		if (!srvs[i]) continue;
+		ViewBind v;
+		v.stage = (uint8_t)stage;
+		v.slot = (uint8_t)i;
+		v.res = view_res_id(c, (ID3D11View*)srvs[i]);
+		v.view = view_desc_id(c, (ID3D11View*)srvs[i], VK_SRV, v.res);
+		c->views.push_back(v);
+		d->srv_count++;
+		ID3D11ShaderResourceView_Release(srvs[i]);
+	}
+}
+
+static void slot_record(Capture* c, uint8_t type, const DrawArgs& a)
+{
+	if (type == DT_DISPATCH || type == DT_DISPATCH_INDIRECT || !a.index_count)
+		return;
+	ID3D11DeviceContext* ctx = rctx();
+	ID3D11InputLayout* il = nullptr;
+	OCTX(IAGetInputLayout)(ctx, &il);
+	const bool skinned = il && layout_skinned(il);
+	if (slot_skinned_only() && !skinned) {
+		if (il) ID3D11InputLayout_Release(il);
+		return;
+	}
+	ID3D11Buffer* ib = nullptr;
+	DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
+	UINT ib_off = 0;
+	OCTX(IAGetIndexBuffer)(ctx, &ib, &fmt, &ib_off);
+	if (!ib) {
+		if (il) ID3D11InputLayout_Release(il);
+		return;
+	}
+	ID3D11VertexShader* vs = nullptr;
+	OCTX(VSGetShader)(ctx, &vs, nullptr, nullptr);
+	ID3D11PixelShader* ps = nullptr;
+	OCTX(PSGetShader)(ctx, &ps, nullptr, nullptr);
+
+	const int32_t rid = res_id(c, (ID3D11Resource*)ib);
+	const int32_t vsid = shader_id(c, vs), psid = shader_id(c, ps);
+	SlotSeen k;
+	k.ib = ib;
+	k.ib_sn = c->res[rid].serial;
+	k.ib_off = ib_off;
+	k.ib_fmt = (uint32_t)fmt;
+	k.first = a.first_index;
+	k.count = a.index_count;
+	k.base = (int32_t)a.first_vertex;
+	k.vs_sn = vsid >= 0 && c->shaders[vsid].known ? c->shaders[vsid].info.serial : (uint64_t)(uintptr_t)vs;
+	k.ps_sn = psid >= 0 && c->shaders[psid].known ? c->shaders[psid].info.serial : (uint64_t)(uintptr_t)ps;
+
+	if (g_slot_seen.find(k) == g_slot_seen.end()) {
+		if (c->slot_new >= slot_max_new()) {
+			c->slot_deferred++;
+		} else {
+			g_slot_seen.insert(k);
+			c->slot_new++;
+			DrawRec d;
+			d.index = (uint32_t)c->draws.size();
+			d.type = type;
+			d.a = a;
+			caller_from_probe(&d.caller);      // a stack walk per new draw rather than per draw
+			d.ib_res = rid;
+			d.ib_fmt = (uint32_t)fmt;
+			d.ib_off = ib_off;
+			uint32_t ro, rs;
+			ib_region(fmt, ib_off, a, &ro, &rs);
+			d.ib_region = region(c, ib, rid, ro, rs);
+			if (il) d.layout = layout_id(c, il);
+			d.shaders[ST_VS] = vsid;
+			d.shaders[ST_PS] = psid;
+			d.srv_begin = (uint32_t)c->views.size();
+			slot_srvs(c, &d, ST_VS);
+			slot_srvs(c, &d, ST_PS);
+			d.out_begin = (uint32_t)c->views.size();
+			ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
+			ID3D11DepthStencilView* dsv = nullptr;
+			memset(rtvs, 0, sizeof(rtvs));
+			OCTX(OMGetRenderTargets)(ctx, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv);
+			for (UINT i = 0; i < _countof(rtvs); i++) {
+				if (!rtvs[i]) continue;
+				int32_t orid = view_res_id(c, (ID3D11View*)rtvs[i]);
+				c->views.push_back({ (uint8_t)OUT_RTV, (uint8_t)i, orid, view_desc_id(c, (ID3D11View*)rtvs[i], VK_RTV, orid) });
+				d.out_count++;
+				ID3D11RenderTargetView_Release(rtvs[i]);
+			}
+			if (dsv) {
+				int32_t orid = view_res_id(c, (ID3D11View*)dsv);
+				c->views.push_back({ (uint8_t)OUT_DSV, 0, orid, view_desc_id(c, (ID3D11View*)dsv, VK_DSV, orid) });
+				d.out_count++;
+				ID3D11DepthStencilView_Release(dsv);
+			}
+			c->draws.push_back(d);
+			c->slot_keys.push_back(k);
+		}
+	}
+	if (ps) ID3D11PixelShader_Release(ps);
+	if (vs) ID3D11VertexShader_Release(vs);
+	ID3D11Buffer_Release(ib);
+	if (il) ID3D11InputLayout_Release(il);
+}
+
+static const char* region_state_name(uint8_t s)
+{
+	switch (s) {
+	case RS_OK: return "ok";
+	case RS_CACHED: return "cached";
+	case RS_OOB: return "out_of_bounds";
+	case RS_SKIPPED: return "skipped";
+	case RS_VOLATILE: return "volatile";
+	case RS_PENDING: return "pending";
+	default: return "none";
+	}
+}
+
+static const char* dim_name(uint8_t dim)
+{
+	switch (dim) {
+	case D3D11_RESOURCE_DIMENSION_BUFFER: return "buffer";
+	case D3D11_RESOURCE_DIMENSION_TEXTURE1D: return "tex1d";
+	case D3D11_RESOURCE_DIMENSION_TEXTURE2D: return "tex2d";
+	case D3D11_RESOURCE_DIMENSION_TEXTURE3D: return "tex3d";
+	default: return "unknown";
+	}
+}
+
+// One bound resource as the slot cache writes it; `sig` gathers what tells bindings apart.
+static void slot_view_json(JsonW& w, const Capture& c, const ViewBind& v, std::string* sig)
+{
+	char b[160];
+	w.begin_obj();
+	w.ku("slot", v.slot);
+	if (v.res >= 0) {
+		const CapRes& r = c.res[v.res];
+		w.ks("kind", dim_name(r.dim));
+		if (r.known) w.kh32("hash", r.hash);
+		w.ks("origin", origin_name(r.origin));
+		uint32_t fmt = 0, sw = 0, sh = 0;
+		switch (r.dim) {
+		case D3D11_RESOURCE_DIMENSION_BUFFER:
+			w.ku("size", r.live.buf.ByteWidth);
+			if (r.live.buf.StructureByteStride) w.ku("stride", r.live.buf.StructureByteStride);
+			sw = r.live.buf.ByteWidth;
+			break;
+		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+			fmt = r.live.t1.Format; sw = r.live.t1.Width;
+			w.ku("w", sw); w.ku("mips", r.live.t1.MipLevels); w.ku("array", r.live.t1.ArraySize);
+			w.ks("format", dxgi_format_name((DXGI_FORMAT)fmt));
+			break;
+		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+			fmt = r.live.t2.Format; sw = r.live.t2.Width; sh = r.live.t2.Height;
+			w.ku("w", sw); w.ku("h", sh); w.ku("mips", r.live.t2.MipLevels); w.ku("array", r.live.t2.ArraySize);
+			if (r.live.t2.SampleDesc.Count > 1) w.ku("samples", r.live.t2.SampleDesc.Count);
+			w.ks("format", dxgi_format_name((DXGI_FORMAT)fmt));
+			break;
+		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+			fmt = r.live.t3.Format; sw = r.live.t3.Width; sh = r.live.t3.Height;
+			w.ku("w", sw); w.ku("h", sh); w.ku("d", r.live.t3.Depth); w.ku("mips", r.live.t3.MipLevels);
+			w.ks("format", dxgi_format_name((DXGI_FORMAT)fmt));
+			break;
+		default: break;
+		}
+		snprintf(b, sizeof(b), "%u:%u:%u:%u:%u:%u;", v.stage, v.slot, (unsigned)r.dim, fmt, sw, sh);
+		*sig += b;
+	}
+	if (v.view >= 0) {
+		const CapView& cv = c.view_descs[v.view];
+		w.ks("view_format", dxgi_format_name((DXGI_FORMAT)cv.format));
+		w.ku("view_dim", cv.dim);
+	}
+	w.end_obj();
+}
+
+// A looked-at frame is finished: one record per draw that was new in it.
+static void slot_push(const Capture& c)
+{
+	FILETIME ft_now;
+	GetSystemTimeAsFileTime(&ft_now);
+	const uint64_t ft = ((uint64_t)ft_now.dwHighDateTime << 32) | ft_now.dwLowDateTime;
+	const uint64_t unix_ms = (ft - 116444736000000000ull) / 10000;
+	for (size_t i = 0; i < c.draws.size(); i++) {
+		const DrawRec& d = c.draws[i];
+		uint8_t st = 0xff;
+		uint32_t ib_hash = 0;
+		if (d.ib_region >= 0) {
+			st = c.regions[d.ib_region].state;
+			ib_hash = c.regions[d.ib_region].hash;
+		}
+		const bool hashed = st == RS_OK || st == RS_CACHED;
+		if (st == RS_SKIPPED || st == RS_PENDING) {
+			// Not read back this time (the staging memory was full): looked at again later.
+			if (i < c.slot_keys.size())
+				g_slot_seen.erase(c.slot_keys[i]);
+			continue;
+		}
+		const int32_t vsid = d.shaders[ST_VS], psid = d.shaders[ST_PS];
+		const uint64_t vs = vsid >= 0 && c.shaders[vsid].known ? c.shaders[vsid].info.hash : 0;
+		const uint64_t ps = psid >= 0 && c.shaders[psid].known ? c.shaders[psid].info.hash : 0;
+
+		JsonW w;
+		w.begin_obj();
+		w.ku("frame", c.frame);
+		w.ku("unix_ms", unix_ms);
+		w.ks("origin", origin_name(d.caller.origin));
+		w.ku("draw_type", d.type);
+		w.key("ib"); if (hashed) w.hex32(ib_hash); else w.null();
+		w.ks("ib_state", region_state_name(st));
+		if (d.ib_res >= 0 && c.res[d.ib_res].known) w.kh32("ib_resource", c.res[d.ib_res].hash);
+		w.ks("ib_format", dxgi_format_name((DXGI_FORMAT)d.ib_fmt));
+		w.ku("ib_offset", d.ib_off);
+		w.ku("first_index", d.a.first_index);
+		w.ku("index_count", d.a.index_count);
+		w.ki("base_vertex", (int32_t)d.a.first_vertex);
+		w.ku("instances", d.a.instance_count ? d.a.instance_count : 1);
+		w.key("vs"); if (vs) w.hex64(vs); else w.null();
+		w.key("ps"); if (ps) w.hex64(ps); else w.null();
+		bool skinned = false;
+		if (d.layout >= 0 && c.layouts[d.layout].known) {
+			w.key("layout");
+			w.begin_arr();
+			for (const LayoutElem& e : c.layouts[d.layout].info.elems) {
+				char sem[64];
+				snprintf(sem, sizeof(sem), "%s%u", e.semantic, e.index);
+				w.str(sem);
+				if (_stricmp(e.semantic, "BLENDINDICES") == 0) skinned = true;
+			}
+			w.end_arr();
+		}
+		w.kb("skinned", skinned);
+		std::string sig;
+		for (int stage : { (int)ST_VS, (int)ST_PS }) {
+			w.key(stage == ST_VS ? "vs_srv" : "ps_srv");
+			w.begin_arr();
+			for (uint32_t j = d.srv_begin; j < d.srv_begin + d.srv_count; j++)
+				if (c.views[j].stage == stage)
+					slot_view_json(w, c, c.views[j], &sig);
+			w.end_arr();
+		}
+		w.key("rt");
+		w.begin_arr();
+		const char* ds = nullptr;
+		for (uint32_t j = d.out_begin; j < d.out_begin + d.out_count; j++) {
+			const ViewBind& v = c.views[j];
+			const char* f = v.view >= 0 ? dxgi_format_name((DXGI_FORMAT)c.view_descs[v.view].format) : "unknown";
+			if (v.stage == OUT_RTV) w.str(f);
+			else if (v.stage == OUT_DSV) ds = f;
+		}
+		w.end_arr();
+		w.key("ds"); if (ds) w.str(ds); else w.null();
+
+		char key[160];
+		snprintf(key, sizeof(key), "%s-%08x-%08x-%u-%u-%d-%016llx-%016llx-%016llx", origin_name(d.caller.origin),
+		         hashed ? ib_hash : 0u, d.ib_res >= 0 && c.res[d.ib_res].known ? c.res[d.ib_res].hash : 0u,
+		         d.a.first_index, d.a.index_count, (int32_t)d.a.first_vertex, (unsigned long long)vs,
+		         (unsigned long long)ps, (unsigned long long)fnv64(sig.data(), sig.size()));
+		w.ks("key", key);
+		w.end_obj();
+		slot_submit(std::move(w.s), std::string(key), vs, ps);
+	}
+	slot_note_frame(c.record_ms + c.finalize_ms, c.slot_new, c.slot_deferred);
+}
+
 void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
                  void* indirect_buffer, uint32_t indirect_offset, const CallerInfo& caller)
 {
 	Capture* c = g_rec.get();
 	if (!c || !g_ctx || !g_dev)
 		return;
+	if (c->slots) {
+		double t0 = qpc_ms();
+		slot_record(c, type, a);
+		c->record_ms += qpc_ms() - t0;
+		return;
+	}
 	uint32_t limit = c->rq.max_draws ? c->rq.max_draws : g_cfg.max_draws;
 	if (c->draws.size() >= limit) {
 		c->skipped_draws++;
@@ -2276,6 +2617,7 @@ static void end_recording()
 {
 	std::shared_ptr<Capture> c = g_rec;
 	InterlockedExchange(&g_recording, 0);
+	InterlockedExchange(&g_caller_late, 0);
 	InterlockedExchange(&g_events, 0);
 	g_rec.reset();
 	c->out_after.clear();
@@ -2343,6 +2685,10 @@ static void complete_capture(std::shared_ptr<Capture> c)
 	c->pending.clear();
 	c->pending.shrink_to_fit();
 
+	if (c->slots) {
+		slot_push(*c);
+		return;
+	}
 	if (c->live) {
 		live_push(*c);
 		return;
@@ -2374,7 +2720,7 @@ static void process_finalizing()
 	while (!g_finalizing.empty()) {
 		std::shared_ptr<Capture> c = g_finalizing.front();
 		// After waiting this long, stop being polite and wait for the GPU.
-		bool block = c->wait_frames >= (c->live ? 60u : 20u);
+		bool block = c->wait_frames >= (c->live || c->slots ? 60u : 20u);
 		if (!try_readback(c.get(), block)) {
 			c->wait_frames++;
 			break;
@@ -2384,19 +2730,23 @@ static void process_finalizing()
 	}
 }
 
-static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volatile, uint64_t live_generation)
+static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volatile, uint64_t live_generation,
+                            bool slots = false)
 {
 	auto c = std::make_shared<Capture>();
 	c->rq = rq;
 	c->live = live;
+	c->slots = slots;
 	c->live_generation = live_generation;
 	c->hash_volatile = hash_volatile;
 	c->frame = (uint32_t)g_frame_no;
 	c->t_start = now_ms();
 	hash_get_resolution(&c->res_w, &c->res_h);
-	c->draws.reserve(8192);
-	c->res.reserve(4096);
-	if (!live) {
+	if (!slots) {
+		c->draws.reserve(8192);
+		c->res.reserve(4096);
+	}
+	if (!live && !slots) {
 		// One capture at a time has its contents kept: those of the one before end here.
 		if (g_bar)
 			cont_release(g_bar);
@@ -2410,6 +2760,7 @@ static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volat
 		InterlockedExchange(&g_events, rq.ct_events ? 1 : 0);
 	}
 	g_rec = c;
+	InterlockedExchange(&g_caller_late, slots ? 1 : 0);
 	InterlockedExchange(&g_recording, 1);
 }
 
@@ -2922,7 +3273,7 @@ void cap_on_frame_boundary()
 		plog("capture: released resources of frame %u after inactivity", g_last->frame);
 	}
 
-	bool start = false, live = false, hash_volatile = false;
+	bool start = false, live = false, hash_volatile = false, slots = false;
 	uint64_t live_generation = 0;
 	CaptureRequest rq;
 	EnterCriticalSection(&g_lock);
@@ -2942,10 +3293,22 @@ void cap_on_frame_boundary()
 		hash_volatile = g_live.hash_volatile;
 		live_generation = g_live_generation;
 		start = live = true;
+	} else if (!g_rec && g_swap && g_finalizing.size() < 4 && slot_due((uint32_t)g_frame_no)) {
+		// The slot cache: only draws that were not seen before are recorded in this frame.
+		rq = CaptureRequest();
+		rq.detail = -1;
+		rq.hash_ib = true;
+		rq.hash_vb = false;
+		rq.cb_data = false;
+		rq.hold = false;
+		start = slots = true;
 	}
 	LeaveCriticalSection(&g_lock);
-	if (start)
-		begin_recording(rq, live, hash_volatile, live_generation);
+	if (start) {
+		if (slots)
+			slot_prepare();
+		begin_recording(rq, live, hash_volatile, live_generation, slots);
+	}
 }
 
 // ================================================================ IPC side

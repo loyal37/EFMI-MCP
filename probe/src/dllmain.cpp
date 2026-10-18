@@ -1,6 +1,7 @@
 #include "common.h"
 #include "capture.h"
 #include "registry.h"
+#include "slotcache.h"
 
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID)
 {
@@ -18,6 +19,7 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID)
 		plog("efmi probe %s loaded into %s (pid %lu)", PROBE_VERSION, narrow(exe).c_str(), GetCurrentProcessId());
 
 		settings_load();
+		slot_init();
 		reg_init();
 		cap_init();
 		bootstrap_start();
