@@ -56,6 +56,8 @@ PS_TIE = "d" * 16       # the dataflow calls t30 and t33 diffuse; t31 normal map
 PS_FMT = "1" * 16       # no dataflow at all: formats decide
 PS_GAP = "2" * 16       # no dataflow, formats apart: order only
 PS_SEQ = "4" * 16       # the dataflow finds light map t71 and normal map t72 only: the sRGB t70 before them
+PS_FACE = "5" * 16      # the dataflow calls t13 and t18 diffuse, far apart; t20 a light map by order only
+PS_FACE2 = "6" * 16     # another lit pass of the same mesh: the same diffuse texture at t14, unambiguous
 PS_SHARED = "3" * 16    # formats clear on one mesh, open on the other: the same shader decides there
 LIT = {5: res(shadow=True), 12: res(), 16: res(["diffuse"]), 17: res(["lightmap"]), 18: res(["normal"])}
 READS = {
@@ -68,6 +70,8 @@ READS = {
     PS_GAP: {50: res(), 53: res(), 57: res()},
     PS_SHARED: {60: res(), 61: res(), 62: res(), 63: res()},
     PS_SEQ: {70: res(), 71: res(["lightmap"]), 72: res(["normal"])},
+    PS_FACE: {5: res(shadow=True), 13: res(["diffuse"]), 18: res(["diffuse"]), 20: res(), 21: res()},
+    PS_FACE2: {5: res(shadow=True), 14: res(["diffuse"]), 15: res()},
 }
 READS = {ps: {"resources": resources} for ps, resources in READS.items()}   # what shader_semantics.analyze returns
 
@@ -112,6 +116,11 @@ class SlotTableTests(unittest.TestCase):
                                                       tex(63, "cs2x", "BC7_UNORM")], 450))
         lines.append(rec("ee000000", 50, PS_LIT, material("ee", 16), 200, origin="xxmi"))
         lines.append(rec("cc000006", 906, PS_SEQ, material("cq", 70), 470))
+        face = [tex(5, "shadow", "R32_FLOAT"), tex(13, "mouth", w=1024), tex(18, "skin", w=1024),
+                tex(20, "faceshadow", "BC7_UNORM"), tex(21, "facemask", "BC7_UNORM")]
+        lines.append(rec("fa000000", 907, PS_FACE, face, 530))
+        lines.append(rec("fa000000", 907, PS_FACE2, [tex(5, "shadow", "R32_FLOAT"), tex(14, "skin", w=1024),
+                                                     tex(15, "faceshadow", "BC7_UNORM")], 530))
         # a deferred mesh drawn only by the G-buffer pass, and one seen only in a depth pass
         lines.append(rec("gb000000", 60, PS_GB, [tex(0, "gbd"), tex(1, "gbn", "BC5_UNORM")], 480, rt=["a", "b", "c", "d", "e"]))
         lines.append(rec("dp000000", 61, PS_FMT, material("dp", 40), 510, rt=[]))
@@ -172,6 +181,13 @@ class SlotTableTests(unittest.TestCase):
                                                   {"diffuse": "sequence", "lightmap": "dataflow", "normal": "dataflow"}))
         self.assertIn("sequence (LoyalTools)", slot_table.to_markdown(self.table))
 
+    def test_same_texture_in_another_pass(self) -> None:
+        m = self.row("fa000000")["main"]
+        self.assertEqual(m["ps"], PS_FACE)
+        self.assertEqual({r: (v or {}).get("slot") for r, v in m["roles"].items()}, {"diffuse": 18, "lightmap": 20, "normal": 21})
+        self.assertEqual({r: v["basis"] for r, v in m["roles"].items()},
+                         {"diffuse": "other pass", "lightmap": "other pass", "normal": "order"})
+
     def test_formats_order_and_shader(self) -> None:
         self.assertEqual(self.slots("cc000002"), ({"diffuse": 40, "lightmap": 41, "normal": 42},
                                                   {"diffuse": "format", "lightmap": "format", "normal": "format"}))
@@ -223,7 +239,7 @@ class SlotTableTests(unittest.TestCase):
         self.assertEqual([r["ib"] for r in t["characters"][0]["probably_also"]], ["aa000002"])
         self.assertEqual([(g["first_frame"], len(g["meshes"])) for g in t["probable_groups"]], [(60, 3)])
         self.assertEqual([(g["first_frame"], len(g["meshes"])) for g in t["scenes"]], [(120, 8)])
-        self.assertEqual(len(t["unassigned"]), 9)
+        self.assertEqual(len(t["unassigned"]), 10)
 
     def test_markdown(self) -> None:
         md = slot_table.to_markdown(self.table)

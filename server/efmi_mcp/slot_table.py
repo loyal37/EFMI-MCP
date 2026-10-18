@@ -22,6 +22,8 @@ on mods written for the old one:
   dataflow+format    several slots, equally near: the one the formats name
   sequence           LoyalTools' material sequence next to roles already found: the diffuse right
                      before the light map (or the normal map), the normal map right after the light map
+  other pass         another pass of the same mesh resolved that role for a texture this pass also
+                     reads: the slot holding it
   format             the formats of the material textures: diffuse the first sRGB one, normal map
                      the BC5 one, light map the linear one after the diffuse, all side by side
   shader             the same pixel shader resolved that role on other meshes
@@ -57,7 +59,7 @@ GLOBAL_COOCCURRENCE = 60   # a texture bound together with more material texture
 SCENE_MESHES = 40          # a frame that brought more new meshes than this showed a whole scene
 GROUP_MIN = 3              # fewer new meshes than this in a frame are not taken for a character
 DEFAULT_EFMI = r"D:\XXMI-Launcher-Portable-v2.1.6\EFMI"
-SURE = ("dataflow", "dataflow+position", "dataflow+format", "sequence", "format")
+SURE = ("dataflow", "dataflow+position", "dataflow+format", "sequence", "format", "other pass")
 
 
 # ---------------------------------------------------------------- input
@@ -234,6 +236,26 @@ def _assign_roles(passes_of: dict[tuple, list[dict]]) -> None:
     every = [p for passes in passes_of.values() for p in passes]
     for p in every:
         p["_slots"], p["_basis"] = _native_roles(p)
+    # Within one mesh the same texture plays the same role in every pass: where a pass leaves a role
+    # open or only guessed, the slot holding the texture another pass of the mesh resolved takes it.
+    # (Textures link the passes of one recording only; nothing across versions rests on them.)
+    for passes in passes_of.values():
+        known: dict[str, set] = defaultdict(set)
+        for p in passes:
+            by_slot = {s["slot"]: s for s in p["slots"]}
+            for role in ROLES:
+                slot = p["_slots"][role]
+                if slot is not None and p["_basis"].get(role) in SURE and by_slot[slot].get("texture"):
+                    known[role].add(by_slot[slot]["texture"])
+        for p in passes:
+            by_texture = {s["texture"]: s for s in p["slots"] if s["class"] == "material" and s.get("texture")}
+            for role, textures in known.items():
+                if p["_slots"][role] is not None and p["_basis"].get(role) in SURE:
+                    continue
+                hits = [by_texture[h] for h in textures if h in by_texture]
+                taken = [p["_slots"][r] for r in ROLES if r != role]
+                if len(hits) == 1 and hits[0]["slot"] not in taken and _fits(role, hits[0].get("format")):
+                    p["_slots"][role], p["_basis"][role] = hits[0]["slot"], "other pass"
     # A pixel shader reads the same slots for every mesh: what its clear cases give stands for the rest.
     clear: dict[str, Counter] = defaultdict(Counter)
     for p in every:
@@ -376,7 +398,7 @@ def build(folder: Path, names: dict | None = None, reader: Callable[[str], dict]
     table = {"schema": SCHEMA, "version": version.get("key", folder.name), "label": version.get("label"),
              "generated_unix": int(time.time()), "records": len(records), "meshes": len(meshes),
              "rules": {"main_pass": "samples shadows or an environment cube, else most material textures",
-                       "slots": "dataflow > dataflow+position > dataflow+format > sequence (LoyalTools) > format > shader > order (uncertain); mods only compared",
+                       "slots": "dataflow > dataflow+position > dataflow+format > sequence (LoyalTools) > format > same texture in another pass of the mesh > same shader > order (uncertain); mods only compared",
                        "material_texture": f"block-compressed 2D, bound with at most {GLOBAL_COOCCURRENCE} other material textures",
                        "probable_group": f"first seen in the same looked-at frame, {GROUP_MIN} to {SCENE_MESHES} new meshes"},
              "characters": characters, "probable_groups": groups, "scenes": scenes,
@@ -416,7 +438,7 @@ def counts(table: dict) -> dict:
 
 # ---------------------------------------------------------------- Markdown
 BASIS = {"dataflow": "dataflow", "dataflow+position": "dataflow+position", "dataflow+format": "dataflow+formats",
-         "sequence": "sequence (LoyalTools)", "format": "formats",
+         "sequence": "sequence (LoyalTools)", "format": "formats", "other pass": "same texture in another pass",
          "shader": "same shader", "order": "order (uncertain)"}
 
 

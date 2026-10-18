@@ -411,3 +411,7 @@ The user deleted the old cache and asked for the previous slot tables to be clea
 ## 2026-10-18: Slot table: no depth or G-buffer main passes, LoyalTools' sequence
 
 The user saw t0/t1 and other low slots their mods never use. They came from G-buffer passes of deferred open-world meshes, depth passes and unlit effect passes taken as main passes; these are now excluded or listed apart. LoyalTools' texture marking was read (sRGB start, linear followers, BC5 hint, preference for slot 10 and up, lower start, square textures of 256 KB and more) and compared: it agrees with the table on 112 of 122 lit named meshes when the table's material textures replace its file-size filter. Its lower-start preference and its sequence for filling a missing diffuse or normal map were adopted. Slot table test 16.
+
+## 2026-10-18: Slot table checked live on Chen Qianyu
+
+At the user's request the character on screen (Chen Qianyu, unmodded) was captured and compared with the table: all main shaders drawn with the named textures, and the read-back textures confirm body, hair and face roles; the face's diffuse had been left open between two sRGB textures. A new basis takes a role from another pass of the same mesh that resolved it for the same texture, which settles the face (t18 skin, t20 shadow map). No key press; evidence in `captures/slot-table-live-check-20261018/`.
