@@ -318,6 +318,33 @@ static bool write_new_file(const std::wstring& path, const void* data, size_t si
 
 static bool g_tail_complete = true;           // draws.jsonl is empty or ends with a line break
 
+// Records of probe 0.1.7 were keyed by position as well (first index, base vertex, sizes) and carry
+// no "fmt"; they are moved aside rather than mixed with records keyed by content.
+static void set_aside_old_records()
+{
+	std::wstring path = g_dir + L"\\draws.jsonl";
+	HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+	if (f == INVALID_HANDLE_VALUE)
+		return;
+	char head[64] = {};
+	DWORD got = 0;
+	ReadFile(f, head, sizeof(head) - 1, &got, nullptr);
+	CloseHandle(f);
+	if (!got || strncmp(head, "{\"fmt\":2,", 9) == 0)
+		return;
+	for (int n = 1; n < 100; n++) {
+		wchar_t name[64];
+		swprintf_s(name, n == 1 ? L"\\draws-fmt1.jsonl" : L"\\draws-fmt1-%d.jsonl", n);
+		if (MoveFileExW(path.c_str(), (g_dir + name).c_str(), 0)) {
+			plog("slot cache: records of an older format moved to %s", narrow((g_dir + name).c_str()).c_str());
+			return;
+		}
+		if (GetLastError() != ERROR_ALREADY_EXISTS && GetLastError() != ERROR_FILE_EXISTS)
+			break;
+	}
+	set_error("cannot move the records of an older format out of draws.jsonl");
+}
+
 static void load_existing()
 {
 	std::string text;
@@ -376,6 +403,7 @@ static void ensure_folder(const std::string& subdir)
 	CreateDirectoryW((dir + L"\\shaders").c_str(), nullptr);
 	bool existed = false;
 	write_new_file(dir + L"\\version.json", v.json.data(), v.json.size(), &existed);
+	set_aside_old_records();
 	load_existing();
 	g_file = CreateFileW((dir + L"\\draws.jsonl").c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
 	                     FILE_ATTRIBUTE_NORMAL, nullptr);

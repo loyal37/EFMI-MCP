@@ -1,9 +1,11 @@
-"""Does the probe fill its slot cache by itself? (probe 0.1.7)
+"""Does the probe fill its slot cache by itself? (probe 0.1.7, records keyed by content from 0.1.8)
 
 While the game runs, the probe looks at one frame in so many, records the indexed draws it has not
 seen before (index buffer region hash, range, shaders, what sits in the vertex and pixel shader
 resource slots, output formats) and appends them to draws.jsonl in a folder per game version next
-to the DLL, together with the bytecode of their shaders.
+to the DLL, together with the bytecode of their shaders. A record stands for a mesh by its content
+(index buffer region hash and count) with its shaders and slot shapes, wherever the game placed the
+mesh: two of the sandbox's draws draw the same index data with the same shaders and share a record.
 
 With XXMI loaded, as in the game:
   - by default only skinned draws are recorded; the sandbox draws nothing skinned and XXMI's overlay
@@ -21,7 +23,8 @@ Without XXMI, where every draw is the sandbox's own and the counts are exact:
   - another folder (with max_new=1, so new draws are spread over several frames) receives the same
     records, and going back to the first one adds nothing to it;
   - after a restart the records already in the folder are recognised, nothing is written again, and
-    a line the last session left unfinished does not run into the next one.
+    a line the last session left unfinished does not run into the next one; records of the older
+    format (probe 0.1.7, no "fmt") are moved to draws-fmt1.jsonl instead of being mixed in.
 
 Only folders this test creates next to the probe DLL are written, and they are removed at the end;
 no key is pressed.
@@ -125,23 +128,30 @@ def start(xxmi: bool) -> tuple[Sandbox, ProbeClient | None]:
     return sb, client
 
 
-def draw_identity(origin: str, ib: str | None, first: int, count: int, base: int, vs: str | None,
-                  ps: str | None) -> tuple:
-    return (origin, ib, first, count, base, vs, ps)
+def draw_identity(origin: str, ib: str | None, count: int, vs: str | None, ps: str | None) -> tuple:
+    """What a record stands for: a mesh by its index data, drawn with these shaders."""
+    return (origin, ib, count, vs, ps)
+
+
+def game_identities(cap: Capture) -> set[tuple]:
+    return {draw_identity(d["origin"], d["ib"]["hash"], d["args"]["index_count"], d["shaders"].get("vs"),
+                          d["shaders"].get("ps"))
+            for d in cap.draws() if "ib" in d and d["args"].get("index_count") and d["origin"] == "game"}
 
 
 def compare_with_capture(cap: Capture, recs: list[dict]) -> None:
     by_id: dict[tuple, list[dict]] = {}
     for r in recs:
-        by_id.setdefault(draw_identity(r["origin"], r["ib"], r["first_index"], r["index_count"], r["base_vertex"],
-                                       r["vs"], r["ps"]), []).append(r)
+        by_id.setdefault(draw_identity(r["origin"], r["ib"], r["index_count"], r["vs"], r["ps"]), []).append(r)
     indexed = [d for d in cap.draws() if "ib" in d and d["args"].get("index_count") and d["origin"] == "game"]
     check("the full capture has the sandbox's indexed draws to compare with", len(indexed) >= 4, str(len(indexed)))
+    check("two of them draw the same index data with the same shaders", len(game_identities(cap)) < len(indexed),
+          str(sorted(game_identities(cap))))
     seen_ids = set()
     for d in indexed:
         a = d["args"]
-        ident = draw_identity(d["origin"], d["ib"]["hash"], a.get("first_index", 0), a["index_count"],
-                              a.get("first_vertex", 0), d["shaders"].get("vs"), d["shaders"].get("ps"))
+        ident = draw_identity(d["origin"], d["ib"]["hash"], a["index_count"], d["shaders"].get("vs"),
+                              d["shaders"].get("ps"))
         seen_ids.add(ident)
         found = by_id.get(ident) or []
         name = f"draw {d['index']} ({d['call']}, ib {d['ib']['hash']}, {a.get('first_index', 0)}+{a['index_count']})"
@@ -149,14 +159,18 @@ def compare_with_capture(cap: Capture, recs: list[dict]) -> None:
             continue
         r = found[0]
         problems = []
+        if r.get("fmt") != 2:
+            problems.append(f"fmt {r.get('fmt')}")
         if r["ib_state"] not in ("ok", "cached"):
             problems.append(f"ib_state {r['ib_state']}")
         if r.get("ib_resource") != d["ib"]["resource_hash"]:
             problems.append(f"ib_resource {r.get('ib_resource')} != {d['ib']['resource_hash']}")
-        if r["ib_offset"] != d["ib"]["offset"]:
-            problems.append(f"ib_offset {r['ib_offset']} != {d['ib']['offset']}")
-        if r["instances"] != max(1, a.get("instance_count", 1)):
-            problems.append(f"instances {r['instances']} != {a.get('instance_count')}")
+        # Where the mesh lay and how it was drawn belong to the draw that was recorded.
+        if (r["first_index"], r["base_vertex"]) == (a.get("first_index", 0), a.get("first_vertex", 0)):
+            if r["ib_offset"] != d["ib"]["offset"]:
+                problems.append(f"ib_offset {r['ib_offset']} != {d['ib']['offset']}")
+            if r["instances"] != max(1, a.get("instance_count", 1)):
+                problems.append(f"instances {r['instances']} != {a.get('instance_count')}")
         layout = cap.layout(d["layout"]) or []
         want_layout = [f"{e['semantic']}{e['index']}" for e in layout]
         if r.get("layout") != want_layout:
@@ -217,6 +231,9 @@ def check_folder(folder: Path, st: dict, recs: list[dict]) -> None:
     check("the fingerprint inputs name the program", any(i.get("file") == "efmi_sandbox.exe"
                                                          for i in version.get("fingerprint_inputs", [])),
           json.dumps(version.get("fingerprint_inputs"))[:300])
+    lines = [line for line in (folder / "draws.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    check("every line starts with the format", all(line.startswith('{"fmt":2,') for line in lines),
+          str([line[:20] for line in lines[:3]]))
     all_keys = [r["key"] for r in recs]
     check("no key twice in draws.jsonl", len(all_keys) == len(set(all_keys)), str(len(all_keys) - len(set(all_keys))))
     hashes = {h for r in recs for h in (r["vs"], r["ps"]) if h}
@@ -310,11 +327,14 @@ def strict(base: Path) -> tuple[Path, set[str]] | None:
         game = keys(recs)
         print(f"  {len(recs)} records; {st['frames_looked_at']} frames looked at, {st['record_ms_total']:.2f} ms "
               f"in all, last {st['record_ms_last']:.3f} ms")
-        check("each draw is recorded once", st["records_written"] == st["new_draws"] == len(recs) == len(game)
-              == st["records_in_folder"] and st["duplicates"] == 0 and len(recs) >= 4
-              and keys(recs, "game") == game, json.dumps(st))
         doc, blob = client.capture(detail="full", timeout_ms=8000)
-        compare_with_capture(Capture(doc, blob), recs)
+        cap = Capture(doc, blob)
+        n_draws = sum(1 for d in cap.draws() if "ib" in d and d["args"].get("index_count") and d["origin"] == "game")
+        check("one record per mesh and shaders; the second draw of the same mesh is recognised",
+              st["records_written"] == len(recs) == len(game) == st["records_in_folder"] == len(game_identities(cap))
+              and st["new_draws"] == n_draws and st["duplicates"] == n_draws - len(game)
+              and keys(recs, "game") == game, f"{json.dumps(st)}; {n_draws} draws")
+        compare_with_capture(cap, recs)
         check_folder(folder, st, recs)
 
         configure(client, enable=True)
@@ -323,7 +343,7 @@ def strict(base: Path) -> tuple[Path, set[str]] | None:
         st = frozen(client)
         check("frames looked at later bring nothing back, not even as a duplicate",
               st["frames_looked_at"] >= before["frames_looked_at"] + 10 and st["new_draws"] == before["new_draws"]
-              and st["duplicates"] == 0 and st["records_written"] == before["records_written"]
+              and st["duplicates"] == before["duplicates"] and st["records_written"] == before["records_written"]
               and keys(records(folder)) == game, f"{json.dumps(before)} -> {json.dumps(st)}")
         check("a frame without new draws costs little", st["record_ms_last"] < 5.0, str(st["record_ms_last"]))
 
@@ -343,7 +363,7 @@ def strict(base: Path) -> tuple[Path, set[str]] | None:
               folder_of(st) == folder_b and keys(recs_b) == game and len(recs_b) == len(game),
               f"{st['folder']}: {sorted(keys(recs_b))[:3]} vs {sorted(game)[:3]}")
         check("with max_new=1 the new draws were spread over several frames",
-              st["deferred"] >= len(game) - 1 and st["new_draws"] == before["new_draws"] + len(game), json.dumps(st))
+              st["deferred"] >= n_draws - 1 and st["new_draws"] == before["new_draws"] + n_draws, json.dumps(st))
         check("the other folder has the same shaders", shader_files(folder_b) == shader_files(folder),
               f"{shader_files(folder_b)} vs {shader_files(folder)}")
 
@@ -353,18 +373,22 @@ def strict(base: Path) -> tuple[Path, set[str]] | None:
         st = frozen(client)
         check("back in the first folder: everything is recognised, nothing is added",
               folder_of(st) == folder and st["records_written"] == before["records_written"]
-              and st["duplicates"] == before["duplicates"] + len(game) and keys(records(folder)) == game
+              and st["duplicates"] == before["duplicates"] + n_draws and keys(records(folder)) == game
               and len(records(folder)) == len(game), f"{json.dumps(before)} -> {json.dumps(st)}")
-        return folder, game
+        return folder, game, n_draws
     finally:
         sb.quit()
 
 
-def restart(folder: Path, game: set[str]) -> None:
+def restart(folder: Path, game: set[str], n_draws: int) -> None:
     with open(folder / "draws.jsonl", "a", encoding="utf-8", newline="") as f:
         f.write(CUT)            # as if the last session had stopped in the middle of a line
     text_before = (folder / "draws.jsonl").read_text(encoding="utf-8")
     shaders_before = shader_files(folder)
+    # The other folder gets a file as probe 0.1.7 wrote them.
+    folder_b = PROBE.parent / SUB_B / folder.name
+    old = '{"frame":1,"origin":"game","ib":"00000000","index_count":3,"key":"game-00000000-00000000-0-3-0"}\n'
+    (folder_b / "draws.jsonl").write_text(old, encoding="utf-8", newline="")
     sb, client = start(xxmi=False)
     try:
         if not client:
@@ -374,12 +398,21 @@ def restart(folder: Path, game: set[str]) -> None:
         st = frozen(client)
         check("the same version folder", folder_of(st) == folder, st["folder"])
         check("after a restart the records in the folder are recognised, nothing is written again",
-              st["records_written"] == 0 and st["duplicates"] == len(game) == st["new_draws"]
+              st["records_written"] == 0 and st["duplicates"] == n_draws == st["new_draws"]
               and st["records_in_folder"] == len(game) and st["shaders_written"] == 0
               and shader_files(folder) == shaders_before, json.dumps(st))
         text_after = (folder / "draws.jsonl").read_text(encoding="utf-8")
         check("an unfinished last line is ended before anything else is appended", text_after == text_before + "\n",
               repr(text_after[len(text_before) - 40:]))
+
+        configure(client, enable=True, subdir=SUB_B)
+        wait_looked_at(client, 6)
+        st = frozen(client)
+        moved = folder_b / "draws-fmt1.jsonl"
+        check("records of the older format are moved aside, not mixed in",
+              moved.exists() and moved.read_text(encoding="utf-8") == old and keys(records(folder_b)) == game
+              and all(r.get("fmt") == 2 for r in records(folder_b)) and "error" not in st,
+              f"{sorted(p.name for p in folder_b.iterdir())} {json.dumps(st)}")
     finally:
         sb.quit()
 

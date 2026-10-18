@@ -176,17 +176,17 @@ struct RKeyHash {
 struct FrameRegion { int32_t idx; uint64_t epoch; };
 
 // The slot cache tells draws apart by what is bound, before anything is hashed: the index buffer
-// object and its creation serial, the range, and the shaders by creation serial.
+// object and its creation serial, the range, and the shaders by creation serial. Not the base
+// vertex: the game moves meshes around in shared vertex buffers.
 struct SlotSeen {
 	void*    ib = nullptr;
 	uint64_t ib_sn = 0;
 	uint32_t ib_off = 0, ib_fmt = 0, first = 0, count = 0;
-	int32_t  base = 0;
 	uint64_t vs_sn = 0, ps_sn = 0;
 	bool operator==(const SlotSeen& o) const
 	{
 		return ib == o.ib && ib_sn == o.ib_sn && ib_off == o.ib_off && ib_fmt == o.ib_fmt && first == o.first &&
-		       count == o.count && base == o.base && vs_sn == o.vs_sn && ps_sn == o.ps_sn;
+		       count == o.count && vs_sn == o.vs_sn && ps_sn == o.ps_sn;
 	}
 };
 struct SlotSeenHash {
@@ -194,7 +194,7 @@ struct SlotSeenHash {
 	{
 		uint64_t h = (uint64_t)(uintptr_t)k.ib * 0x9E3779B97F4A7C15ull;
 		h ^= (k.ib_sn + ((uint64_t)k.first << 32 | k.count)) * 0xC2B2AE3D27D4EB4Full;
-		h ^= (k.vs_sn * 31 + k.ps_sn + (uint64_t)(uint32_t)k.base + ((uint64_t)k.ib_off << 20)) * 0x165667B19E3779F9ull;
+		h ^= (k.vs_sn * 31 + k.ps_sn + ((uint64_t)k.ib_off << 20)) * 0x165667B19E3779F9ull;
 		return (size_t)(h ^ (h >> 31));
 	}
 };
@@ -2036,7 +2036,6 @@ static void slot_record(Capture* c, uint8_t type, const DrawArgs& a)
 	k.ib_fmt = (uint32_t)fmt;
 	k.first = a.first_index;
 	k.count = a.index_count;
-	k.base = (int32_t)a.first_vertex;
 	k.vs_sn = vsid >= 0 && c->shaders[vsid].known ? c->shaders[vsid].info.serial : (uint64_t)(uintptr_t)vs;
 	k.ps_sn = psid >= 0 && c->shaders[psid].known ? c->shaders[psid].info.serial : (uint64_t)(uintptr_t)ps;
 
@@ -2151,7 +2150,8 @@ static void slot_view_json(JsonW& w, const Capture& c, const ViewBind& v, std::s
 			break;
 		default: break;
 		}
-		snprintf(b, sizeof(b), "%u:%u:%u:%u:%u:%u;", v.stage, v.slot, (unsigned)r.dim, fmt, sw, sh);
+		snprintf(b, sizeof(b), "%u:%u:%u:%u:%u;", v.stage, v.slot, (unsigned)r.dim, fmt,
+		         r.dim == D3D11_RESOURCE_DIMENSION_BUFFER ? r.live.buf.StructureByteStride : 0u);
 		*sig += b;
 	}
 	if (v.view >= 0) {
@@ -2190,6 +2190,7 @@ static void slot_push(const Capture& c)
 
 		JsonW w;
 		w.begin_obj();
+		w.ku("fmt", 2);
 		w.ku("frame", c.frame);
 		w.ku("unix_ms", unix_ms);
 		w.ks("origin", origin_name(d.caller.origin));
@@ -2235,15 +2236,17 @@ static void slot_push(const Capture& c)
 			const char* f = v.view >= 0 ? dxgi_format_name((DXGI_FORMAT)c.view_descs[v.view].format) : "unknown";
 			if (v.stage == OUT_RTV) w.str(f);
 			else if (v.stage == OUT_DSV) ds = f;
+			sig += v.stage == OUT_RTV ? "o:" : "d:";
+			sig += f;
+			sig += ';';
 		}
 		w.end_arr();
 		w.key("ds"); if (ds) w.str(ds); else w.null();
 
 		char key[160];
-		snprintf(key, sizeof(key), "%s-%08x-%08x-%u-%u-%d-%016llx-%016llx-%016llx", origin_name(d.caller.origin),
-		         hashed ? ib_hash : 0u, d.ib_res >= 0 && c.res[d.ib_res].known ? c.res[d.ib_res].hash : 0u,
-		         d.a.first_index, d.a.index_count, (int32_t)d.a.first_vertex, (unsigned long long)vs,
-		         (unsigned long long)ps, (unsigned long long)fnv64(sig.data(), sig.size()));
+		snprintf(key, sizeof(key), "%s-%08x-%u-%016llx-%016llx-%016llx", origin_name(d.caller.origin),
+		         hashed ? ib_hash : 0u, d.a.index_count, (unsigned long long)vs, (unsigned long long)ps,
+		         (unsigned long long)fnv64(sig.data(), sig.size()));
 		w.ks("key", key);
 		w.end_obj();
 		slot_submit(std::move(w.s), std::string(key), vs, ps);
