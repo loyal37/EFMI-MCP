@@ -375,3 +375,9 @@ At the user's request the installed mods' `ps-tN` bindings were checked against 
 ## 2026-10-18: Three RabbitFX nulls moved one slot lower (user's mods, at the user's request)
 
 Laevatain (`ps-t21` -> `ps-t20`) and Perlica (`ps-t20` -> `ps-t19`) changed after same-folder backups (`*.ini.bak-20261018-null`); Estella was already at `ps-t19`, saved outside this session minutes earlier, and was left alone. Offline re-check passes; no F10 was sent, so the game has not loaded the change.
+
+## 2026-10-18: Resume slot-table work and expose cached MCP queries
+
+Restored CURRENT_STATE/TASKS and reviewed the untracked table/test draft plus existing decisions. Completed an offline native slot table with per-shader static references, view formats, pipeline variants, uncertain role labels, mod IB/count naming and explicit report exports. Removed texture-hash-based classification; unknown/conflicting evidence withholds roles. Added file-free efmi_get_slot_table with filters, paging, one-version memory cache and invalidation on cache/shader changes. Server 0.1.15; no probe change.
+
+Tests: 19 slot-table and 25 existing texture-slot tests passed. Full server registration exposed 31 tools. Fixed real-cache snapshot: 5286 native records, 3885 meshes, 20 mod names, 5215 analyzed passes, all returned slots consistent with static references. No query file writes. First build final run 2273 ms, warm 24-57 ms; earlier cold 4517 ms. First attempt against a growing live cache was stopped (only the project's checker process); fixed snapshot used for repeatable verification. Reports in captures/slot-table-check-20261018.json and captures/slot-table-snapshot-20261018/slot-table.md. No game keys, capture, visual validation or installation edits. Shader migration/fixer remains pending. Reviewed changes and staged only this round's memory additions, preserving prior unrelated edits.

@@ -176,3 +176,9 @@
 - After a mod replacement, what is visible are the draws actually submitted; `origin=xxmi` comes from a heuristic classification of the call stack and is not a character identification label.
 
 The above comes from the README/sources of the time and should not be widened into functions that a given fix has dealt with.
+
+## Persistent slot-table limitations (2026-10-18)
+
+- Role names and material/global classes are heuristic; shader semantics and version-to-version migrations are not yet proven. Resource-name parsing is not a full XXMI conditional/namespace interpreter. Do not automatically rewrite an INI from this table.
+- Frame-based probable groups may mix characters or sessions; MCP character filtering uses only mod IB/count names. Cache data records first observations, not current streaming sizes or current game state. New source records rebuild the table; continuously growing caches can therefore cause repeated rebuilds. Refresh explicitly after editing installed mod INIs.
+- Validation used a fixed snapshot of existing game data. No live character validation or probe changes in this round.

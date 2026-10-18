@@ -1,5 +1,10 @@
 # EFMI MCP — Tasks
 
+## T-016 update: version slot-table reader delivered (2026-10-18)
+
+- Server 0.1.15 reads a saved cache through efmi_get_slot_table with in-memory reuse and file-free paging. Explicit CLI exports JSON/Markdown; role labels are hypotheses. Synthetic tests 19/19, prior texture-slot tests 25/25, existing real-game snapshot 3885 meshes / 5215 analyzed passes. This is offline validation, not a fresh game test.
+- Step 2 partially delivered: single-version tables only. Still needed: old/new shader instruction alignment, per-pair migration evidence and ambiguity handling. Step 3 (general offline INI fixer) remains unimplemented. Character identity beyond mod IB/count names remains uncertain; first-frame grouping can mix sessions.
+
 > Last updated: 2026-10-18.
 
 ## T-016: Keep slot-style texture bindings working across game versions (step 1 done in the sandbox, 2026-10-18)

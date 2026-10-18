@@ -40,6 +40,9 @@ For texture slots use efmi_get_texture_slots after a full capture: select draw n
 per-shader sampling evidence and texture bindings in one batch. It filters stale bindings by default and \
 caches shader analysis in memory; do not write helper scripts or export shaders just to look up slots. \
 efmi_get_shader pages through the cached assembly without writing files; save=true explicitly exports it.
+For saved per-version slot caches, use efmi_get_slot_table with the version folder and optional IB or mod-name \
+filter. It returns cached JSON without contacting the game or exporting files. Role labels are hypotheses; \
+they are not evidence for automatic slot migrations. Refresh after editing mod INIs.
 
 After changing mod INI/BUF files, use efmi_reload_and_capture. It brings the game to the front, has the probe \
 press the configured unmodified F10 inside the game, hands the focus back and retains a fresh frame. (The game \
@@ -1399,5 +1402,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         return "\n".join([f"capture {cap.frame} vs {p.name}: {verdict} ({res.checks} comparisons, {res.mismatches} mismatches)"] + res.messages)
 
     texture_slots.register(srv, s, CAPTURE_PROP)
+    from . import slot_table
+    slot_table.register(srv, s)
     model_tools.register(srv, s)
     return srv

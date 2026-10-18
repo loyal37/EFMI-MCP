@@ -159,6 +159,30 @@ References include conditional paths and do not prove that every pixel executed 
 
 ### Slot cache (probe 0.1.7 / 0.1.8)
 
+Server **0.1.15** adds `efmi_get_slot_table(folder=..., ib_hash=..., character=..., offset=0, limit=40)`.
+Give it the absolute version folder below. It reads the saved native draws and shader bytecode,
+returns mesh rows with all pixel-shader passes directly as JSON, and writes no query files.
+Repeated queries reuse one table in memory; new records or changed shader files invalidate it.
+Use `refresh=true` after editing installed mod INIs. No game connection is required; restart the
+MCP server to expose the new tool, with no probe update needed.
+
+Character names come from installed mod IB/count references. Frame-based groupings in exported
+reports are tentative and can mix characters or game sessions. Only statically referenced slots
+are kept when shader analysis succeeds; failed analysis stays unknown. Diffuse/normal/light-map
+roles from mod resource names, formats or order are **hypotheses**, not verified semantics or
+automatic migration rules. Material/global classification is a format heuristic; texture hashes
+are informational only. Unknown shader usage, competing mod votes and conflicting slot formats
+withhold affected roles. Cross-version shader alignment and automatic INI repair remain future work.
+
+To explicitly export a complete JSON and Markdown table from the server directory:
+
+```powershell
+python -m efmi_mcp.slot_table '<absolute version folder>' --efmi-root '<EFMI folder>'
+```
+
+This writes `slot-table.json` and `slot-table.md` inside the supplied version folder; it only reads
+the optional EFMI installation. The query tool itself never exports these files.
+
 Texture slots written as `ps-tN = …` move when a game update changes a shader (all of them by one, or only those from some slot on). To be able to tell, for any mod, which slot a texture belongs in after an update, the probe keeps a record of the slots of every version by itself, like a cache that fills itself while the game is played.
 
 **What it records.** One frame in 30 is looked at. In it, every indexed draw whose input layout has `BLENDINDICES` (skinned meshes; this is how the game draws its characters) and that was not seen before gets one line in `draws.jsonl`: `ib` (the region hash mods use), `ib_resource`, `ib_format`, `ib_offset`, `first_index`, `index_count`, `base_vertex`, `instances`, `vs` / `ps`, the input `layout`, `vs_srv` / `ps_srv` (per slot: kind, size, mips, array size, format and the view's format, plus the texture hash as information), the formats of the render targets `rt` and of the depth buffer `ds`, `origin` (`game` or `xxmi`), `fmt` (2) and `key`. The key is made of the origin, the index buffer region hash and index count (the mesh by its content), the shaders, the shape of the slots (slot, kind, format, stride of a structured buffer) and the output formats; not of where the mesh lies (first index, base vertex, which buffer), not of sizes and not of texture hashes. So a line is written once per mesh, pass and version, also across game sessions; position, range and sizes in the line are those of the draw that was seen first. The bytecode of each shader goes to `shaders\<hash>-vs.bin` / `-ps.bin` once, as the game created it, so that two versions can be compared instruction by instruction.
