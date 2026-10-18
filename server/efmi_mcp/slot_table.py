@@ -12,9 +12,10 @@ mistaken for this mesh's. A slot is
 Each pass also names the three slots mods bind: diffuse, normal map and light map. They come from
 the installed mods where one binds resources so named (DiffuseMap, NormalMap, LightMap) for a mesh
 drawn with that pixel shader and the game's textures in those slots are of the matching kind;
-otherwise from the formats of the material slots (diffuse the first sRGB one, normal map the BC5
-one, light map the linear one after the diffuse), and only by their order where the formats leave
-it open.
+otherwise from an unambiguous consecutive material triple (sRGB diffuse, linear light map,
+BC5 or linear normal). Current Endfield primary candidates must satisfy
+10 < diffuse < light map < normal map. Auxiliary slots remain raw evidence; they are not a
+fallback primary material. These are role hypotheses, not verified shader semantics.
 
 Meshes are grouped by character where that is known: a mesh one of the installed mods names in a
 TextureOverride is that mod's character. The rest is grouped, without certainty, by the looked-at
@@ -264,22 +265,29 @@ def _kind_fits(role: str, fmt: str | None) -> bool:
 
 
 def _roles_from_formats(slots: list[dict]) -> tuple[dict[str, int | None], str]:
-    material = [s for s in slots if s["class"] == "material"]
-    diffuse = next((s["slot"] for s in material if str(s.get("format", "")).upper().endswith("_SRGB")), None)
-    after = [s for s in material if diffuse is None or s["slot"] > diffuse]
-    normal = next((s["slot"] for s in after if str(s.get("format", "")).upper().startswith("BC5")), None)
-    linear = [s["slot"] for s in after if s["slot"] != normal and _kind_fits("lightmap", s.get("format"))]
-    basis = "format"
-    lightmap = linear[0] if linear else None
-    if normal is None and len(linear) >= 2:
-        lightmap, normal = linear[0], linear[1]    # light map before normal map, as in every pass the mods name
-        basis = "order"
-    found = [x for x in (diffuse, normal, lightmap) if x is not None]
-    if not found:
-        basis = "none"
-    elif basis == "format" and max(found) - min(found) > len(found) - 1:
-        basis = "order"                                # not side by side: a shader with more materials
-    return {"diffuse": diffuse, "normal": normal, "lightmap": lightmap}, basis
+    # Current Endfield primary-material convention, supplied by the user. Low-slot
+    # auxiliary passes remain in raw slots, but must not become primary materials.
+    material = {s["slot"]: s for s in slots if s["class"] == "material" and s["slot"] > 10}
+    candidates = []
+    for d, diffuse in material.items():
+        light, normal = material.get(d + 1), material.get(d + 2)
+        if (light and normal and _kind_fits("diffuse", diffuse.get("format"))
+                and _kind_fits("lightmap", light.get("format"))
+                and _kind_fits("normal", normal.get("format"))):
+            candidates.append((d, str(normal.get("format", "")).upper().startswith("BC5")))
+    # BC5 provides stronger normal-map evidence than two indistinguishable linear
+    # formats. Multiple equally plausible triples remain unresolved.
+    strong = [c for c in candidates if c[1]]
+    candidates = strong or candidates
+    if len(candidates) != 1:
+        return dict.fromkeys(ROLES), "none"
+    d, strong_normal = candidates[0]
+    return {"diffuse": d, "lightmap": d + 1, "normal": d + 2}, "format" if strong_normal else "order"
+
+
+def _primary_order(roles: dict) -> bool:
+    d, l, n = (roles.get(r) for r in ("diffuse", "lightmap", "normal"))
+    return all(s is not None for s in (d, l, n)) and 10 < d < l < n
 
 
 def _assign_roles(passes_of: dict, roles: dict[tuple[str, int], dict[str, set[int]]]) -> None:
@@ -296,7 +304,7 @@ def _assign_roles(passes_of: dict, roles: dict[tuple[str, int], dict[str, set[in
         by_slot = {s["slot"]: s for s in best["slots"]}
         for role, slots in assigned.items():
             for slot in slots:
-                if slot in by_slot and by_slot[slot]["class"] == "material" and _kind_fits(role, by_slot[slot].get("format")):
+                if slot > 10 and slot in by_slot and by_slot[slot]["class"] == "material" and _kind_fits(role, by_slot[slot].get("format")):
                     votes[best["ps"]][role][slot] += 1
     # A pixel shader reads the same slots for every mesh: where the formats are clear for some of its
     # meshes, the slots they give stand for its other meshes too, if the textures there fit.
@@ -308,7 +316,7 @@ def _assign_roles(passes_of: dict, roles: dict[tuple[str, int], dict[str, set[in
             guesses[id(p)] = (guess, basis)
             if basis == "format" and p["reads_known"]:
                 clean[p["ps"]][tuple(guess[r] for r in ROLES)] += 1
-    consensus = {ps: max(c.items(), key=lambda kv: kv[1])[0] for ps, c in clean.items()}
+    consensus = {ps: next(iter(c)) for ps, c in clean.items() if len(c) == 1}
     for passes in passes_of.values():
         for p in passes:
             if not p["reads_known"]:
@@ -339,6 +347,10 @@ def _assign_roles(passes_of: dict, roles: dict[tuple[str, int], dict[str, set[in
                     chosen[role] = None
             duplicates = {s for s in chosen.values() if s is not None and list(chosen.values()).count(s) > 1}
             chosen = {r: None if s in duplicates else s for r, s in chosen.items()}
+            if all(s is not None for s in chosen.values()) and not _primary_order(chosen):
+                p["roles_rejected"] = {"reason": "violates current Endfield primary order: 10 < diffuse < lightmap < normal",
+                                       "candidates": chosen.copy()}
+                chosen = dict.fromkeys(ROLES)
             p["roles"] = {role: (None if slot is None else
                                  {k: by_slot[slot][k] for k in ("slot", "format", "w", "h") if k in by_slot[slot]})
                           for role, slot in chosen.items()}
@@ -370,6 +382,10 @@ def build(folder: Path, names: dict[tuple[str, int], list[tuple[str, str]]] | No
 
     def row(m: tuple[str, int]) -> dict:
         out = {"ib": m[0], "index_count": m[1], "first_frame": first_frame[m], "passes": passes_of[m]}
+        primary = main_pass(out)
+        out["primary"] = ({"ps": primary["ps"], "roles": primary["roles"], "basis": primary["roles_basis"]}
+                          if primary else None)
+        out["primary_status"] = "candidate" if primary else "undetermined: missing or ambiguous primary evidence"
         if m in names:
             out["mod_sections"] = [s for _, s in names[m]]
         return out
@@ -419,7 +435,7 @@ def build(folder: Path, names: dict[tuple[str, int], list[tuple[str, str]]] | No
         "version": version.get("key", folder.name), "label": version.get("label"),
         "generated_unix": int(time.time()),
         "records": len(records), "meshes": len(meshes),
-        "rules": {"main_pass": "a pass the mods name slots for, else most material textures, then most slots read",
+        "rules": {"main_pass": "current Endfield convention: 10 < diffuse < lightmap < normal; complete unambiguous triple required; low-slot passes retained only as raw evidence",
                   "material_texture": "format heuristic only: non-HDR block-compressed 2D; BC6H is a global candidate; texture hashes are not used",
                   "roles": "mod resource names for the pixel shader where they fit the game's formats, else formats "
                            "(for this mesh or, where unclear, for other meshes of the same shader), else order",
@@ -446,28 +462,35 @@ def _role_text(p: dict, role: str) -> str:
 
 
 def main_pass(row: dict) -> dict | None:
-    """The pass a mod binds: one the mods name slots for, else the first with any of the three roles."""
-    with_roles = [p for p in row["passes"] if any(p["roles"].values())]
-    return next((p for p in with_roles if p["roles_basis"].startswith("mod")), with_roles[0] if with_roles else None)
+    """A primary candidate under the current Endfield convention, never an auxiliary fallback."""
+    candidates = [p for p in row["passes"] if p["reads_known"] and not p.get("roles_conflict")
+                  and _primary_order({r: (v or {}).get("slot") for r, v in p["roles"].items()})]
+    named = [p for p in candidates if p["roles_basis"].startswith("mod")]
+    candidates = named or candidates
+    triples = {tuple(p["roles"][r]["slot"] for r in ROLES) for p in candidates}
+    if len(triples) != 1:
+        return None
+    return max(candidates, key=lambda p: sum(bool(set(s.get("access", [])) & {"sample", "load"}) for s in p["slots"]))
 
 
 def _mesh_rows(rows: list[dict], lines: list[str]) -> None:
-    lines.append("| IB | indices | pixel shader | diffuse | normal map | light map | known from |")
+    lines.append("| IB | indices | pixel shader | diffuse | light map | normal map | known from |")
     lines.append("|---|---|---|---|---|---|---|")
     for r in rows:
         p = main_pass(r)
         if p is None:
-            lines.append(f"| `{r['ib']}` | {r['index_count']} | no material slots | | | | |")
+            lines.append(f"| `{r['ib']}` | {r['index_count']} | primary undetermined | | | | |")
             continue
         basis = BASIS[p["roles_basis"]] + (" (mods disagree)" if p.get("roles_conflict") else "")
         lines.append(f"| `{r['ib']}` | {r['index_count']} | `{p['ps']}` | {_role_text(p, 'diffuse')} | "
-                     f"{_role_text(p, 'normal')} | {_role_text(p, 'lightmap')} | {basis} |")
+                     f"{_role_text(p, 'lightmap')} | {_role_text(p, 'normal')} | {basis} |")
 
 
 def to_markdown(table: dict) -> str:
     lines = [f"# Slot table {table['version']}", "",
              f"{table['meshes']} meshes from {table['records']} records of the probe's slot cache. Per mesh the pass "
-             "with the most material textures (the one mods bind) and its diffuse, normal map and light map slots, "
+             "with an unambiguous primary-material candidate and its diffuse, light map and normal map slots "
+             "(current Endfield convention: 10 < diffuse < light map < normal map), "
              "known from the mods' resource names for that pixel shader or from the formats of the game's textures "
              "there. Roles and material/global classes are suggestions, not verified semantics or migration rules. "
              "Unknown shader usage and conflicting formats do not receive roles. "

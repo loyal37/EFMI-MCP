@@ -207,3 +207,7 @@
 - Date: 2026-10-18. Complete the existing slot-table draft as a read-only MCP query and explicit CLI export. Cache one version per server tool instance; rebuild when records/version/shader metadata changes, refresh explicitly for installed-mod changes.
 - Texture hashes never determine identity, role labels or migrations. The table labels material/global candidates by formats and suggests roles from mod resource names or formats/order, always as hypotheses. Unknown shader analysis and conflicting evidence withhold roles. Static references include conditional paths, not proof of pixel execution. Frame groups do not establish character identity across sessions.
 - Single-version slot tables do not complete shader-pair migration or authorize writing installed mod files. Those remain separate work.
+
+## D-026: Separate primary-material candidates from auxiliary passes
+
+- Date: 2026-10-18, explicit user correction. For the current Endfield table use 10 < diffuse < lightmap < normal as a primary-candidate constraint, not a universal D3D11 or ZZMI law. A low-slot auxiliary pass is never the primary fallback. Incomplete or competing mappings remain unknown, with raw bindings retained. Format-only inference conservatively requires one consecutive triple (BC5 strengthens normal evidence); explicit mod mappings can be nonconsecutive. Contradictory roles are rejected, not relabeled.

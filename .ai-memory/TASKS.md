@@ -1,5 +1,9 @@
 # EFMI MCP — Tasks
 
+## T-016 correction: primary slots (2026-10-18)
+
+- Fixed auxiliary-pass fallback and early sRGB misclassification in server 0.1.16. Current Endfield primary candidates require 10 < diffuse < lightmap < normal; unresolved meshes stay unknown. 48 tests pass, fixed-cache primary constraints verified for all 3885 meshes. Semantics remain hypotheses; no live visual verification this round. Migration alignment and INI fixer remain pending.
+
 ## T-016 update: version slot-table reader delivered (2026-10-18)
 
 - Server 0.1.15 reads a saved cache through efmi_get_slot_table with in-memory reuse and file-free paging. Explicit CLI exports JSON/Markdown; role labels are hypotheses. Synthetic tests 19/19, prior texture-slot tests 25/25, existing real-game snapshot 3885 meshes / 5215 analyzed passes. This is offline validation, not a fresh game test.

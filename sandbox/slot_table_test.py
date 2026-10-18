@@ -41,7 +41,7 @@ PS_SHARED = "d" * 16
 READS = {PS_MAIN: {12: ["sample"], 16: ["sample"], 17: ["sample"], 18: ["sample"], 19: ["sample"]},
          PS_GB: {0: ["sample"], 1: ["sample"]},
          PS_ORDER: {20: ["sample"], 21: ["sample"], 22: ["sample"]},
-         PS_SHARED: {2: ["sample"], 5: ["sample"], 6: ["sample"], 7: ["sample"]}}
+         PS_SHARED: {s: ["sample"] for s in range(12, 18)}}
 # What the mod binds for its meshes: right for the main shader, and one binding that does not fit
 # the game's texture there (a diffuse resource on a linear slot), which must not count.
 ROLES = {("aa000000", 300): {"diffuse": {16}, "lightmap": {17}, "normal": {18}},
@@ -77,9 +77,9 @@ class SlotTableTests(unittest.TestCase):
         # a shader whose formats leave normal map and light map open (both linear BC7)
         lines.append(rec("gg000000", 900, PS_ORDER, [tex(20, "ggd"), tex(21, "ggl", "BC7_UNORM"), tex(22, "ggn", "BC7_UNORM")], 300))
         # a shader clear on one mesh and unclear on another, which has a stray sRGB texture early on
-        lines.append(rec("hh000000", 700, PS_SHARED, [tex(5, "hhd"), tex(6, "hhl", "BC7_UNORM"), tex(7, "hhn", "BC5_UNORM")], 330))
-        lines.append(rec("hh000001", 701, PS_SHARED, [tex(2, "hhx"), tex(5, "hhd2"), tex(6, "hhl2", "BC7_UNORM"),
-                                                       tex(7, "hhn2", "BC5_UNORM")], 360))
+        lines.append(rec("hh000000", 700, PS_SHARED, [tex(15, "hhd"), tex(16, "hhl", "BC7_UNORM"), tex(17, "hhn", "BC5_UNORM")], 330))
+        lines.append(rec("hh000001", 701, PS_SHARED, [tex(12, "hhx"), tex(13, "hhx2", "BC7_UNORM"), tex(14, "hhx3", "BC5_UNORM"), tex(15, "hhd2"), tex(16, "hhl2", "BC7_UNORM"),
+                                                       tex(17, "hhn2", "BC5_UNORM")], 360))
         text = "\n".join(json.dumps(r, separators=(",", ":")) for r in lines)
         text = '{"frame":1,"origin":"game","ib":"ff000000","index_count":3,"key":"old"}\n' + text + "\n"
         (self.folder / "draws.jsonl").write_text(text, encoding="utf-8")
@@ -152,21 +152,21 @@ class SlotTableTests(unittest.TestCase):
         self.assertEqual(p["roles_basis"], "format")
         gb = next(q for q in mesh["passes"] if q["ps"] == PS_GB)
         self.assertEqual(({r: (v or {}).get("slot") for r, v in gb["roles"].items()}, gb["roles_basis"]),
-                         ({"diffuse": 0, "normal": 1, "lightmap": None}, "format"))
+                         ({"diffuse": None, "normal": None, "lightmap": None}, "none"))
 
     def test_roles_by_order_are_marked(self) -> None:
         self.assertEqual(self.roles("gg000000"), ({"diffuse": 20, "normal": 22, "lightmap": 21}, "order"))
 
     def test_roles_from_the_same_shader(self) -> None:
-        self.assertEqual(self.roles("hh000000"), ({"diffuse": 5, "normal": 7, "lightmap": 6}, "format"))
-        self.assertEqual(self.roles("hh000001"), ({"diffuse": 5, "normal": 7, "lightmap": 6}, "shader"))
+        self.assertEqual(self.roles("hh000000"), ({"diffuse": 15, "normal": 17, "lightmap": 16}, "format"))
+        self.assertEqual(self.roles("hh000001"), ({"diffuse": 15, "normal": 17, "lightmap": 16}, "shader"))
 
     def test_markdown(self) -> None:
         md = slot_table.to_markdown(self.table)
         self.assertIn("### Mod A 1.0", md)
-        self.assertIn("| IB | indices | pixel shader | diffuse | normal map | light map | known from |", md)
-        self.assertIn(f"| `aa000000` | 300 | `{PS_MAIN}` | t16 BC7_UNORM_SRGB 512x512 | t18 BC5_UNORM 512x512 | "
-                      "t17 BC7_UNORM 512x512 | mod names |", md)
+        self.assertIn("| IB | indices | pixel shader | diffuse | light map | normal map | known from |", md)
+        self.assertIn(f"| `aa000000` | 300 | `{PS_MAIN}` | t16 BC7_UNORM_SRGB 512x512 | t17 BC7_UNORM 512x512 | "
+                      "t18 BC5_UNORM 512x512 | mod names |", md)
         self.assertIn("uncertain (slot order or slots apart)", md)
         self.assertIn("formats of the same shader on other meshes", md)
         self.assertIn("Probably the same character too", md)
@@ -277,6 +277,38 @@ class SlotTableTests(unittest.TestCase):
         slot_table._assign_roles(passes, roles)
         self.assertIsNone(passes[("aa000000", 300)][0]["roles"]["diffuse"])
         self.assertIn("diffuse", passes[("aa000000", 300)][0]["roles_conflict"])
+
+    def test_auxiliary_only_mesh_has_no_primary(self) -> None:
+        records = [rec("aa000000", 300, PS_GB, [tex(0, "d"), tex(1, "n", "BC5_UNORM")])]
+        passes = {("aa000000", 300): slot_table._mesh_passes(records, READS.get)}
+        slot_table._assign_roles(passes, {})
+        row = {"passes": passes[("aa000000", 300)]}
+        self.assertIsNone(slot_table.main_pass(row))
+        self.assertEqual([s["slot"] for s in row["passes"][0]["slots"]], [0, 1])
+
+    def test_early_srgb_is_not_primary_diffuse(self) -> None:
+        slots = [dict(tex(n, str(n), fmt), **{"class": "material"}) for n, fmt in (
+            (6, "BC7_UNORM_SRGB"), (16, "BC7_UNORM"), (17, "BC7_UNORM_SRGB"),
+            (18, "BC7_UNORM"), (19, "BC7_UNORM"), (21, "BC7_UNORM_SRGB"),
+            (22, "BC7_UNORM"), (23, "BC5_UNORM"))]
+        roles, basis = slot_table._roles_from_formats(slots)
+        self.assertEqual(roles, {"diffuse": 21, "lightmap": 22, "normal": 23})
+        self.assertEqual(basis, "format")
+
+    def test_reversed_mod_roles_are_rejected_not_swapped(self) -> None:
+        records = [rec("aa000000", 300, PS_MAIN,
+                       [tex(16, "d"), tex(17, "n", "BC7_UNORM"), tex(18, "l", "BC7_UNORM")])]
+        passes = {("aa000000", 300): slot_table._mesh_passes(records, READS.get)}
+        slot_table._assign_roles(passes, {("aa000000", 300): {"diffuse": {16}, "normal": {17}, "lightmap": {18}}})
+        p = passes[("aa000000", 300)][0]
+        self.assertFalse(any(p["roles"].values()))
+        self.assertEqual(p["roles_rejected"]["candidates"], {"diffuse": 16, "normal": 17, "lightmap": 18})
+
+    def test_different_primary_triples_remain_ambiguous(self) -> None:
+        a = slot_table.main_pass(self.mesh("aa000001"))
+        b = slot_table.main_pass(self.mesh("gg000000"))
+        a = {**a, "roles_basis": "format"}
+        self.assertIsNone(slot_table.main_pass({"passes": [a, b]}))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,11 @@
 # EFMI MCP — Current development state
 
+## Primary slot correction (server 0.1.16, 2026-10-18)
+
+- User correction: current Endfield character primary slots are above 10, normally diffuse < light map < normal map. The previous table incorrectly promoted auxiliary-only low-slot passes and the first sRGB binding. Fixed primary selection: require a complete ordered high-slot triple; retain auxiliary raw slots, return primary=null when missing or ambiguous. Format-only inference uses an unambiguous consecutive triple, preferring BC5 normal evidence; mod evidence can support nonconsecutive ordered slots. Never swap contradictory roles to force a match. Markdown columns now diffuse/light map/normal map.
+- Offline fixed snapshot: 252 primary candidates, 3633 undetermined, zero primary-order violations over 3885 meshes. Yvonne IB510debd5 candidate t21/t22/t23; IB119b1b29 auxiliary t3 now primary=null. All 5215 pass analyses remain available. Tests 23 slot-table + 25 texture-slot pass. Previous static-reference validation did not validate primary semantics; that gap is corrected, not claimed as live visual proof. Snapshot reports regenerated; growing dist cache report also regenerated (8939 meshes at export). No game input or installation changes.
+- Evidence: captures/slot-table-primary-check-20261018.json and corrected captures/slot-table-snapshot-20261018/slot-table.md. Restart MCP for 0.1.16. Cross-version migrations remain pending.
+
 ## Persistent slot table (server 0.1.15, 2026-10-18)
 
 - Resumed the untracked slot_table.py draft. Added efmi_get_slot_table: offline native mesh/pass rows, IB or installed-mod-name filter, bounded paging, one-version memory cache, source/shader stat invalidation and explicit refresh for changed mod INIs. Queries do not write files or contact the game. CLI explicitly exports JSON/Markdown. Probe remains 0.1.8; restart MCP only.

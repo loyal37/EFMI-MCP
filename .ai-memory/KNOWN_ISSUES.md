@@ -182,3 +182,7 @@ The above comes from the README/sources of the time and should not be widened in
 - Role names and material/global classes are heuristic; shader semantics and version-to-version migrations are not yet proven. Resource-name parsing is not a full XXMI conditional/namespace interpreter. Do not automatically rewrite an INI from this table.
 - Frame-based probable groups may mix characters or sessions; MCP character filtering uses only mod IB/count names. Cache data records first observations, not current streaming sizes or current game state. New source records rebuild the table; continuously growing caches can therefore cause repeated rebuilds. Refresh explicitly after editing installed mod INIs.
 - Validation used a fixed snapshot of existing game data. No live character validation or probe changes in this round.
+
+## Primary-material inference correction (2026-10-18)
+
+- Resolved: auxiliary t0/t1/t3 and unrelated early sRGB bindings were mislabeled as primary materials. Primary now requires complete high ordered slots; old offline static-reference checks did not catch the semantic mistake. Unknown rows are expected, especially auxiliary-only meshes. Current Endfield convention is user-supplied; format/name evidence still does not prove shader semantics or applicability to another game/version.

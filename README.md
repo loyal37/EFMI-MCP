@@ -174,6 +174,13 @@ automatic migration rules. Material/global classification is a format heuristic;
 are informational only. Unknown shader usage, competing mod votes and conflicting slot formats
 withhold affected roles. Cross-version shader alignment and automatic INI repair remain future work.
 
+Server **0.1.16** corrects primary selection. Primary candidates follow the current Endfield convention supplied by the user:
+`10 < diffuse < light map < normal map`. Low-slot auxiliary passes remain in the raw pass data;
+they never serve as a fallback primary. A missing complete triple or competing primary triples
+returns `primary: null`, not a fabricated mapping. Format-only guesses require an unambiguous
+consecutive triple; explicit mod evidence may support nonconsecutive ordered slots. This is an
+Endfield-specific selection rule, not a D3D11 rule or verified ZZMI behavior.
+
 To explicitly export a complete JSON and Markdown table from the server directory:
 
 ```powershell
