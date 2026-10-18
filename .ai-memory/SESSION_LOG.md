@@ -371,3 +371,7 @@ The user restarted the game (0.1.8 loaded) and went through every character with
 ## 2026-10-18: Slot-style mods checked against the slot cache
 
 At the user's request the installed mods' `ps-tN` bindings were checked against the native records of the current version (read-only; LOD components skipped). 51 of the 64 slot-style components with native records are consistent; one texture is encoded as sRGB where the game expects linear (Ardelia's light map), and three RabbitFX components set to null a global HDR texture one slot above the character's fourth texture. Findings in CURRENT_STATE; nothing in the mods was changed. The check is a script in `captures/slot-mod-check-20261018/`; turning it into a tool belongs to T-016.
+
+## 2026-10-18: Three RabbitFX nulls moved one slot lower (user's mods, at the user's request)
+
+Laevatain (`ps-t21` -> `ps-t20`) and Perlica (`ps-t20` -> `ps-t19`) changed after same-folder backups (`*.ini.bak-20261018-null`); Estella was already at `ps-t19`, saved outside this session minutes earlier, and was left alone. Offline re-check passes; no F10 was sent, so the game has not loaded the change.
