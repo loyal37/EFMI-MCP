@@ -367,3 +367,7 @@ The user started the game with 0.1.7 and thought the cache was not growing; it h
 ## 2026-10-18: Slot cache 0.1.8 checked in the game
 
 The user restarted the game (0.1.8 loaded) and went through every character with the mods switched off. Analysis only, no code change and no key press: one read-only capture showed 0 XXMI draws and Yvonne drawn natively. The folder holds 2153 records (809 meshes, 222 pixel shaders, 314 bytecode files) and stopped growing when the browsing ended; 0.2 s of probe time over 602 looked-at frames. The 20 installed mods name 294 components; 164 have native records, the gaps being LOD components and hashes the game no longer draws. The earlier version folder had been removed before this start, so the move of 0.1.7 records was not exercised in the game. The mods were still off at the end of the round; the user was reminded to switch them back on.
+
+## 2026-10-18: Slot-style mods checked against the slot cache
+
+At the user's request the installed mods' `ps-tN` bindings were checked against the native records of the current version (read-only; LOD components skipped). 51 of the 64 slot-style components with native records are consistent; one texture is encoded as sRGB where the game expects linear (Ardelia's light map), and three RabbitFX components set to null a global HDR texture one slot above the character's fourth texture. Findings in CURRENT_STATE; nothing in the mods was changed. The check is a script in `captures/slot-mod-check-20261018/`; turning it into a tool belongs to T-016.
