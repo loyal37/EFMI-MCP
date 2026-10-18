@@ -55,6 +55,7 @@ PS_TWO = "c" * 16       # the dataflow calls both t20 and t24 diffuse; light map
 PS_TIE = "d" * 16       # the dataflow calls t30 and t33 diffuse; t31 normal map, t32 light map: a tie
 PS_FMT = "1" * 16       # no dataflow at all: formats decide
 PS_GAP = "2" * 16       # no dataflow, formats apart: order only
+PS_SEQ = "4" * 16       # the dataflow finds light map t71 and normal map t72 only: the sRGB t70 before them
 PS_SHARED = "3" * 16    # formats clear on one mesh, open on the other: the same shader decides there
 LIT = {5: res(shadow=True), 12: res(), 16: res(["diffuse"]), 17: res(["lightmap"]), 18: res(["normal"])}
 READS = {
@@ -66,6 +67,7 @@ READS = {
     PS_FMT: {40: res(), 41: res(), 42: res()},
     PS_GAP: {50: res(), 53: res(), 57: res()},
     PS_SHARED: {60: res(), 61: res(), 62: res(), 63: res()},
+    PS_SEQ: {70: res(), 71: res(["lightmap"]), 72: res(["normal"])},
 }
 READS = {ps: {"resources": resources} for ps, resources in READS.items()}   # what shader_semantics.analyze returns
 
@@ -109,6 +111,10 @@ class SlotTableTests(unittest.TestCase):
         lines.append(rec("cc000005", 905, PS_SHARED, [tex(60, "cs2d"), tex(61, "cs2l", "BC7_UNORM"), tex(62, "cs2n", "BC7_UNORM"),
                                                       tex(63, "cs2x", "BC7_UNORM")], 450))
         lines.append(rec("ee000000", 50, PS_LIT, material("ee", 16), 200, origin="xxmi"))
+        lines.append(rec("cc000006", 906, PS_SEQ, material("cq", 70), 470))
+        # a deferred mesh drawn only by the G-buffer pass, and one seen only in a depth pass
+        lines.append(rec("gb000000", 60, PS_GB, [tex(0, "gbd"), tex(1, "gbn", "BC5_UNORM")], 480, rt=["a", "b", "c", "d", "e"]))
+        lines.append(rec("dp000000", 61, PS_FMT, material("dp", 40), 510, rt=[]))
         text = '{"frame":1,"origin":"game","ib":"ff000000","index_count":3,"key":"old"}\n'
         text += "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in lines)
         text += '{"fmt":2,"frame":999,"origin":"game","ib":"9900'      # the line the probe is writing
@@ -161,6 +167,11 @@ class SlotTableTests(unittest.TestCase):
         self.assertEqual(self.slots("cc000001"), ({"diffuse": 30, "lightmap": 32, "normal": 31},
                                                   {"diffuse": "dataflow+format", "lightmap": "dataflow", "normal": "dataflow"}))
 
+    def test_sequence_fills_a_gap(self) -> None:
+        self.assertEqual(self.slots("cc000006"), ({"diffuse": 70, "lightmap": 71, "normal": 72},
+                                                  {"diffuse": "sequence", "lightmap": "dataflow", "normal": "dataflow"}))
+        self.assertIn("sequence (LoyalTools)", slot_table.to_markdown(self.table))
+
     def test_formats_order_and_shader(self) -> None:
         self.assertEqual(self.slots("cc000002"), ({"diffuse": 40, "lightmap": 41, "normal": 42},
                                                   {"diffuse": "format", "lightmap": "format", "normal": "format"}))
@@ -171,11 +182,26 @@ class SlotTableTests(unittest.TestCase):
 
     def test_main_pass_variants_and_other_lit_passes(self) -> None:
         m = self.row("aa000000")["main"]
-        self.assertEqual(m["ps"], PS_LIT, "the lit pass, not the G-buffer pass with more slots")
+        self.assertEqual(m["ps"], PS_LIT, "the lit pass, not the G-buffer pass with more slots; of two lit "
+                                          "passes alike, the one whose slots come first")
         self.assertEqual(m["also_ps"], [PS_LIT_COPY])
         self.assertEqual([o["ps"] for o in m["other_passes"]], [PS_LIT_2])
         self.assertEqual({r: v["slot"] for r, v in m["other_passes"][0]["roles"].items()},
                          {"diffuse": 18, "lightmap": 19, "normal": 20})
+
+    def test_depth_and_gbuffer_passes_are_never_main(self) -> None:
+        self.assertIsNone(self.row("gb000000")["main"])
+        self.assertTrue(self.row("gb000000")["why_none"].startswith("G-buffer pass only"))
+        self.assertIsNone(self.row("dp000000")["main"])
+        self.assertEqual(self.row("dp000000")["why_none"], "depth passes only")
+        self.assertFalse(self.row("cc000002")["main"]["lit"])
+        md = slot_table.to_markdown(self.table)
+        main_part, unlit_part = md.split("## Forward passes that do not sample shadows")
+        self.assertNotIn("`cc000002`", main_part, "not lit: not in the main sections")
+        self.assertIn(f"| `cc000002` | 902 | unassigned | `{PS_FMT}` | t40 BC7_UNORM_SRGB 512x512 |", unlit_part)
+        self.assertIn("`aa000000`", main_part)
+        self.assertIn("| `gb000000` | 60 | unassigned | G-buffer pass only", md)
+        self.assertNotIn(f"`{PS_GB}`", md)
 
     def test_mod_check_never_changes_a_slot(self) -> None:
         check = self.row("aa000000")["mod_check"]
@@ -197,7 +223,7 @@ class SlotTableTests(unittest.TestCase):
         self.assertEqual([r["ib"] for r in t["characters"][0]["probably_also"]], ["aa000002"])
         self.assertEqual([(g["first_frame"], len(g["meshes"])) for g in t["probable_groups"]], [(60, 3)])
         self.assertEqual([(g["first_frame"], len(g["meshes"])) for g in t["scenes"]], [(120, 8)])
-        self.assertEqual(len(t["unassigned"]), 6)
+        self.assertEqual(len(t["unassigned"]), 9)
 
     def test_markdown(self) -> None:
         md = slot_table.to_markdown(self.table)

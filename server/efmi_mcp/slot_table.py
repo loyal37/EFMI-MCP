@@ -2,8 +2,10 @@
 
 A row is a mesh as mods name it, the index buffer region hash and the index count, with the three
 slots a mod binds for it: diffuse, light map and normal map. They are those of the mesh's main
-pass: the pass whose pixel shader samples shadows or an environment cube (the lit pass, not the
-G-buffer or depth pass), else the one with the most material textures. A pass whose shader is
+pass: the forward pass whose pixel shader samples shadows or an environment cube (the lit pass),
+else another forward pass with the most material textures; between equal passes the one whose slots
+come first, as LoyalTools' texture marking prefers. Depth passes and G-buffer passes
+(deferred shading, three targets or more) are never the main pass. A pass whose shader is
 another variant of the main one (XXMI's patched copy, for instance) and reads the same three slots
 is folded into the row.
 
@@ -18,6 +20,8 @@ on mods written for the old one:
   dataflow+position  the dataflow names several slots for a role: the one nearest to the slots of
                      the other roles
   dataflow+format    several slots, equally near: the one the formats name
+  sequence           LoyalTools' material sequence next to roles already found: the diffuse right
+                     before the light map (or the normal map), the normal map right after the light map
   format             the formats of the material textures: diffuse the first sRGB one, normal map
                      the BC5 one, light map the linear one after the diffuse, all side by side
   shader             the same pixel shader resolved that role on other meshes
@@ -53,7 +57,7 @@ GLOBAL_COOCCURRENCE = 60   # a texture bound together with more material texture
 SCENE_MESHES = 40          # a frame that brought more new meshes than this showed a whole scene
 GROUP_MIN = 3              # fewer new meshes than this in a frame are not taken for a character
 DEFAULT_EFMI = r"D:\XXMI-Launcher-Portable-v2.1.6\EFMI"
-SURE = ("dataflow", "dataflow+position", "dataflow+format", "format")
+SURE = ("dataflow", "dataflow+position", "dataflow+format", "sequence", "format")
 
 
 # ---------------------------------------------------------------- input
@@ -201,6 +205,19 @@ def _native_roles(p: dict) -> tuple[dict[str, int | None], dict[str, str]]:
             nearest = [c for c, d in distance.items() if d == best]
             if len(nearest) == 1:
                 chosen[role], basis[role] = nearest[0], "dataflow+position"
+    # LoyalTools' material sequence fills a gap next to roles already found: the diffuse is the sRGB
+    # material texture right before the light map (or before the normal map when there is no light
+    # map), and the normal map the linear one right after the light map.
+    by_slot = {s["slot"]: s for s in material}
+    srgb = lambda s: str(by_slot[s].get("format", "")).upper().endswith("_SRGB")  # noqa: E731
+    if "diffuse" not in chosen:
+        after = chosen.get("lightmap", chosen.get("normal"))
+        if after is not None and after - 1 in by_slot and srgb(after - 1) and after - 1 not in chosen.values():
+            chosen["diffuse"], basis["diffuse"] = after - 1, "sequence"
+    if "normal" not in chosen and "diffuse" in chosen and chosen.get("lightmap") == chosen["diffuse"] + 1:
+        n = chosen["lightmap"] + 1
+        if n in by_slot and _fits("normal", by_slot[n].get("format")) and n not in chosen.values():
+            chosen["normal"], basis["normal"] = n, "sequence"
     guess, how = _roles_from_formats(p["slots"])
     for role in ROLES:
         g = guess[role]
@@ -251,11 +268,18 @@ def _main(passes: list[dict], users: Counter) -> dict | None:
     """The main pass, the variants that read the same three slots, and other lit passes that read
     at least two of the three elsewhere (a mesh can be drawn twice in a frame by lit shaders whose
     slots differ; one ps-tN binding cannot suit both)."""
-    with_roles = [p for p in passes if any(p["roles"].values())]
+    # Depth passes and G-buffer passes (deferred shading writes three targets or more) read textures a
+    # mod for a forward-shaded character does not bind: diffuse at t0 for alpha testing, or the
+    # material at t0/t1. They are never the main pass.
+    with_roles = [p for p in passes if any(p["roles"].values()) and 1 <= len(p["targets"]) < 3]
     if not with_roles:
         return None
+    # Between equal passes the one whose diffuse comes first, as LoyalTools' texture marking prefers
+    # (the mods it writes bind that pass's slots).
+    first = lambda p: -min((v["slot"] for v in p["roles"].values() if v), default=999)  # noqa: E731
     main = max(with_roles, key=lambda p: (p["lit"], sum(1 for s in p["slots"] if s["class"] == "material"),
-                                           sum(1 for v in p["roles"].values() if v), users[p["ps"]], len(p["slots"]), p["ps"]))
+                                           sum(1 for v in p["roles"].values() if v), first(p), users[p["ps"]],
+                                           len(p["slots"]), p["ps"]))
     others: dict[tuple, dict] = {}
     also = []
     for p in with_roles:
@@ -306,8 +330,11 @@ def build(folder: Path, names: dict | None = None, reader: Callable[[str], dict]
                                           "wrong_for_other_passes": other}
         if main is None:
             p = passes_of[m]
+            drawn = [q for q in p if q["targets"]]
             out["why_none"] = ("no pixel shader analysis" if not any(q["reads_known"] for q in p) else
-                               "depth passes only" if all(not q["targets"] for q in p) else
+                               "depth passes only" if not drawn else
+                               "G-buffer pass only (deferred shading, material at t0/t1)"
+                               if all(len(q["targets"]) >= 3 for q in drawn) else
                                "no material texture read")
         out["passes"] = passes_of[m]
         return out
@@ -349,7 +376,7 @@ def build(folder: Path, names: dict | None = None, reader: Callable[[str], dict]
     table = {"schema": SCHEMA, "version": version.get("key", folder.name), "label": version.get("label"),
              "generated_unix": int(time.time()), "records": len(records), "meshes": len(meshes),
              "rules": {"main_pass": "samples shadows or an environment cube, else most material textures",
-                       "slots": "dataflow > dataflow+position > format > shader > order (uncertain); mods only compared",
+                       "slots": "dataflow > dataflow+position > dataflow+format > sequence (LoyalTools) > format > shader > order (uncertain); mods only compared",
                        "material_texture": f"block-compressed 2D, bound with at most {GLOBAL_COOCCURRENCE} other material textures",
                        "probable_group": f"first seen in the same looked-at frame, {GROUP_MIN} to {SCENE_MESHES} new meshes"},
              "characters": characters, "probable_groups": groups, "scenes": scenes,
@@ -389,7 +416,7 @@ def counts(table: dict) -> dict:
 
 # ---------------------------------------------------------------- Markdown
 BASIS = {"dataflow": "dataflow", "dataflow+position": "dataflow+position", "dataflow+format": "dataflow+formats",
-         "format": "formats",
+         "sequence": "sequence (LoyalTools)", "format": "formats",
          "shader": "same shader", "order": "order (uncertain)"}
 
 
@@ -422,13 +449,17 @@ def _check_text(row: dict) -> str:
     return "agrees"
 
 
+def _lit(r: dict) -> bool:
+    return bool(r["main"] and r["main"]["lit"])
+
+
 def _rows(rows: list[dict], lines: list[str]) -> None:
     lines.append("| IB | indices | pixel shader | diffuse | light map | normal map | known from | mod check |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for r in rows:
         m = r["main"]
-        if m is None:
-            continue
+        if not _lit(r):
+            continue                         # listed in the section of passes that are not lit
         ps = f"`{m['ps']}`" + (f" (+{len(m['also_ps'])})" if m["also_ps"] else "")
         lines.append(f"| `{r['ib']}` | {r['index_count']} | {ps} | {_role_text(m, 'diffuse')} | "
                      f"{_role_text(m, 'lightmap')} | {_role_text(m, 'normal')} | {_basis_text(m)} | {_check_text(r)} |")
@@ -446,30 +477,43 @@ def to_markdown(table: dict) -> str:
              "map slots, decided from the game's own data: the shader's dataflow, else the formats of the material "
              "textures, else the same shader on other meshes. The mod check compares the installed mods afterwards; "
              "it never changes a slot. Sizes are the game's textures as first recorded (they stream in). "
-             "(+n) after a pixel shader: n variants with the same slots. An 'other lit pass' row: the mesh is also "
+             "(+n) after a pixel shader: n variants with the same slots. Meshes whose forward passes sample no shadows "
+             "(effects, glowing and translucent parts) are listed in a section of their own near the end. Depth and "
+             "G-buffer passes are never the main pass: meshes drawn only by them (the open world's deferred meshes) "
+             "are listed at the end. An 'other lit pass' row: the mesh is also "
              "drawn by a lit shader that reads these textures at other slots, which one ps-tN binding cannot suit. "
              "Everything per pass is in slot-table.json.", ""]
     lines.append("## Characters (named by a mod's INI)")
     for ch in table["characters"]:
         lines += ["", f"### {ch['name']}", ""]
         _rows(ch["meshes"], lines)
-        if any(r["main"] for r in ch["probably_also"]):
+        if any(_lit(r) for r in ch["probably_also"]):
             lines += ["", "Probably the same character too (first seen in the same frame, not named by the mod):", ""]
             _rows(ch["probably_also"], lines)
     lines += ["", "## Not certain: groups first seen in the same frame (probably one character each)"]
     for g in table["probable_groups"]:
-        if any(r["main"] for r in g["meshes"]):
+        if any(_lit(r) for r in g["meshes"]):
             lines += ["", f"### Frame {g['first_frame']} ({len(g['meshes'])} meshes)", ""]
             _rows(g["meshes"], lines)
     lines += ["", "## Not certain: whole scenes (many meshes at once, or next to a modded character)"]
     for g in table["scenes"]:
-        if any(r["main"] for r in g["meshes"]):
+        if any(_lit(r) for r in g["meshes"]):
             extra = f", with {', '.join(g['mods_in_frame'])}" if g["mods_in_frame"] else ""
             lines += ["", f"### Frame {g['first_frame']} ({len(g['meshes'])} meshes{extra})", ""]
             _rows(g["meshes"], lines)
-    if any(r["main"] for r in table["unassigned"]):
+    if any(_lit(r) for r in table["unassigned"]):
         lines += ["", "## Unassigned", ""]
         _rows(table["unassigned"], lines)
+    unlit = [(label, r) for label, r in all_rows(table) if r["main"] and not r["main"]["lit"]]
+    if unlit:
+        lines += ["", f"## Forward passes that do not sample shadows ({len(unlit)}: effects, glowing and translucent parts)", "",
+                  "Their shaders read small effect textures, often at t0 to t4; mods rarely bind slots for them.", "",
+                  "| IB | indices | group | pixel shader | diffuse | light map | normal map | known from | mod check |",
+                  "|---|---|---|---|---|---|---|---|---|"]
+        for label, r in unlit:
+            m = r["main"]
+            lines.append(f"| `{r['ib']}` | {r['index_count']} | {label} | `{m['ps']}` | {_role_text(m, 'diffuse')} | "
+                         f"{_role_text(m, 'lightmap')} | {_role_text(m, 'normal')} | {_basis_text(m)} | {_check_text(r)} |")
     none = [(label, r) for label, r in all_rows(table) if r["main"] is None]
     if none:
         lines += ["", f"## Meshes without these slots ({len(none)})", "", "| IB | indices | group | why |", "|---|---|---|---|"]
