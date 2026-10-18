@@ -31,6 +31,9 @@ Once a target is chosen, a replacement swap chain created by another device is r
 | File | Responsibility |
 | --- | --- |
 | `server/run_server.py`, `efmi_mcp/__main__.py` | Entry point; arguments for the read-only EFMI root and the output directory |
+| `efmi_mcp/slot_table.py` | Native per-IB/pass analysis, primary-only material tables, in-memory query cache and explicit exports; mod comparison runs afterwards |
+| `efmi_mcp/shader_semantics.py` | Component provenance and local instruction evidence for color/normal/packed-lighting candidates; conditional alternatives and unsupported-flow limits remain explicit |
+| `efmi_mcp/slot_table_mods.py` | Read-only INI labels and bindings for post-analysis comparison; never an input to native role inference |
 | `efmi_mcp/mcp_stdio.py`, `tools.py` | MCP protocol, tool definitions, session and capture cache |
 | `efmi_mcp/reload_workflow.py` | Pre-checks under the same pipe/PID/render target, stopping live mode, invalidating old caches, the wait after a single F10 and the new-frame threshold |
 | `efmi_mcp/reload_input.py` | `send_reload_via_probe`: has the probe press F10 inside the game and interprets the receipt; `send_reload_f10`: the old external Win32 key press (reaches only a game that does not run as administrator). Neither offers an interface for arbitrary keys |

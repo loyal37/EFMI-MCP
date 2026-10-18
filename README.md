@@ -159,36 +159,38 @@ References include conditional paths and do not prove that every pixel executed 
 
 ### Slot cache (probe 0.1.7 / 0.1.8)
 
-Server **0.1.15** adds `efmi_get_slot_table(folder=..., ib_hash=..., character=..., offset=0, limit=40)`.
-Give it the absolute version folder below. It reads the saved native draws and shader bytecode,
-returns mesh rows with all pixel-shader passes directly as JSON, and writes no query files.
-Repeated queries reuse one table in memory; new records or changed shader files invalidate it.
-Use `refresh=true` after editing installed mod INIs. No game connection is required; restart the
-MCP server to expose the new tool, with no probe update needed.
+Server **0.1.17** rebuilds `efmi_get_slot_table(folder=..., ib_hash=..., character=..., offset=0, limit=40)`
+from game-origin bindings and shader dataflow. The material table and default query show **primary
+slots only**. `include_evidence=true` returns sample instructions, coordinates, channel uses and
+output paths; `include_passes=true` also exposes the other passes for audit. Queries write no files.
+Repeated requests reuse the table and shader analyses; appended records reuse unchanged shaders.
+Refresh explicitly after editing installed mod INIs. Restart MCP; the probe is unchanged.
 
-Character names come from installed mod IB/count references. Frame-based groupings in exported
-reports are tentative and can mix characters or game sessions. Only statically referenced slots
-are kept when shader analysis succeeds; failed analysis stays unknown. Diffuse/normal/light-map
-roles from mod resource names, formats or order are **hypotheses**, not verified semantics or
-automatic migration rules. Material/global classification is a format heuristic; texture hashes
-are informational only. Unknown shader usage, competing mod votes and conflicting slot formats
-withhold affected roles. Cross-version shader alignment and automatic INI repair remain future work.
+Analysis runs for every IB/count and every VS/PS/output pass **before** reading any mod. It does
+not use register thresholds, slot ordering/adjacency, texture hashes, formats or mod bindings to
+assign roles. The former 0.1.15/0.1.16 format/mod/order rules are withdrawn: the user's observations
+were tentative, not constraints. Mod names label results afterwards; INI comparisons cannot fill
+unknown slots or alter the native analysis digest.
 
-Server **0.1.16** corrects primary selection. Primary candidates follow the current Endfield convention supplied by the user:
-`10 < diffuse < light map < normal map`. Low-slot auxiliary passes remain in the raw pass data;
-they never serve as a fallback primary. A missing complete triple or competing primary triples
-returns `primary: null`, not a fabricated mapping. Format-only guesses require an unambiguous
-consecutive triple; explicit mod evidence may support nonconsecutive ordered slots. This is an
-Endfield-specific selection rule, not a D3D11 rule or verified ZZMI behavior.
+Candidates have inspectable instruction evidence: signed XY plus hemisphere reconstruction for
+normals, interpolated 2D RGB tint/transfer for color, and independent scalar channels entering
+normal/shadow-dependent arithmetic for packed lighting parameters. The last is a light-map
+candidate, not proof of the asset's original name. Primary candidates need bound comparison-shadow
+or cube sampling plus texture-normal or packed-lighting evidence; color-only lighting is insufficient
+to identify a main surface-material pass. Competing passes/role candidates remain unresolved. Static
+paths do not prove runtime execution, and game-origin draws may use shaders patched by XXMI.
+Unsupported control flow limits analysis; unaffected local evidence is retained. This is neither
+a complete shader decompiler nor a verified automatic INI repair.
 
-To explicitly export a complete JSON and Markdown table from the server directory:
+To explicitly export from the server directory:
 
 ```powershell
 python -m efmi_mcp.slot_table '<absolute version folder>' --efmi-root '<EFMI folder>'
 ```
 
-This writes `slot-table.json` and `slot-table.md` inside the supplied version folder; it only reads
-the optional EFMI installation. The query tool itself never exports these files.
+`slot-table.json` and `slot-table.md` contain only primary material rows. `slot-evidence.json`
+separately keeps all passes and complete instruction evidence. The optional EFMI root is read only,
+for comparison after native analysis. Cross-version shader alignment and INI repair remain pending.
 
 Texture slots written as `ps-tN = …` move when a game update changes a shader (all of them by one, or only those from some slot on). To be able to tell, for any mod, which slot a texture belongs in after an update, the probe keeps a record of the slots of every version by itself, like a cache that fills itself while the game is played.
 

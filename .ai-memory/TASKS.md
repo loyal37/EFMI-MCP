@@ -1,5 +1,10 @@
 # EFMI MCP — Tasks
 
+## T-016 update: native evidence before mod comparison (2026-10-18)
+
+- User withdrew the tentative slot-number/order observation as an inference rule. Rebuilt server 0.1.17 with native-only shader dataflow, independent later INI comparison and primary-only material output. No mod resource names, texture hashes, numeric thresholds, adjacency or format role guesses in native analysis.
+- Validation: 51 tests; offline snapshot all 13577 IB/count meshes / 240 PS analyzed, 111 primary candidates. 67 mod role declarations match candidates; 61 unresolved. More complete semantics/primary-pass identification for unresolved meshes remains work, not filled from mods. No live visual validation. Cross-version pairing and INI repair remain unimplemented.
+
 ## T-016 correction: primary slots (2026-10-18)
 
 - Fixed auxiliary-pass fallback and early sRGB misclassification in server 0.1.16. Current Endfield primary candidates require 10 < diffuse < lightmap < normal; unresolved meshes stay unknown. 48 tests pass, fixed-cache primary constraints verified for all 3885 meshes. Semantics remain hypotheses; no live visual verification this round. Migration alignment and INI fixer remain pending.

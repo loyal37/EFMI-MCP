@@ -208,6 +208,12 @@
 - Texture hashes never determine identity, role labels or migrations. The table labels material/global candidates by formats and suggests roles from mod resource names or formats/order, always as hypotheses. Unknown shader analysis and conflicting evidence withhold roles. Static references include conditional paths, not proof of pixel execution. Frame groups do not establish character identity across sessions.
 - Single-version slot tables do not complete shader-pair migration or authorize writing installed mod files. Those remain separate work.
 
-## D-026: Separate primary-material candidates from auxiliary passes
+## D-026: Separate primary-material candidates from auxiliary passes (withdrawn by D-027)
 
-- Date: 2026-10-18, explicit user correction. For the current Endfield table use 10 < diffuse < lightmap < normal as a primary-candidate constraint, not a universal D3D11 or ZZMI law. A low-slot auxiliary pass is never the primary fallback. Incomplete or competing mappings remain unknown, with raw bindings retained. Format-only inference conservatively requires one consecutive triple (BC5 strengthens normal evidence); explicit mod mappings can be nonconsecutive. Contradictory roles are rejected, not relabeled.
+- Date: 2026-10-18. Historical agent error: a tentative user impression was misread as a constraint. The withdrawn implementation used 10 < diffuse < lightmap < normal as a primary-candidate constraint, not a universal D3D11 or ZZMI law. A low-slot auxiliary pass is never the primary fallback. Incomplete or competing mappings remain unknown, with raw bindings retained. Format-only inference conservatively requires one consecutive triple (BC5 strengthens normal evidence); explicit mod mappings can be nonconsecutive. Contradictory roles are rejected, not relabeled.
+
+## D-027: Independent shader evidence, primary-only material output (supersedes D-026)
+
+- Date: 2026-10-18. User explicitly clarified their >10/order statement was an impression; turning it into a rule was the agent's error. Withdraw numeric/order/adjacency gates, format role assignments, cross-shader format voting and mod-guided inference.
+- Analyze each IB/count and observed shader/output pass before reading mod declarations. Preserve component-level sampling/consumption evidence and conditional alternatives. Infer only labeled candidates from local arithmetic; do not claim a complete decompiler or runtime execution. Primary identification needs surface-material and lighting evidence, not the most slots or agreement with a mod. Ambiguous/incomplete semantics remain explicit.
+- Mod names/bindings are a separate post-analysis cross-check; native digest must be invariant under changed or absent mods. Main material tables expose primary slots only; all other passes stay in a separate audit artifact/opt-in query. Texture hashes are informational only.

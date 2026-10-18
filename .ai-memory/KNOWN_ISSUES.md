@@ -186,3 +186,9 @@ The above comes from the README/sources of the time and should not be widened in
 ## Primary-material inference correction (2026-10-18)
 
 - Resolved: auxiliary t0/t1/t3 and unrelated early sRGB bindings were mislabeled as primary materials. Primary now requires complete high ordered slots; old offline static-reference checks did not catch the semantic mistake. Unknown rows are expected, especially auxiliary-only meshes. Current Endfield convention is user-supplied; format/name evidence still does not prove shader semantics or applicability to another game/version.
+
+## Evidence-first table limits and withdrawal of old rules (2026-10-18)
+
+- D-026's numeric/order rule and earlier mod/format inference are withdrawn; the user supplied an impression, not a constraint. Previous low-slot fixes did not establish correct material semantics.
+- Current shader analysis recognizes limited local arithmetic motifs, not authored texture semantics. Packed lighting-parameter candidates are not necessarily historically named LightMap assets; RGB tint can also describe effects. Comparison-shadow/cube plus surface-material evidence identifies candidates, not proven main passes. Multiple candidate mappings stay unresolved. 111 primary candidates out of 13577 cached IB/counts; many records are not complete character materials.
+- Game-origin draws may use XXMI-patched shaders. Static alternatives do not establish runtime branches. Loops, gather semantics and unsupported control flow limit inference; cached draws also lack complete rasterizer/depth/blend evidence for pass identity. No live visual validation this round. INI parser is not a full conditional/namespace interpreter, so comparisons are declarations, not runtime proof. Do not auto-repair INIs from this table.

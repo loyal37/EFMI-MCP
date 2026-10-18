@@ -41,8 +41,9 @@ per-shader sampling evidence and texture bindings in one batch. It filters stale
 caches shader analysis in memory; do not write helper scripts or export shaders just to look up slots. \
 efmi_get_shader pages through the cached assembly without writing files; save=true explicitly exports it.
 For saved per-version slot caches, use efmi_get_slot_table with the version folder and optional IB or mod-name \
-filter. It returns cached JSON without contacting the game or exporting files. Role labels are hypotheses; \
-they are not evidence for automatic slot migrations. Refresh after editing mod INIs.
+filter. It returns primary slots only, derived from native shader evidence before a separate mod comparison. \
+No slot-number/order, format or mod binding assigns a role. include_evidence/include_passes expose the audit. \
+Candidates are not automatic migration rules. Refresh after editing mod INIs; queries write no files.
 
 After changing mod INI/BUF files, use efmi_reload_and_capture. It brings the game to the front, has the probe \
 press the configured unmodified F10 inside the game, hands the focus back and retains a fresh frame. (The game \
