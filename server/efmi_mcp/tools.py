@@ -40,10 +40,10 @@ For texture slots use efmi_get_texture_slots after a full capture: select draw n
 per-shader sampling evidence and texture bindings in one batch. It filters stale bindings by default and \
 caches shader analysis in memory; do not write helper scripts or export shaders just to look up slots. \
 efmi_get_shader pages through the cached assembly without writing files; save=true explicitly exports it.
-For saved per-version slot caches, use efmi_get_slot_table with the version folder and optional IB or mod-name \
-filter. It returns primary slots only, derived from native shader evidence before a separate mod comparison. \
-No slot-number/order, format or mod binding assigns a role. include_evidence/include_passes expose the audit. \
-Candidates are not automatic migration rules. Refresh after editing mod INIs; queries write no files.
+For the probe's saved slot cache of a game version, use efmi_get_slot_table with the version folder and an IB \
+hash or group filter: per mesh the diffuse, light map and normal map slots of its main (lit) pass, decided from \
+the game's shader dataflow and texture formats with the basis of each, other lit passes that read the textures at \
+other slots, and whether the installed mods agree (they never change a slot). Queries write no files.
 
 After changing mod INI/BUF files, use efmi_reload_and_capture. It brings the game to the front, has the probe \
 press the configured unmodified F10 inside the game, hands the focus back and retains a fresh frame. (The game \

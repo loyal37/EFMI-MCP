@@ -50,7 +50,8 @@ def main() -> int:
         ("draw outputs and pipeline state (fake probe)", ["sandbox/draw_outputs_test.py"]),
         ("contents: slots, tools and the folder writer (fake probe)", ["sandbox/contents_unit_test.py"]),
         ("texture slots, shader evidence and memory cache (fake probe)", ["sandbox/texture_slots_test.py"]),
-        ("persistent slot table and file-free MCP queries", ["sandbox/slot_table_test.py"]),
+        ("shader dataflow behind the slot table", ["sandbox/shader_semantics_test.py"]),
+        ("slot table of a version: three slots per mesh, groups, mod check, MCP query", ["sandbox/slot_table_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")

@@ -159,54 +159,7 @@ Default results include slots referenced by instructions; `include_unused=true` 
 
 References include conditional paths and do not prove that every pixel executed the instruction. Material roles such as diffuse and normal are not assigned from fixed slot numbers: inspect the instruction evidence and use `efmi_get_shader first_line=<line>` for more context. This distinction follows the separate [resource declaration](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dcl-resource) and [texture sampling instruction](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/sample--sm4---asm-) in the D3D assembly format. A game update or another pass can change the slots.
 
-### Slot cache (probe 0.1.7 / 0.1.8)
-
-Server **0.1.18** provides `efmi_get_slot_table(folder=..., ib_hash=..., character=..., offset=0, limit=40)`
-from game-origin bindings and shader dataflow. The material table and default query show **primary
-slots only**. `include_evidence=true` returns sample instructions, coordinates, channel uses and
-output paths; `include_passes=true` also exposes the other passes for audit. Queries write no files.
-Repeated requests reuse the table and shader analyses; appended records reuse unchanged shaders.
-Refresh explicitly after editing installed mod INIs. Restart MCP; the probe is unchanged.
-
-Analysis runs for every IB/count and every VS/PS/output pass **before** reading any mod. It does
-not use register thresholds, slot ordering/adjacency, texture hashes, formats or mod bindings to
-assign roles. The former 0.1.15/0.1.16 format/mod/order rules are withdrawn: the user's observations
-were tentative, not constraints. Mod names label results afterwards; INI comparisons cannot fill
-unknown slots or alter the native analysis digest.
-
-Candidates have inspectable instruction evidence: signed XY plus hemisphere reconstruction for
-normals, interpolated 2D RGB tint/transfer for color, and independent scalar channels entering
-normal/shadow-dependent arithmetic for packed lighting parameters. The last is a light-map
-candidate, not proof of the asset's original name. Primary candidates need bound comparison-shadow
-or cube sampling plus texture-normal or packed-lighting evidence; color-only lighting is insufficient
-to identify a main surface-material pass. Each primary VS/PS/output variant keeps its own mapping;
-ambiguous roles remain unresolved without discarding independently supported roles or the whole IB. Static
-paths do not prove runtime execution, and game-origin draws may use shaders patched by XXMI.
-Unsupported control flow limits analysis; unaffected local evidence is retained. This is neither
-a complete shader decompiler nor a verified automatic INI repair.
-
-Schema 3 separates capture coverage from role recognition. `coverage` counts the whole cache;
-`matching_coverage` counts the filtered results before paging. Each row contains `primary_variants`,
-per-role candidate/ambiguity/binding status, and `primary_reason`. `primary` is only the shared mapping:
-a role appears there when every observed primary variant independently resolves to the same slot.
-Different main shaders can legitimately use different slots; a null shared mapping does not mean that
-the IB was not captured. INI comparisons that span different mappings require shader context.
-Raw IB/count totals are not character counts; changing geometry can generate many hashes, and the
-cache does not contain a character roster.
-
-To explicitly export from the server directory:
-
-```powershell
-python -m efmi_mcp.slot_table '<absolute version folder>' --efmi-root '<EFMI folder>'
-```
-
-`slot-table.json` and `slot-table.md` show primary slots only, retaining every captured IB/count key
-and explicit unresolved reasons. Markdown lists all mod-labelled keys, then other primary candidates;
-unlabelled keys without primary evidence remain in an expandable inventory. Label coverage distinguishes
-captured components, primary evidence, unresolved primary identity and INI keys not observed in the cache.
-Labels and unseen INI keys are not proof that every character or LOD was shown. `slot-evidence.json`
-separately keeps all passes and complete instruction evidence. The optional EFMI root is read only,
-for comparison after native analysis. Cross-version shader alignment and INI repair remain pending.
+### Slot cache (probe 0.1.7 to 0.1.9)
 
 Texture slots written as `ps-tN = …` move when a game update changes a shader (all of them by one, or only those from some slot on). To be able to tell, for any mod, which slot a texture belongs in after an update, the probe keeps a record of the slots of every version by itself, like a cache that fills itself while the game is played.
 
@@ -234,6 +187,28 @@ The probe command `slot_cache` changes the same settings in a running game (`ena
 **Cost.** A draw that was seen costs a few queries of the bound state and a table lookup in a frame looked at; the stack walk that tells `game` from `xxmi` is done only for new draws. Sandbox, about 3000 draws per frame with XXMI: no measurable difference of the frame time even when every frame is looked at, and 0.13–0.3 ms by the probe's own timing per frame looked at. Index data is read back only for new draws, asynchronously like a capture. Not yet measured in the real game.
 
 **Limits.** The three filters are LoyalTools' notion of a character draw (weight semantics, a bone pool at `vs-t0`) plus static index data; LoyalTools also asks for a 4096-constant per-object window and reads a flag from it, which the probe does not, since reading constants back costs a copy per draw. Characters posed on the CPU, whose index data the game rewrites, are left out, as the user asked. With `skinned_only=0` XXMI's own overlay is recorded too, and keeps adding lines. Slots are recorded as bound: a texture an earlier draw left at a slot this shader does not read is in the line as well, and can give the same pass a second line; the bytecode next to the records tells which slots a shader reads. Only vertex and pixel shader slots are recorded. A draw whose index data could not be read back (staging memory full) is tried again in a later frame. Lines are only ever added; a folder is never cleaned up by the probe.
+
+### Slot table of a version (server 0.1.19)
+
+`efmi_get_slot_table(folder=<probe dir>\slot-cache\<version>, ib_hash=..., character=..., offset=0, limit=40)` reads a version folder of the slot cache, without the game and without writing files. To write `slot-table.json` and `slot-table.md` into the folder, from the `server` directory:
+
+```powershell
+python -m efmi_mcp.slot_table '<version folder>'
+```
+
+One row per mesh, the IB hash and index count mods name it by, with the **diffuse, light map and normal map** slots of its main pass: the pass whose pixel shader samples shadows or an environment cube (the lit pass, not the G-buffer or depth pass). Every slot is decided from the game's own data, so that the table of a new version does not depend on mods written for the old one; the column "known from" says how:
+
+- **dataflow**: the arithmetic in the saved bytecode (`shader_semantics.py`): signed XY with the hemisphere reconstruction is a normal map, an interpolated RGB sample tinted on its way to the output a diffuse, independent channels feeding the lighting a light map. Only slots the shader reads and that hold a material texture count, so a texture an earlier draw left bound never enters.
+- **dataflow+position** / **dataflow+formats**: the dataflow names several slots for a role (a character's extra sRGB texture next to the diffuse, for instance); the one nearest to the other two, or, when they are equally near, the one the formats name.
+- **formats**: no dataflow; diffuse the first sRGB material texture, normal map the BC5 one, light map the linear one after the diffuse, all side by side.
+- **same shader**: the pixel shader's slots resolved on other meshes.
+- **order (uncertain)**: only the order of the slots.
+
+A material texture is a block-compressed 2D texture bound together with few other material textures; one bound with the materials of many characters (ramps, noise, lookup textures) is global and never one of the three. Variants of the main shader that read the same slots (XXMI's patched copy, for instance) are folded into the row, "(+n)". A mesh can also be drawn, in the same frame, by a second lit shader that reads the same textures at other slots (on 2026-10-18: `b0896a20` reads t16/t17/t18, `9c316f35` t18/t19/t20 for the same meshes); such a pass gets a row of its own, "other lit pass", since one `ps-tN` binding cannot suit both.
+
+The installed mods (`--efmi-root`, the EFMI folder by default, read only) only label and check: meshes a mod's `TextureOverride` names are grouped under that mod, and the "mod check" column compares the slots its INI binds resources named DiffuseMap, LightMap or NormalMap to; it never changes a slot. Meshes no mod names are grouped, without certainty, by the looked-at frame in which the probe first saw them (characters shown one after another appear frame by frame), or listed as a scene or unassigned. Sizes are the game's textures as first recorded; they stream in, so they can be smaller than up close.
+
+First table of version `1.6.3+5e73da7cad5e` (cache of probe 0.1.9, 2026-10-18 15:34, after the user browsed the characters and played in the open world): 3,788 meshes, 3,149 with at least one of the three slots; 18 mods name 149 of them. Of the slots the mods declare, 109 agree with the table, 2 are slots the table leaves open, none contradicts it; 14 agree but are wrong for another lit pass of the same mesh. Most of the other meshes are skinned monsters, NPCs and props of the open world, which the probe's filters accept as well.
 
 ### Coverage of live capture compared with FrameAnalysis
 

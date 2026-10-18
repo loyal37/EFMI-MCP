@@ -1,55 +1,84 @@
-"""Evidence-first per-IB slot tables; native analysis precedes optional mod comparison.
+"""The slot table of one game version, built from the probe's slot cache (T-016).
 
-No texture hash, register number/order, format or mod declaration assigns a role.
-MCP queries reuse memory; only the CLI explicitly exports files.
+A row is a mesh as mods name it, the index buffer region hash and the index count, with the three
+slots a mod binds for it: diffuse, light map and normal map. They are those of the mesh's main
+pass: the pass whose pixel shader samples shadows or an environment cube (the lit pass, not the
+G-buffer or depth pass), else the one with the most material textures. A pass whose shader is
+another variant of the main one (XXMI's patched copy, for instance) and reads the same three slots
+is folded into the row.
+
+Every slot is decided from the game's own data, so that the table of a new version does not lean
+on mods written for the old one:
+
+  dataflow           the saved bytecode's arithmetic (shader_semantics): signed XY with the
+                     hemisphere reconstruction for a normal map, an interpolated RGB sample tinted
+                     on its way to the output for a diffuse, independent channels feeding the
+                     lighting for a light map; only slots the shader reads and that hold a
+                     material texture count
+  dataflow+position  the dataflow names several slots for a role: the one nearest to the slots of
+                     the other roles
+  dataflow+format    several slots, equally near: the one the formats name
+  format             the formats of the material textures: diffuse the first sRGB one, normal map
+                     the BC5 one, light map the linear one after the diffuse, all side by side
+  shader             the same pixel shader resolved that role on other meshes
+  order              only the order of the slots says it (uncertain)
+
+The installed mods are compared afterwards: whether the slots a mod binds resources named
+DiffuseMap, LightMap or NormalMap to agree with the table. They never change a slot.
+
+A material texture is a block-compressed 2D texture bound together with few other material
+textures (a character's own); one bound together with the materials of many characters is global
+(ramps, noise, lookup textures) and never one of the three.
+
+Meshes are grouped by character where a mod names them; the rest, without certainty, by the
+looked-at frame in which the probe first saw them; what fits neither is listed on its own.
+
+    python -m efmi_mcp.slot_table <slot-cache version folder> [--efmi-root PATH]
+writes slot-table.json and slot-table.md into that folder.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
+import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
-
-from .shader import disassemble
-from .shader_semantics import analyze
+from typing import Callable
 
 ROLES = ("diffuse", "lightmap", "normal")
-SCHEMA = 3
-RULES = {
-    "analysis": "Per IB/count and VS/PS/output pass, from game-origin bindings and static component provenance only.",
-    "roles": "Candidates: diffuse = UV RGB tint/transfer; normal = signed XY and sqrt(1-dot(XY,XY)); "
-             "lightmap = independently used UV channels entering normal/shadow-dependent arithmetic. "
-             "Observed uses do not prove authored texture names or runtime paths.",
-    "primary": "Primary candidates require bound comparison-shadow/cube sampling plus texture-normal or packed-lighting evidence. "
-               "Color-only lighting passes are insufficient to identify a main surface-material pass. "
-               "No selection by slot number, count, format or mod agreement. Keep each primary pipeline variant; "
-               "ambiguity withholds only the affected role. A shared mapping requires agreement across variants.",
-    "mods": "INI labels and bindings are compared only after native analysis and cannot fill or change its roles.",
-    "limits": "Game-origin draws may use patched shaders. Conditional replacement slots remain explicit. "
-              "Loops/unsupported operations limit dataflow; only unaffected local role evidence is used.",
-}
+SCHEMA = 4
+GLOBAL_COOCCURRENCE = 60   # a texture bound together with more material textures than this is global
+SCENE_MESHES = 40          # a frame that brought more new meshes than this showed a whole scene
+GROUP_MIN = 3              # fewer new meshes than this in a frame are not taken for a character
+DEFAULT_EFMI = r"D:\XXMI-Launcher-Portable-v2.1.6\EFMI"
+SURE = ("dataflow", "dataflow+position", "dataflow+format", "format")
 
 
-def load_records(folder):
-    records = []
+# ---------------------------------------------------------------- input
+def load_records(folder: Path) -> list[dict]:
+    """The records of the current format; a line the probe is still writing is skipped."""
+    out = []
     with (Path(folder) / "draws.jsonl").open(encoding="utf-8") as stream:
         for line in stream:
+            if not line.startswith('{"fmt":2,'):
+                continue
             try:
-                r = json.loads(line)
+                out.append(json.loads(line))
             except ValueError:
-                continue  # The probe may be appending its final line.
-            if isinstance(r, dict) and r.get("fmt") == 2:
-                records.append(r)
-    return records
+                continue
+    return out
 
 
-def shader_reader(folder):
-    cache = {}
+def shader_reader(folder: Path) -> Callable[[str], dict]:
+    """The dataflow analysis of a pixel shader's saved bytecode, cached; {"error": ...} when there is none."""
+    from .shader import disassemble
+    from .shader_semantics import analyze
 
-    def read(ps):
+    cache: dict[str, tuple] = {}
+
+    def read(ps: str) -> dict:
         path = Path(folder) / "shaders" / f"{ps}-ps.bin"
         try:
             stat = path.stat()
@@ -58,366 +87,486 @@ def shader_reader(folder):
             signature = None
         if ps not in cache or cache[ps][0] != signature:
             try:
-                if not re.fullmatch(r"[0-9a-fA-F]{16}", ps):
-                    raise ValueError("missing or invalid pixel shader hash")
+                if not re.fullmatch(r"[0-9a-f]{16}", ps or ""):
+                    raise ValueError("no pixel shader hash")
                 result = analyze(disassemble(path.read_bytes()))
             except (OSError, ValueError) as e:
-                result = {"resources": {}, "error": str(e), "limitations": ["shader analysis unavailable"]}
+                result = {"resources": {}, "error": str(e)}
             cache[ps] = signature, result
         return cache[ps][1]
+
     return read
 
 
-def _shape(view):
-    return {k: view[k] for k in ("kind", "format", "view_format", "view_dim", "w", "h", "mips", "array", "stride") if k in view}
+def _block_texture(view: dict) -> bool:
+    return view.get("kind") == "tex2d" and str(view.get("format", "")).upper().startswith("BC") and bool(view.get("hash"))
 
 
-def _pass(records, analysis):
-    first, resources = records[0], analysis["resources"]
-    known = "error" not in analysis
-    bound = defaultdict(list)
+def texture_classes(records: list[dict]) -> dict[str, str]:
+    """material / global for every block-compressed texture the game bound."""
+    seen_with: dict[str, set] = defaultdict(set)
     for r in records:
-        for v in r.get("ps_srv", []):
-            bound[v["slot"]].append(v)
-    slots = []
-    for slot in sorted(set(bound) | set(resources)):
-        info = resources.get(slot)
-        if known and info is None:
+        hashes = {v["hash"] for v in r.get("ps_srv", []) if _block_texture(v)}
+        for h in hashes:
+            seen_with[h] |= hashes - {h}
+    return {h: ("global" if len(s) > GLOBAL_COOCCURRENCE else "material") for h, s in seen_with.items()}
+
+
+# ---------------------------------------------------------------- passes
+def _slot_entry(view: dict, classes: dict[str, str], info: dict | None) -> dict:
+    entry = {"slot": view["slot"], "class": classes.get(view.get("hash"), "engine") if _block_texture(view) else "engine",
+             "kind": view.get("kind")}
+    for key in ("format", "w", "h", "mips", "size", "stride", "hash"):
+        if view.get(key) is not None:
+            entry["texture" if key == "hash" else key] = view[key]
+    if info is not None:
+        entry["candidates"] = list(info.get("role_candidates", []))
+    return entry
+
+
+def _passes(records: list[dict], classes: dict[str, str], reader: Callable[[str], dict]) -> list[dict]:
+    """One per pixel shader the mesh is drawn with; the slots it reads that something is bound to."""
+    by_ps: dict[str, list[dict]] = defaultdict(list)
+    for r in records:
+        by_ps[r.get("ps") or "-"].append(r)
+    passes = []
+    for ps, recs in sorted(by_ps.items()):
+        analysis = reader(ps) if ps != "-" else {"resources": {}, "error": "no pixel shader"}
+        known = "error" not in analysis
+        resources = analysis.get("resources", {})
+        slots: dict[int, dict] = {}
+        differs = set()
+        for r in recs:
+            for view in r.get("ps_srv", []):
+                if known and view["slot"] not in resources:
+                    continue                 # bound, but this shader does not read it (left by an earlier draw)
+                entry = _slot_entry(view, classes, resources.get(view["slot"]))
+                old = slots.get(view["slot"])
+                if old and (old.get("format"), old.get("kind")) != (entry.get("format"), entry.get("kind")):
+                    differs.add(view["slot"])
+                slots.setdefault(view["slot"], entry)
+        lit = any(q.get("comparison") or q.get("dimension") == "texturecube"
+                  for s, info in resources.items() if s in slots for q in info.get("samples", []))
+        first = recs[0]
+        item = {"ps": ps, "vs": first.get("vs"), "targets": first.get("rt", []), "depth": first.get("ds"),
+                "reads_known": known, "lit": lit, "slots": [slots[s] for s in sorted(slots)]}
+        if known:
+            item["read_but_unbound"] = sorted(s for s in resources if s not in slots)
+        if differs:
+            item["differs_between_records"] = sorted(differs)
+        passes.append(item)
+    return passes
+
+
+# ---------------------------------------------------------------- roles, from the game's own data
+def _fits(role: str, fmt: str | None) -> bool:
+    f = (fmt or "").upper()
+    if role == "diffuse":
+        return f.endswith("_SRGB")
+    return bool(f) and not f.endswith("_SRGB") and "FLOAT" not in f and not f.startswith("BC6H")
+
+
+def _roles_from_formats(slots: list[dict]) -> tuple[dict[str, int | None], str]:
+    material = [s for s in slots if s["class"] == "material"]
+    diffuse = next((s["slot"] for s in material if str(s.get("format", "")).upper().endswith("_SRGB")), None)
+    after = [s for s in material if diffuse is None or s["slot"] > diffuse]
+    normal = next((s["slot"] for s in after if str(s.get("format", "")).upper().startswith("BC5")), None)
+    linear = [s["slot"] for s in after if s["slot"] != normal and _fits("lightmap", s.get("format"))]
+    lightmap = linear[0] if linear else None
+    basis = "format"
+    if normal is None and len(linear) >= 2:
+        lightmap, normal = linear[0], linear[1]
+        basis = "order"
+    found = [x for x in (diffuse, lightmap, normal) if x is not None]
+    if found and max(found) - min(found) > len(found) - 1:
+        basis = "order"                          # not side by side: a shader with more material textures
+    return {"diffuse": diffuse, "lightmap": lightmap, "normal": normal}, basis
+
+
+def _native_roles(p: dict) -> tuple[dict[str, int | None], dict[str, str]]:
+    material = [s for s in p["slots"] if s["class"] == "material"]
+    chosen: dict[str, int] = {}
+    basis: dict[str, str] = {}
+    candidates = {r: [s["slot"] for s in material if r in s.get("candidates", [])] for r in ROLES}
+    for role in ROLES:
+        if len(candidates[role]) == 1:
+            chosen[role], basis[role] = candidates[role][0], "dataflow"
+    for role in ROLES:
+        if role in chosen or len(candidates[role]) < 2 or not chosen:
             continue
-        views = bound.get(slot, [])
-        shapes = {json.dumps(_shape(v), sort_keys=True): _shape(v) for v in views}
-        slots.append({"slot": slot, "bound_records": len(views), "observed_views": list(shapes.values()),
-                      "texture_hashes": sorted({v["hash"] for v in views if v.get("hash")}),
-                      "reference": "static" if info else "unknown",
-                      "role_candidates": info["role_candidates"] if info else [],
-                      "evidence_lines": sorted({n for paths in (info or {}).get("evidence", {}).values()
-                                                 for path in paths for n in path["lines"]}),
-                      "direct_2d_inputs": (info or {}).get("direct_2d_inputs", [])})
-    by_slot = {s["slot"]: s for s in slots}
-    roles, candidates = {}, {}
+        free = [c for c in candidates[role] if c not in chosen.values()]
+        distance = {c: min(abs(c - a) for a in chosen.values()) for c in free}
+        if distance:
+            best = min(distance.values())
+            nearest = [c for c, d in distance.items() if d == best]
+            if len(nearest) == 1:
+                chosen[role], basis[role] = nearest[0], "dataflow+position"
+    guess, how = _roles_from_formats(p["slots"])
     for role in ROLES:
-        eligible = [s for s in slots if role in s["role_candidates"] and s["bound_records"]]
-        candidates[role] = [s["slot"] for s in eligible]
-        only = eligible[0] if len(eligible) == 1 else None
-        stable = only and only["bound_records"] == len(records) and len({
-            (v.get("kind"), v.get("view_dim"), v.get("view_format") or v.get("format"))
-            for v in only["observed_views"]}) == 1
-        roles[role] = {"slot": only["slot"], "basis": "shader_dataflow_candidate"} if stable else None
-    lighting = [s for s, info in resources.items() if by_slot.get(s, {}).get("bound_records")
-                and any(q["comparison"] or q["dimension"] == "texturecube" for q in info["samples"])]
-    outputs = sorted({o for i in resources.values() for o in i["output_components"]})
-    category = ("analysis_unknown" if not known else "depth_or_discard" if not first.get("rt") else
-                "lighting_candidate" if lighting and (candidates["diffuse"] or candidates["normal"]) else
-                "material_outputs" if candidates["normal"] else "color_or_effect" if candidates["diffuse"] else "unresolved")
-    return {"ps": first.get("ps"), "vs": first.get("vs"), "targets": first.get("rt", []), "depth": first.get("ds"),
-            "observations": len(records), "reads_known": known, "category": category, "slots": slots,
-            "roles": roles, "role_candidates": candidates, "lighting_evidence_slots": lighting,
-            "output_components": outputs, "limitations": analysis.get("limitations", []),
-            "unbound_references": [s["slot"] for s in slots if not s["bound_records"]]}
+        g = guess[role]
+        if role in chosen or g is None or g in chosen.values():
+            continue
+        if not candidates[role]:
+            chosen[role], basis[role] = g, how
+        elif g in candidates[role] and how == "format":
+            chosen[role], basis[role] = g, "dataflow+format"   # the formats settle a tie of the dataflow
+    return {r: chosen.get(r) for r in ROLES}, basis
 
 
-def primary_of(passes):
-    """Only roles independently resolved to the same slot in every primary variant."""
-    candidates = _primary_passes(passes)
-    roles = {}
-    for role in ROLES:
-        slots = {(p["roles"][role] or {}).get("slot") for p in candidates}
-        roles[role] = candidates[0]["roles"][role] if len(slots) == 1 and None not in slots else None
-    if not any(roles.values()):
+def _assign_roles(passes_of: dict[tuple, list[dict]]) -> None:
+    every = [p for passes in passes_of.values() for p in passes]
+    for p in every:
+        p["_slots"], p["_basis"] = _native_roles(p)
+    # A pixel shader reads the same slots for every mesh: what its clear cases give stands for the rest.
+    clear: dict[str, Counter] = defaultdict(Counter)
+    for p in every:
+        if all(p["_basis"].get(r) in SURE for r in ROLES if p["_slots"][r] is not None) and any(p["_slots"].values()):
+            clear[p["ps"]][tuple(p["_slots"][r] for r in ROLES)] += 1
+    for p in every:
+        if p["ps"] in clear:
+            shared = dict(zip(ROLES, clear[p["ps"]].most_common(1)[0][0]))
+            by_slot = {s["slot"]: s for s in p["slots"]}
+            for role in ROLES:
+                slot = shared[role]
+                if slot is None or p["_basis"].get(role) in SURE:
+                    continue
+                if slot in by_slot and by_slot[slot]["class"] == "material" and _fits(role, by_slot[slot].get("format")) \
+                        and slot not in [p["_slots"][r] for r in ROLES if r != role]:
+                    p["_slots"][role], p["_basis"][role] = slot, "shader"
+        by_slot = {s["slot"]: s for s in p["slots"]}
+        p["roles"] = {}
+        for role in ROLES:
+            slot = p["_slots"][role]
+            p["roles"][role] = None if slot is None else {
+                **{k: by_slot[slot][k] for k in ("slot", "format", "w", "h") if k in by_slot[slot]},
+                "basis": p["_basis"][role]}
+        del p["_slots"], p["_basis"]
+
+
+def _triple(p: dict) -> tuple:
+    return tuple((p["roles"][r] or {}).get("slot") for r in ROLES)
+
+
+def _main(passes: list[dict], users: Counter) -> dict | None:
+    """The main pass, the variants that read the same three slots, and other lit passes that read
+    at least two of the three elsewhere (a mesh can be drawn twice in a frame by lit shaders whose
+    slots differ; one ps-tN binding cannot suit both)."""
+    with_roles = [p for p in passes if any(p["roles"].values())]
+    if not with_roles:
         return None
-    return {"roles": roles, "pixel_shaders": sorted({p["ps"] for p in candidates}),
-            "basis": "per-role agreement across observed primary pipeline candidates"}
+    main = max(with_roles, key=lambda p: (p["lit"], sum(1 for s in p["slots"] if s["class"] == "material"),
+                                           sum(1 for v in p["roles"].values() if v), users[p["ps"]], len(p["slots"]), p["ps"]))
+    others: dict[tuple, dict] = {}
+    also = []
+    for p in with_roles:
+        if p is main or p["lit"] != main["lit"]:
+            continue
+        if _triple(p) == _triple(main):
+            also.append(p["ps"])
+        elif sum(1 for v in p["roles"].values() if v) >= 2:
+            entry = others.setdefault(_triple(p), {"ps": p["ps"], "also_ps": [], "roles": p["roles"]})
+            if p["ps"] != entry["ps"]:
+                entry["also_ps"].append(p["ps"])
+    return {"ps": main["ps"], "also_ps": sorted(also), "targets": main["targets"], "lit": main["lit"],
+            "roles": main["roles"], "other_passes": [others[k] for k in sorted(others, key=str)]}
 
 
-def _primary_passes(passes):
-    return [p for p in passes if p["category"] == "lighting_candidate"
-            and (p["role_candidates"]["normal"] or p["role_candidates"]["lightmap"])]
-
-
-def primary_variants_of(passes):
-    """Compact primary-only evidence; never replace an ambiguous role with an INI guess."""
-    variants = []
-    for p in _primary_passes(passes):
-        status = {r: "candidate" if p["roles"][r] else
-                  "ambiguous" if len(p["role_candidates"][r]) > 1 else
-                  "unstable_binding" if p["role_candidates"][r] else "no_role_evidence" for r in ROLES}
-        variants.append({**{k: p[k] for k in ("ps", "vs", "targets", "depth", "roles", "role_candidates")},
-                         "role_status": status})
-    return variants
-
-
-def primary_state(passes, variants):
-    if not variants:
-        reason = ("shader_analysis_unavailable" if any(not p["reads_known"] for p in passes) else
-                  "only_depth_passes_observed" if all(not p["targets"] for p in passes) else
-                  "color_only_lighting_evidence" if any(p["category"] == "lighting_candidate" for p in passes) else
-                  "no_primary_lighting_evidence" if any(p["category"] == "material_outputs" for p in passes) else
-                  "no_primary_material_evidence")
-        return "unresolved", reason
-    signatures = {tuple((tuple(v["role_candidates"][r]), (v["roles"][r] or {}).get("slot"))
-                        for r in ROLES) for v in variants}
-    if len(signatures) > 1:
-        return "shader_variants", "per_pipeline_mappings"
-    issues = {s for v in variants for s in v["role_status"].values()} & {"ambiguous", "unstable_binding"}
-    if issues:
-        status = "partial" if any(any(v["roles"].values()) for v in variants) else "ambiguous"
-        return status, "ambiguous_roles" if "ambiguous" in issues else "unstable_bindings"
-    return "candidate", "dataflow_candidates"
-
-
-def coverage(rows):
-    return {"observed_meshes": len(rows),
-            "primary_evidence_meshes": sum(bool(r["primary_variants"]) for r in rows),
-            "primary_variant_rows": sum(len(r["primary_variants"]) for r in rows),
-            "shared_mapping_meshes": sum(r["primary"] is not None for r in rows),
-            "status_counts": dict(sorted(Counter(r["primary_status"] for r in rows).items())),
-            "reason_counts": dict(sorted(Counter(r["primary_reason"] for r in rows).items())),
-            "note": "Counts are observed IB/count keys, not character counts or a complete roster."}
-
-
-def build(folder, reader=None):
-    """Native-only computation: deliberately accepts no mod root, names or role map."""
+# ---------------------------------------------------------------- the table
+def build(folder: Path, names: dict | None = None, reader: Callable[[str], dict] | None = None,
+          declared: dict | None = None) -> dict:
+    """names: (ib, count) -> [(mod, section)]; declared: (ib, count) -> role -> slots a mod binds.
+    Neither changes a slot: names group the rows, declared is compared afterwards."""
     folder = Path(folder)
-    records = [r for r in load_records(folder) if r.get("origin") == "game" and r.get("ib_state") == "ok" and r.get("ib")]
+    records = [r for r in load_records(folder) if r.get("origin") == "game" and r.get("ib")]
     reader = reader or shader_reader(folder)
-    analyses = {ps: reader(ps) for ps in sorted({r.get("ps") or "-" for r in records})}
-    meshes = defaultdict(list)
+    names, declared = names or {}, declared or {}
+    classes = texture_classes(records)
+
+    meshes: dict[tuple, list[dict]] = defaultdict(list)
     for r in records:
         meshes[(r["ib"], r["index_count"])].append(r)
-    rows = []
-    for (ib, count), observations in sorted(meshes.items()):
-        groups = defaultdict(list)
-        for r in observations:
-            groups[(r.get("ps") or "-", r.get("vs"), tuple(r.get("rt", [])), r.get("ds"))].append(r)
-        passes = [_pass(rs, analyses[k[0]]) for k, rs in sorted(groups.items(), key=lambda kv: str(kv[0]))]
-        primary = primary_of(passes)
-        variants = primary_variants_of(passes)
-        status, reason = primary_state(passes, variants)
-        rows.append({"ib": ib, "index_count": count, "records": len(observations), "passes": passes,
-                     "primary": primary, "primary_variants": variants, "primary_status": status, "primary_reason": reason,
-                     "first_observed_frame": min(r["frame"] for r in observations)})
+    first_frame = {m: min(r["frame"] for r in rs) for m, rs in meshes.items()}
+    passes_of = {m: _passes(rs, classes, reader) for m, rs in meshes.items()}
+    _assign_roles(passes_of)
+    users = Counter(p["ps"] for passes in passes_of.values() for p in passes)
+
+    def row(m: tuple) -> dict:
+        main = _main(passes_of[m], users)
+        out = {"ib": m[0], "index_count": m[1], "first_frame": first_frame[m], "main": main}
+        if m in names:
+            out["mod_sections"] = sorted({f"{mod}: {section}" for mod, section in names[m]})
+        if m in declared and main:
+            out["mod_check"] = {}
+            for role, slots in sorted(declared[m].items()):
+                mine = (main["roles"].get(role) or {}).get("slot")
+                other = [o["ps"] for o in main["other_passes"]
+                         if (o["roles"].get(role) or {}).get("slot") is not None and set(slots) != {o["roles"][role]["slot"]}]
+                out["mod_check"][role] = {"mod": sorted(slots), "table": mine,
+                                          "agrees": mine is not None and set(slots) == {mine},
+                                          "wrong_for_other_passes": other}
+        if main is None:
+            p = passes_of[m]
+            out["why_none"] = ("no pixel shader analysis" if not any(q["reads_known"] for q in p) else
+                               "depth passes only" if all(not q["targets"] for q in p) else
+                               "no material texture read")
+        out["passes"] = passes_of[m]
+        return out
+
+    known: dict[str, list[tuple]] = defaultdict(list)
+    for m in meshes:
+        for mod in sorted({mod for mod, _ in names.get(m, [])}):
+            known[mod].append(m)
+    named = {m for ms in known.values() for m in ms}
+
+    by_frame: dict[int, list[tuple]] = defaultdict(list)
+    for m, f in first_frame.items():
+        by_frame[f].append(m)
+    probable: dict[str, list[tuple]] = defaultdict(list)
+    groups, scenes, unassigned = [], [], []
+    for f in sorted(by_frame):
+        ms = by_frame[f]
+        rest = sorted(m for m in ms if m not in named)
+        mods_here = {mod for m in ms if m in named for mod, _ in names[m]}
+        if not rest:
+            continue
+        if len(mods_here) == 1 and len(ms) <= SCENE_MESHES:
+            probable[next(iter(mods_here))].extend(rest)
+        elif not mods_here and GROUP_MIN <= len(ms) <= SCENE_MESHES:
+            groups.append({"first_frame": f, "meshes": [row(m) for m in rest]})
+        elif len(ms) > SCENE_MESHES or mods_here:
+            scenes.append({"first_frame": f, "mods_in_frame": sorted(mods_here), "meshes": [row(m) for m in rest]})
+        else:
+            unassigned.extend(rest)
+
+    characters = [{"name": mod,
+                   "meshes": [row(m) for m in sorted(known[mod], key=lambda m: (first_frame[m], m))],
+                   "probably_also": [row(m) for m in sorted(probable.get(mod, []))]}
+                  for mod in sorted(known, key=str.lower)]
     try:
         version = json.loads((folder / "version.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         version = {}
-    digest = hashlib.sha256(json.dumps({"rows": rows, "shaders": analyses}, sort_keys=True).encode()).hexdigest()
-    return {"schema": SCHEMA, "version": version.get("key", folder.name), "generated_unix": int(time.time()),
-            "records": len(records), "meshes": len(rows), "rows": rows, "shaders": analyses,
-            "native_analysis_sha256": digest, "rules": RULES, "coverage": coverage(rows),
-            "mod_comparison": {"performed": False, "meshes": {}, "unseen_components": []}}
+    table = {"schema": SCHEMA, "version": version.get("key", folder.name), "label": version.get("label"),
+             "generated_unix": int(time.time()), "records": len(records), "meshes": len(meshes),
+             "rules": {"main_pass": "samples shadows or an environment cube, else most material textures",
+                       "slots": "dataflow > dataflow+position > format > shader > order (uncertain); mods only compared",
+                       "material_texture": f"block-compressed 2D, bound with at most {GLOBAL_COOCCURRENCE} other material textures",
+                       "probable_group": f"first seen in the same looked-at frame, {GROUP_MIN} to {SCENE_MESHES} new meshes"},
+             "characters": characters, "probable_groups": groups, "scenes": scenes,
+             "unassigned": [row(m) for m in sorted(unassigned, key=lambda m: (first_frame[m], m))]}
+    table["counts"] = counts(table)
+    return table
 
 
-def compare_mods(table, root):
-    """Return a separate comparison, without changing native rows/shaders/digest."""
-    if root is None:
-        return table
-    from .slot_table_mods import mod_names, mod_roles
-    names, assigned = mod_names(root), mod_roles(root)
-    comparison, seen = {}, set()
-    for row in table["rows"]:
-        key = row["ib"], row["index_count"]
-        seen.add(key)
-        if key not in names:
+def all_rows(table: dict):
+    """(group label, row) for every mesh of the table."""
+    for c in table["characters"]:
+        for r in c["meshes"]:
+            yield c["name"], r
+        for r in c["probably_also"]:
+            yield f"{c['name']} (probably)", r
+    for g in table["probable_groups"]:
+        for r in g["meshes"]:
+            yield f"frame {g['first_frame']} (probably one character)", r
+    for g in table["scenes"]:
+        for r in g["meshes"]:
+            yield f"frame {g['first_frame']} (scene)", r
+    for r in table["unassigned"]:
+        yield "unassigned", r
+
+
+def counts(table: dict) -> dict:
+    rows = [r for _, r in all_rows(table)]
+    basis = Counter(b["basis"] for r in rows if r["main"] for b in r["main"]["roles"].values() if b)
+    checks = [c for r in rows for c in r.get("mod_check", {}).values()]
+    return {"meshes": len(rows), "with_slots": sum(r["main"] is not None for r in rows),
+            "with_other_lit_passes": sum(bool(r["main"] and r["main"]["other_passes"]) for r in rows),
+            "named_by_mods": sum(len(c["meshes"]) for c in table["characters"]),
+            "slot_basis": dict(sorted(basis.items())),
+            "mod_checks": {"agree": sum(c["agrees"] for c in checks), "differ": sum(not c["agrees"] for c in checks),
+                           "wrong_for_another_lit_pass": sum(bool(c["wrong_for_other_passes"]) for c in checks)}}
+
+
+# ---------------------------------------------------------------- Markdown
+BASIS = {"dataflow": "dataflow", "dataflow+position": "dataflow+position", "dataflow+format": "dataflow+formats",
+         "format": "formats",
+         "shader": "same shader", "order": "order (uncertain)"}
+
+
+def _role_text(main: dict, role: str) -> str:
+    r = main["roles"].get(role)
+    if not r:
+        return "-"
+    size = f" {r['w']}x{r['h']}" if r.get("w") and r.get("h") else ""
+    return f"t{r['slot']} {r.get('format', '')}{size}".rstrip()
+
+
+def _basis_text(main: dict) -> str:
+    seen = []
+    for role in ROLES:
+        b = (main["roles"].get(role) or {}).get("basis")
+        if b and BASIS[b] not in seen:
+            seen.append(BASIS[b])
+    return ", ".join(seen) or "-"
+
+
+def _check_text(row: dict) -> str:
+    check = row.get("mod_check")
+    if not check:
+        return ""
+    wrong = [f"{role} mod t{','.join(map(str, c['mod']))}" for role, c in check.items() if not c["agrees"]]
+    if wrong:
+        return "differs: " + "; ".join(wrong)
+    if any(c["wrong_for_other_passes"] for c in check.values()):
+        return "agrees; wrong for the other lit pass"
+    return "agrees"
+
+
+def _rows(rows: list[dict], lines: list[str]) -> None:
+    lines.append("| IB | indices | pixel shader | diffuse | light map | normal map | known from | mod check |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    for r in rows:
+        m = r["main"]
+        if m is None:
             continue
-        checks = []
-        native = (row["primary"] or {}).get("roles", {})
-        for role, bound in assigned.get(key, {}).items():
-            expected = (native.get(role) or {}).get("slot")
-            variants = [{"ps": v["ps"], "vs": v["vs"], "targets": v["targets"], "depth": v["depth"],
-                         "slot": (v["roles"][role] or {}).get("slot"), "status": v["role_status"][role]}
-                        for v in row["primary_variants"]]
-            differing = len({v["slot"] for v in variants if v["slot"] is not None}) > 1
-            checks.append({"role": role, "ini_slots": sorted(bound), "native_candidate": expected,
-                           "native_variants": variants,
-                           "status": "requires_shader_context" if differing else "unresolved_native" if expected is None else
-                                     "matches_candidate" if bound == {expected} else "differs_from_candidate"})
-        comparison[f"{key[0]}/{key[1]}"] = {"mod_sections": [{"mod": n, "section": s} for n, s in names[key]], "checks": checks}
-    return {**table, "mod_comparison": {"performed": True, "meshes": comparison,
-             "unseen_components": [{"ib": k[0], "index_count": k[1], "mods": sorted({n for n, _ in names[k]})}
-                                   for k in sorted(names.keys() - seen)],
-             "note": "INI resource names describe author intent, not shader evidence. Conditions/namespaces are not fully evaluated. "
-                     "Agreement is a cross-check, not proof; no INI changes were made."}}
+        ps = f"`{m['ps']}`" + (f" (+{len(m['also_ps'])})" if m["also_ps"] else "")
+        lines.append(f"| `{r['ib']}` | {r['index_count']} | {ps} | {_role_text(m, 'diffuse')} | "
+                     f"{_role_text(m, 'lightmap')} | {_role_text(m, 'normal')} | {_basis_text(m)} | {_check_text(r)} |")
+        for o in m["other_passes"]:
+            ps = f"`{o['ps']}`" + (f" (+{len(o['also_ps'])})" if o["also_ps"] else "")
+            lines.append(f"| | | {ps} (other lit pass) | {_role_text(o, 'diffuse')} | {_role_text(o, 'lightmap')} | "
+                         f"{_role_text(o, 'normal')} | {_basis_text(o)} | |")
 
 
-def _labels(table, row):
-    m = table["mod_comparison"]["meshes"].get(f"{row['ib']}/{row['index_count']}", {})
-    return sorted({s["mod"] for s in m.get("mod_sections", [])})
-
-
-def material_row(table, row):
-    return {"ib": row["ib"], "index_count": row["index_count"], "primary": row["primary"],
-            "primary_variants": row["primary_variants"], "primary_status": row["primary_status"],
-            "primary_reason": row["primary_reason"], "labels": _labels(table, row)}
-
-
-def query(table, ib_hash="", character="", offset=0, limit=40, include_evidence=False, include_passes=False):
-    if offset < 0 or not 1 <= limit <= 200:
-        raise ValueError("offset must be nonnegative and limit must be between 1 and 200")
-    if ib_hash and not re.fullmatch(r"[0-9a-fA-F]{8}", ib_hash):
-        raise ValueError("ib_hash must be eight hexadecimal digits")
-    selected = [r for r in table["rows"] if (not ib_hash or r["ib"] == ib_hash.lower())
-                and (not character or any(character.lower() in n.lower() for n in _labels(table, r)))]
-    page = selected[offset:offset + limit]
-    comparisons = {f"{r['ib']}/{r['index_count']}": table["mod_comparison"]["meshes"][f"{r['ib']}/{r['index_count']}"]
-                   for r in page if f"{r['ib']}/{r['index_count']}" in table["mod_comparison"]["meshes"]}
-    shaders = {p["ps"] or "-" for r in page for p in r["passes"]}
-    evidence = {}
-    if include_evidence:
-        for s in sorted(shaders):
-            analysis = table["shaders"][s]
-            evidence[s] = {**analysis, "resources": {slot: {
-                **info, "reference_count": len(info["references"]), "references": info["references"][:3],
-                "sample_count": len(info["samples"]), "samples": info["samples"][:3],
-                "evidence": {k: paths[:2] for k, paths in info["evidence"].items()}}
-                for slot, info in analysis["resources"].items()},
-                "paging_note": "First three references/samples and two paths per evidence kind; full data in explicit CLI export."}
-    return {"schema": SCHEMA, "version": table["version"], "native_analysis_sha256": table["native_analysis_sha256"],
-            "matching_meshes": len(selected), "rows": page if include_passes else [material_row(table, r) for r in page],
-            "coverage": table["coverage"], "matching_coverage": coverage(selected),
-            "mod_comparison": comparisons,
-            "shader_evidence": evidence,
-            "next_offset": offset + limit if offset + limit < len(selected) else None, "rules": table["rules"],
-            "note": "Offline static evidence, no live visual/branch verification. No files written; refresh after INI edits."}
-
-
-def _role_text(primary, role):
-    item = (primary or {}).get("roles", {}).get(role)
-    if item:
-        return f"t{item['slot']} (candidate)"
-    candidates = (primary or {}).get("role_candidates", {}).get(role, [])
-    if candidates:
-        slots = ", ".join(f"t{s}" for s in candidates)
-        status = primary["role_status"][role].replace("_", " ")
-        return f"unresolved: {slots} ({status})"
-    return "unresolved"
-
-
-def to_markdown(table):
-    counts = table["coverage"]
-    lines = [f"# Slot evidence table {table['version']}", "",
-             f"{table['meshes']} IB/count meshes, {table['records']} game-origin records. "
-             "Every pass is analyzed independently before reading mods. Roles are dataflow candidates; "
-             "no register threshold/order, format, texture hash or mod binding assigns them. "
-             "Game-origin draws may use patched shaders. Missing roles are not filled from INIs.", "",
-             f"{counts['primary_evidence_meshes']} IB/count keys have primary-pass candidates "
-             f"({counts['primary_variant_rows']} pipeline variants). "
-             f"{table['meshes'] - counts['primary_evidence_meshes']} have unresolved primary-pass identity. "
-             "These are capture/analysis counts, not character counts. Every captured key appears below, "
-             "including unresolved entries. Unlabelled entries without primary evidence are in the expandable inventory.", "",
-             "Normal means signed-XY hemisphere reconstruction; diffuse means UV RGB tint/transfer reaching color output; "
-             "light map means a candidate packed lighting-parameter texture, not proof of its authored name. "
-             "Loop limitations and conditional alternatives are retained in JSON. "
-             "This table contains primary slots only. slot-evidence.json separately preserves every pass, "
-             "instruction line, sample coordinate, channel use and output for audit.", ""]
-    named, unnamed, unresolved = [], [], []
-    for row in table["rows"]:
-        (named if _labels(table, row) else unnamed if row["primary_variants"] else unresolved).append(row)
-    comparison = table["mod_comparison"]
-    if comparison["performed"]:
-        lines += ["## Capture coverage by label", "",
-                  "Names are attached only after native analysis. Unseen INI keys may be unobserved LODs, "
-                  "outdated hashes or other draws; they do not establish a missing character. "
-                  "A candidate is not live verification.", "",
-                  "| label | captured IB/count keys | primary evidence | primary unresolved | INI keys not observed |",
-                  "|---|---|---|---|---|"]
-        labels = sorted({n for r in named for n in _labels(table, r)} |
-                        {n for u in comparison["unseen_components"] for n in u["mods"]})
-        for label in labels:
-            members = [r for r in named if label in _labels(table, r)]
-            count = sum(bool(r["primary_variants"]) for r in members)
-            unseen = sum(label in u["mods"] for u in comparison["unseen_components"])
-            lines.append(f"| {_cell(label)} | {len(members)} | {count} | {len(members) - count} | {unseen} |")
-        lines.append("")
-    for title, rows in (("IBs named by mods (labels attached after analysis)", named), ("Other observed IBs", unnamed)):
-        lines += [f"## {title}", "", "Each line is one primary pipeline candidate. Distinct shader mappings are retained; "
-                  "an ambiguous role does not hide other roles or the IB. No auxiliary-pass slots are listed.", "",
-                  "| IB / indices | label | primary PS / VS | diffuse | light map | normal | status / reason |",
-                  "|---|---|---|---|---|---|---|"]
-        for row in rows:
-            labels = _cell(", ".join(_labels(table, row)))
-            for p in row["primary_variants"] or [None]:
-                shaders = f"`{p['ps']}` / `{p['vs']}`" if p else "unresolved"
-                reason = row["primary_reason"].replace("_", " ")
-                lines.append(f"| `{row['ib']}` / {row['index_count']} | {labels} | {shaders} | "
-                             f"{_role_text(p, 'diffuse')} | {_role_text(p, 'lightmap')} | {_role_text(p, 'normal')} | "
-                             f"{row['primary_status']}: {reason} |")
-        lines.append("")
-    if unresolved:
-        lines += ["## Captured but not identified as primary materials", "",
-                  "These unlabelled IBs are retained without assigning character identity or primary slots. "
-                  "Repeated dynamic geometry can create many distinct IB hashes. Full bindings remain in slot-evidence.json.", "",
-                  f"<details><summary>{len(unresolved)} captured IB/count keys with unresolved primary identity</summary>", "",
-                  "| IB / indices | reason |", "|---|---|"]
-        for row in unresolved:
-            lines.append(f"| `{row['ib']}` / {row['index_count']} | {row['primary_reason'].replace('_', ' ')} |")
-        lines += ["", "</details>", ""]
+def to_markdown(table: dict) -> str:
+    c = table["counts"]
+    lines = [f"# Slot table {table['version']}", "",
+             f"{c['meshes']} meshes from {table['records']} records of the probe's slot cache; {c['with_slots']} with "
+             "at least one of the three slots. Per mesh the main pass (the lit one) and its diffuse, light map and normal "
+             "map slots, decided from the game's own data: the shader's dataflow, else the formats of the material "
+             "textures, else the same shader on other meshes. The mod check compares the installed mods afterwards; "
+             "it never changes a slot. Sizes are the game's textures as first recorded (they stream in). "
+             "(+n) after a pixel shader: n variants with the same slots. An 'other lit pass' row: the mesh is also "
+             "drawn by a lit shader that reads these textures at other slots, which one ps-tN binding cannot suit. "
+             "Everything per pass is in slot-table.json.", ""]
+    lines.append("## Characters (named by a mod's INI)")
+    for ch in table["characters"]:
+        lines += ["", f"### {ch['name']}", ""]
+        _rows(ch["meshes"], lines)
+        if any(r["main"] for r in ch["probably_also"]):
+            lines += ["", "Probably the same character too (first seen in the same frame, not named by the mod):", ""]
+            _rows(ch["probably_also"], lines)
+    lines += ["", "## Not certain: groups first seen in the same frame (probably one character each)"]
+    for g in table["probable_groups"]:
+        if any(r["main"] for r in g["meshes"]):
+            lines += ["", f"### Frame {g['first_frame']} ({len(g['meshes'])} meshes)", ""]
+            _rows(g["meshes"], lines)
+    lines += ["", "## Not certain: whole scenes (many meshes at once, or next to a modded character)"]
+    for g in table["scenes"]:
+        if any(r["main"] for r in g["meshes"]):
+            extra = f", with {', '.join(g['mods_in_frame'])}" if g["mods_in_frame"] else ""
+            lines += ["", f"### Frame {g['first_frame']} ({len(g['meshes'])} meshes{extra})", ""]
+            _rows(g["meshes"], lines)
+    if any(r["main"] for r in table["unassigned"]):
+        lines += ["", "## Unassigned", ""]
+        _rows(table["unassigned"], lines)
+    none = [(label, r) for label, r in all_rows(table) if r["main"] is None]
+    if none:
+        lines += ["", f"## Meshes without these slots ({len(none)})", "", "| IB | indices | group | why |", "|---|---|---|---|"]
+        for label, r in none:
+            lines.append(f"| `{r['ib']}` | {r['index_count']} | {label} | {r['why_none']} |")
     return "\n".join(lines) + "\n"
 
 
-def _cell(text):
-    return text.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
-
-
-def export(table, folder):
-    folder = Path(folder)
-    material = {k: table[k] for k in ("schema", "version", "records", "meshes", "native_analysis_sha256", "rules", "mod_comparison", "coverage")}
-    material["rows"] = [material_row(table, r) for r in table["rows"]]
-    (folder / "slot-table.json").write_text(json.dumps(material, indent=1), encoding="utf-8")
-    (folder / "slot-table.md").write_text(to_markdown(table), encoding="utf-8")
-    (folder / "slot-evidence.json").write_text(json.dumps(table, indent=1), encoding="utf-8")
+# ---------------------------------------------------------------- MCP and command line
+def query(table: dict, ib_hash: str = "", character: str = "", offset: int = 0, limit: int = 40,
+          include_passes: bool = False, reader: Callable[[str], dict] | None = None,
+          include_evidence: bool = False) -> dict:
+    if offset < 0 or not 1 <= limit <= 200:
+        raise ValueError("offset must be 0 or more and limit between 1 and 200")
+    ib_hash = (ib_hash or "").strip().lower()
+    if ib_hash and not re.fullmatch(r"[0-9a-f]{8}", ib_hash):
+        raise ValueError("ib_hash must be 8 hex digits")
+    selected = [(label, r) for label, r in all_rows(table)
+                if (not ib_hash or r["ib"] == ib_hash) and (not character or character.lower() in label.lower())]
+    page = []
+    for label, r in selected[offset:offset + limit]:
+        item = {k: v for k, v in r.items() if k != "passes" or include_passes}
+        item["group"] = label
+        if include_evidence and reader and r["main"]:
+            analysis = reader(r["main"]["ps"])
+            item["evidence"] = {role: {k: v for k, v in analysis.get("resources", {}).get(slot["slot"], {}).items()
+                                       if k in ("role_candidates", "lighting_channels", "evidence", "output_components")}
+                                for role, slot in r["main"]["roles"].items() if slot}
+        page.append(item)
+    return {"schema": SCHEMA, "version": table["version"], "counts": table["counts"], "matching": len(selected),
+            "rows": page, "next_offset": offset + limit if offset + limit < len(selected) else None,
+            "rules": table["rules"]}
 
 
 class TableCache:
-    def __init__(self):
-        self.signature = None
-        self.table = None
-        self.folder = None
-        self.reader = None
+    """One version folder's table, built again when its records, shaders or the mods' INIs change."""
 
-    def get(self, folder, root=None, refresh=False):
+    def __init__(self):
+        self.key = None
+        self.table = None
+        self.reader = None
+        self.folder = None
+
+    def get(self, folder: Path, efmi_root: Path | None, refresh: bool = False) -> dict:
         folder = Path(folder).resolve()
         if folder != self.folder:
             self.folder, self.reader = folder, shader_reader(folder)
-        paths = [folder / "draws.jsonl", folder / "version.json", *sorted((folder / "shaders").glob("*-ps.bin"))]
-        signature = (str(folder), str(root), tuple((str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in paths if p.exists()))
-        if refresh or signature != self.signature:
-            native = build(folder, reader=self.reader)
-            table = compare_mods(native, root)
-            self.table, self.signature = table, signature
+        files = [folder / "draws.jsonl", folder / "version.json", *sorted((folder / "shaders").glob("*-ps.bin"))]
+        inis = sorted(Path(efmi_root).rglob("*.ini")) if efmi_root and Path(efmi_root).is_dir() else []
+        key = tuple((str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in files + inis if p.exists())
+        if refresh or key != self.key or self.table is None:
+            from .slot_table_mods import mod_names, mod_roles
+            self.table = build(folder, mod_names(efmi_root), self.reader, mod_roles(efmi_root))
+            self.key = key
         return self.table
 
 
-def register(server, session):
+def register(server, session) -> None:
     cache = TableCache()
 
     @server.tool("efmi_get_slot_table",
-                 "Read per-IB/per-pass shader dataflow evidence without contacting the game or writing files. "
-                 "Native analysis is independent of mods; INI bindings are compared afterwards. Roles remain candidates. "
-                 "Returns primary slots per pipeline variant, unresolved reasons and capture coverage by default; "
-                 "include_evidence/include_passes expose the audit. Refresh after INI edits.",
-                 {"folder": {"type": "string", "description": "Absolute version folder containing draws.jsonl and shaders."},
-                  "ib_hash": {"type": "string", "default": ""}, "character": {"type": "string", "default": ""},
+                 "The slot table of a game version from the probe's slot cache, without the game and without writing "
+                 "files: per mesh (IB hash and index count) the diffuse, light map and normal map slots of its main pass, "
+                 "decided from the game's own shader dataflow and texture formats, with what decided each and whether "
+                 "the installed mods agree. Filter by ib_hash or by group (mod name, 'probably', 'frame', 'unassigned'); "
+                 "include_passes adds every pass and slot read, include_evidence the dataflow behind the three slots.",
+                 {"folder": {"type": "string", "description": "the version folder: <probe dir>\\slot-cache\\<version>"},
+                  "ib_hash": {"type": "string", "default": ""},
+                  "character": {"type": "string", "default": "", "description": "part of the group label"},
                   "offset": {"type": "integer", "minimum": 0, "default": 0},
                   "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 40},
-                  "include_evidence": {"type": "boolean", "default": False},
                   "include_passes": {"type": "boolean", "default": False},
+                  "include_evidence": {"type": "boolean", "default": False},
                   "refresh": {"type": "boolean", "default": False}}, required=["folder"])
-    def efmi_get_slot_table(folder, ib_hash="", character="", offset=0, limit=40, include_evidence=False, include_passes=False, refresh=False):
-        return query(cache.get(Path(folder), session.efmi_root, refresh), ib_hash, character, offset, limit, include_evidence, include_passes)
+    def efmi_get_slot_table(folder, ib_hash="", character="", offset=0, limit=40, include_passes=False,
+                            include_evidence=False, refresh=False):
+        table = cache.get(Path(folder), session.efmi_root, refresh)
+        return query(table, ib_hash, character, offset, limit, include_passes, cache.reader, include_evidence)
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("folder")
-    parser.add_argument("--efmi-root", default="", help="Optional read-only mod comparison AFTER native analysis")
-    args = parser.parse_args(argv)
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="efmi_mcp.slot_table", description=__doc__.split("\n\n")[0])
+    ap.add_argument("folder", help="a version folder of the slot cache")
+    ap.add_argument("--efmi-root", default=DEFAULT_EFMI,
+                    help="the EFMI folder, read to group meshes by mod and to compare the mods' slots ('' for none)")
+    args = ap.parse_args(argv)
+    from .slot_table_mods import mod_names, mod_roles
     folder = Path(args.folder)
-    native = build(folder)
-    table = compare_mods(native, Path(args.efmi_root) if args.efmi_root else None)
-    export(table, folder)
-    print(f"{table['meshes']} meshes, {len(table['shaders'])} shaders; native digest {table['native_analysis_sha256']}")
+    root = Path(args.efmi_root) if args.efmi_root else None
+    table = build(folder, mod_names(root), declared=mod_roles(root))
+    (folder / "slot-table.json").write_text(json.dumps(table, indent=1), encoding="utf-8")
+    (folder / "slot-table.md").write_text(to_markdown(table), encoding="utf-8")
+    c = table["counts"]
+    print(f"{c['meshes']} meshes, {c['with_slots']} with slots; {len(table['characters'])} characters named by mods; "
+          f"slots from {c['slot_basis']}; mod checks {c['mod_checks']} -> {folder}")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

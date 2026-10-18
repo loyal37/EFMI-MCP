@@ -31,7 +31,7 @@ Once a target is chosen, a replacement swap chain created by another device is r
 | File | Responsibility |
 | --- | --- |
 | `server/run_server.py`, `efmi_mcp/__main__.py` | Entry point; arguments for the read-only EFMI root and the output directory |
-| `efmi_mcp/slot_table.py` | Native per-IB/pass analysis, primary-only pipeline variants and per-role uncertainty, explicit capture coverage, in-memory queries and exports; mod comparison runs afterwards |
+| `efmi_mcp/slot_table.py` | Slot table of a version from the slot cache: per mesh the diffuse / light map / normal map of the lit pass, decided from dataflow, formats and the same shader (basis per slot), other lit passes, groups by mod and first frame, mod check afterwards; MCP query with a rebuild-on-change cache, CLI export |
 | `efmi_mcp/shader_semantics.py` | Component provenance and local instruction evidence for color/normal/packed-lighting candidates; conditional alternatives and unsupported-flow limits remain explicit |
 | `efmi_mcp/slot_table_mods.py` | Read-only INI labels and bindings for post-analysis comparison; never an input to native role inference |
 | `efmi_mcp/mcp_stdio.py`, `tools.py` | MCP protocol, tool definitions, session and capture cache |
