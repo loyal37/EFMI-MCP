@@ -214,6 +214,53 @@ class ProbeClient:
         frames = json.loads(payload.decode("utf-8")) if payload else []
         return reply.get("frame", 0), frames
 
+    def live_summary(self, first: int = 0, last: int = 0, base_first: int = 0, base_last: int = 0,
+                     seconds: float = 0, base_seconds: float = 0, timeline: bool = True) -> tuple[int, dict]:
+        """A stretch of the stream added up per line (probe 0.1.10). Returns (current frame, summary).
+
+        The stretch is frames first..last (0: the oldest / newest kept) or, when ``seconds`` is set,
+        the last ``seconds`` of the stream, with ``base_seconds`` before them as the baseline.
+        summary["items"] rows: [type, origin, ib, ib_state, ib_res, ic, fi, vc, vs, ps, frames drawn
+        in, first frame, last frame, most draws, most instances, all draws, baseline frames].
+        """
+        reply, payload = self.request("live_summary", first=first, last=last, base_first=base_first,
+                                      base_last=base_last, seconds=seconds, base_seconds=base_seconds,
+                                      timeline=timeline)
+        summary = json.loads(payload.decode("utf-8")) if payload else {}
+        return reply.get("frame", 0), summary
+
+    def trigger_arm(self, ib: list[str] | None = None, shader: list[str] | None = None,
+                    new_pairs: bool = False, baseline_frames: int = 60, origin: str = "",
+                    min_count: int = 0, delay_frames: int = 0, expire_ms: int = 600000,
+                    capture: dict | None = None) -> dict:
+        """Arms the trigger (probe 0.1.10): the frame after the one where an index buffer hash or a
+        shader hash in the lists, or (new_pairs) a vertex/pixel shader pair not drawn during the
+        baseline, is drawn is recorded with the ``capture`` options of capture(). Returns its state."""
+        fields: dict[str, Any] = {"new_pairs": new_pairs, "baseline_frames": baseline_frames,
+                                  "origin": origin, "min_count": min_count,
+                                  "delay_frames": delay_frames, "expire_ms": expire_ms}
+        if ib:
+            fields["ib"] = list(ib)
+        if shader:
+            fields["shader"] = list(shader)
+        if capture:
+            fields["capture"] = capture
+        return self.request("trigger_arm", **fields)[0].get("trigger", {})
+
+    def trigger_wait(self, wait_ms: int = 0) -> tuple[dict, dict | None, bytes]:
+        """Waits up to wait_ms (at most 120000) while the trigger watches or records. Returns
+        (state, capture document or None, blob); the capture comes back once."""
+        reply, payload = self.request("trigger_wait", wait_ms=wait_ms)
+        state = reply.get("trigger", {})
+        if "json_len" not in reply:
+            return state, None, b""
+        jlen = reply["json_len"]
+        return state, json.loads(payload[:jlen].decode("utf-8")), payload[jlen:]
+
+    def trigger_cancel(self) -> dict:
+        """Disarms the trigger; a capture it recorded and nobody collected is dropped."""
+        return self.request("trigger_cancel")[0].get("trigger", {})
+
     def reload_key(self, focus: bool = True, restore_focus: bool = True, max_hold_ms: int = 3000) -> dict:
         """Has the probe press XXMI's reload key (F10) inside the game. Returns its receipt."""
         reply, _ = self.request("reload_key", focus=focus, restore_focus=restore_focus, max_hold_ms=max_hold_ms)

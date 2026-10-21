@@ -1,6 +1,13 @@
 # EFMI MCP — Known issues
 
-> Last updated: 2026-10-09.
+> Last updated: 2026-10-21.
+
+## LIMIT-011: Boundaries of the history and the trigger (probe 0.1.10)
+
+- The trigger records the frame after the one it saw (more with `delay_frames`, a few frames for a "late" IB); an effect drawn in a single frame is then gone: the result warns and the history still has its line.
+- Index data the CPU rewrites every frame has no hash ("volatile"): such draws are found by shader only. Lines are told apart by IB hash, range and shaders; two passes of one mesh are two lines, and things moving in and out of view are "transient" too (compare with a baseline).
+- While a trigger watches, every frame is recorded at minimal detail and the slot cache waits; one trigger at a time; it ends with its client. The stream keeps at most 3600 frames.
+- Scope of verification: the sandbox only (with and without XXMI); not yet in the real game.
 
 ## LIMIT-009: The EFMI tool set cannot be taken as ZZMI support as it stands (read-only assessment of 2026-10-09)
 

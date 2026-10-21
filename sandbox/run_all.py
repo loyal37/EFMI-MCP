@@ -13,6 +13,8 @@
      against XXMI's own frame analysis of the same calls; and the tools on top (fake probe)
  11. slot cache: the records the probe writes by itself, against a full capture; dedupe across frames,
      folders and restarts
+ 12. continuous mode over time and the trigger, against a mesh the sandbox draws now and then; the
+     history and trigger tools on top (fake probe)
 """
 from __future__ import annotations
 
@@ -40,6 +42,7 @@ def main() -> int:
         ("contents: what each call saw", ["sandbox/contents_test.py"]),
         ("contents: byte for byte against XXMI's frame analysis", ["sandbox/contents_parity_test.py"]),
         ("slot cache written by the probe", ["sandbox/slot_cache_test.py"]),
+        ("continuous mode history and trigger", ["sandbox/continuous_test.py"]),
         ("multiple-device regression", ["sandbox/multidevice_test.py"]),
         ("multiple-device regression with XXMI", ["sandbox/multidevice_test.py", "--xxmi"]),
         ("MCP server end to end", ["sandbox/mcp_test.py"]),
@@ -52,6 +55,7 @@ def main() -> int:
         ("texture slots, shader evidence and memory cache (fake probe)", ["sandbox/texture_slots_test.py"]),
         ("shader dataflow behind the slot table", ["sandbox/shader_semantics_test.py"]),
         ("slot table of a version: three slots per mesh, groups, mod check, MCP query", ["sandbox/slot_table_test.py"]),
+        ("continuous mode history and trigger tools (fake probe)", ["sandbox/continuous_unit_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")

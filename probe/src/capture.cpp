@@ -271,6 +271,8 @@ struct Capture {
 	uint32_t wait_frames = 0;        // frames spent waiting for the GPU
 	bool     live = false;           // part of the continuous stream, summarised and dropped
 	bool     slots = false;          // looked at for the slot cache: only draws not seen before
+	bool     trig = false;           // started by the trigger
+	uint32_t trig_id = 0;            // ... of this arming; for a stream frame, the arming that watched it
 	uint32_t slot_new = 0;           // draws recorded for it
 	uint32_t slot_deferred = 0;      // new draws left for a later frame (over max_new)
 	std::vector<SlotSeen> slot_keys; // one per recorded draw
@@ -300,28 +302,99 @@ static CaptureRequest g_req;
 static std::shared_ptr<Capture> g_req_result;
 static HANDLE g_req_done = nullptr;
 
-// Continuous mode.
-struct LiveItem {
+// Continuous mode. A line of a frame is a mesh/shader combination; the same line comes back in
+// frame after frame, so it is kept once (LiveKey, by number) and a frame holds only its counts.
+// Keys are built from zeroed memory and have no padding, so that they compare and hash as bytes.
+struct LiveKey {
 	uint8_t  type, origin;
 	bool     has_ib_hash, has_ib_res, has_vs, has_ps;
-	uint8_t  ib_state;
+	uint8_t  ib_state, unused8;
 	uint32_t ib_hash, ib_res_hash;
-	uint32_t index_count, first_index, vertex_count;
+	uint32_t index_count, first_index, vertex_count, unused32;
 	uint64_t vs, ps;
-	uint32_t draws, instances;
+	bool operator==(const LiveKey& o) const { return memcmp(this, &o, sizeof(LiveKey)) == 0; }
 };
+static_assert(sizeof(LiveKey) == 48, "LiveKey must not have padding");
+struct LiveKeyHash {
+	size_t operator()(const LiveKey& k) const
+	{
+		const uint8_t* p = (const uint8_t*)&k;
+		uint64_t h = 1469598103934665603ull;
+		for (size_t i = 0; i < sizeof(LiveKey); i++)
+			h = (h ^ p[i]) * 1099511628211ull;
+		return (size_t)h;
+	}
+};
+struct LiveEntry { uint32_t key, draws, instances; };
 struct LiveFrame {
 	uint32_t frame = 0;
 	uint64_t t_ms = 0;
 	uint32_t draws = 0, game_draws = 0, volatile_skips = 0;
 	double   cost_ms = 0;
 	uint64_t arena_bytes = 0;
-	std::vector<LiveItem> items;
+	std::vector<LiveEntry> items;
 };
 static LiveConfig g_live;                         // guarded by g_lock
 static volatile LONG g_live_on = 0;
 static uint64_t g_live_generation = 1;           // guarded by g_lock
 static std::deque<LiveFrame> g_live_ring;         // guarded by g_lock
+static std::vector<LiveKey> g_live_keys;          // guarded by g_lock
+static std::unordered_map<LiveKey, uint32_t, LiveKeyHash> g_live_key_ids;   // guarded by g_lock
+static uint32_t g_live_key_gen = 0;               // changes when key numbers are reassigned (g_lock)
+static size_t g_live_compact_at = 1u << 18;       // key count at which unused keys are dropped (g_lock)
+
+static void live_clear_locked()
+{
+	g_live_ring.clear();
+	g_live_keys.clear();
+	g_live_keys.shrink_to_fit();
+	g_live_key_ids.clear();
+	g_live_key_gen++;
+	g_live_compact_at = 1u << 18;
+}
+
+// Trigger (see "trigger" below). What the client reads is guarded by g_lock; the rest belongs to
+// the render thread, which takes the client's commands over at frame boundaries (g_trig_cmd).
+enum { TRIG_OFF = 0, TRIG_ARMING, TRIG_BASELINE, TRIG_ARMED, TRIG_FIRED, TRIG_RECORDING, TRIG_DONE, TRIG_EXPIRED };
+static const char* k_trig_state[] = { "off", "arming", "baseline", "armed", "fired", "recording", "done", "expired" };
+enum { TCMD_NONE = 0, TCMD_ARM, TCMD_CANCEL };
+struct TrigFire {
+	uint32_t frame = 0, draw = 0, count = 0;
+	uint8_t  type = 0, origin = 0;
+	bool     late = false;           // seen only once the frame's index data had been read back
+	std::string what;                // "ib", "shader" or "new pair"
+	uint32_t ib = 0;
+	uint64_t shader = 0, vs = 0, ps = 0;
+};
+static int g_trig_state = TRIG_OFF;
+static int g_trig_cmd = TCMD_NONE;
+static TriggerSpec g_trig_next;                  // handed over with TCMD_ARM
+static uint32_t g_trig_id = 0;                   // one per arming
+static uint32_t g_trig_armed_frame = 0, g_trig_watched = 0, g_trig_capture_frame = 0;
+static uint64_t g_trig_armed_ms = 0, g_trig_fired_ms = 0;
+static TrigFire g_trig_fire;
+static std::shared_ptr<Capture> g_trig_result;
+static HANDLE g_trig_event = nullptr;            // set when it stops waiting: done, expired or cancelled
+static volatile LONG g_trig_watch = 0;           // the draws being issued are compared
+
+static TriggerSpec t_spec;                       // render thread from here on
+static uint32_t t_id = 0;
+static int t_phase = TRIG_OFF;                   // BASELINE, ARMED, FIRED, RECORDING or OFF
+static std::unordered_set<uint32_t> t_ib;
+static std::unordered_set<uint64_t> t_shader;
+static std::unordered_set<uint64_t> t_pairs;     // vertex/pixel shader pairs drawn during the baseline
+static uint32_t t_baseline_left = 0, t_fire_frame = 0;
+
+static void trig_cancel_locked()
+{
+	if (g_trig_state == TRIG_OFF)
+		return;
+	g_trig_cmd = TCMD_CANCEL;
+	g_trig_state = TRIG_OFF;
+	g_trig_result.reset();
+	InterlockedExchange(&g_trig_watch, 0);
+	SetEvent(g_trig_event);
+}
 
 static volatile LONG g_client_gen = 0;           // bumped whenever a client (re)connects
 static LONG g_seen_client_gen = 0;
@@ -355,6 +428,7 @@ void cap_init()
 {
 	InitializeCriticalSection(&g_lock);
 	g_req_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	g_trig_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 	QueryPerformanceFrequency(&g_qpf);
 }
 
@@ -524,7 +598,8 @@ void cap_client_disconnected()
 	EnterCriticalSection(&g_lock);
 	InterlockedExchange(&g_live_on, 0);
 	g_live_generation++;
-	g_live_ring.clear();
+	live_clear_locked();
+	trig_cancel_locked();                // nobody is left to collect what it would capture
 	InterlockedExchange(&g_tracking, 0);
 	InterlockedIncrement(&g_client_gen);
 	LeaveCriticalSection(&g_lock);
@@ -2295,6 +2370,89 @@ static void slot_push(const Capture& c)
 	slot_note_frame(c.record_ms + c.finalize_ms, c.slot_new, c.slot_deferred);
 }
 
+// ================================================================ trigger, as draws are issued
+static uint64_t pair_key(uint64_t vs, uint64_t ps)
+{
+	return vs * 0x9E3779B97F4A7C15ull ^ (ps + 0x632BE59BD9B4E019ull + (vs << 6) + (vs >> 2));
+}
+
+static bool trig_counts(const DrawRec& d)
+{
+	if (t_spec.origin >= 0 && d.caller.origin != t_spec.origin)
+		return false;
+	return !t_spec.min_count || (d.a.index_count ? d.a.index_count : d.a.vertex_count) >= t_spec.min_count;
+}
+
+// Draw d of capture c showed what the trigger waits for. `late`: only the index data read back
+// after the frame showed it, so the frame to record is the one starting now.
+static void trig_fire(const Capture* c, const DrawRec& d, const char* what, uint32_t ib, uint64_t shader, bool late)
+{
+	t_phase = TRIG_FIRED;
+	t_fire_frame = late ? (uint32_t)g_frame_no - 1 : (uint32_t)g_frame_no;
+	InterlockedExchange(&g_trig_watch, 0);
+	TrigFire f;
+	f.frame = c->frame;
+	f.draw = d.index;
+	f.type = d.type;
+	f.origin = d.caller.origin;
+	f.count = d.a.index_count ? d.a.index_count : d.a.vertex_count;
+	f.late = late;
+	f.what = what;
+	f.ib = ib;
+	f.shader = shader;
+	if (d.shaders[ST_VS] >= 0 && c->shaders[d.shaders[ST_VS]].known) f.vs = c->shaders[d.shaders[ST_VS]].info.hash;
+	if (d.shaders[ST_PS] >= 0 && c->shaders[d.shaders[ST_PS]].known) f.ps = c->shaders[d.shaders[ST_PS]].info.hash;
+	EnterCriticalSection(&g_lock);
+	if (g_trig_state == TRIG_ARMED && g_trig_id == t_id) {
+		g_trig_state = TRIG_FIRED;
+		g_trig_fire = f;
+		g_trig_fired_ms = now_ms();
+	}
+	LeaveCriticalSection(&g_lock);
+}
+
+// Called for every draw recorded while the trigger watches. Shader hashes are known as the draw is
+// issued; an index buffer hash only when it was remembered from an earlier frame (otherwise see
+// trig_check_late).
+static void trig_check(const Capture* c, const DrawRec& d)
+{
+	if ((t_phase != TRIG_BASELINE && t_phase != TRIG_ARMED) || !trig_counts(d))
+		return;
+	uint64_t sh[ST_COUNT] = {};
+	for (int s = 0; s < ST_COUNT; s++)
+		if (d.shaders[s] >= 0 && c->shaders[d.shaders[s]].known)
+			sh[s] = c->shaders[d.shaders[s]].info.hash;
+	if (t_phase == TRIG_BASELINE) {
+		if (t_spec.new_pairs && sh[ST_VS] && sh[ST_PS])
+			t_pairs.insert(pair_key(sh[ST_VS], sh[ST_PS]));
+		return;
+	}
+	for (int s = 0; s < ST_COUNT; s++)
+		if (sh[s] && t_shader.count(sh[s]))
+			return trig_fire(c, d, "shader", 0, sh[s], false);
+	if (!t_ib.empty() && d.ib_region >= 0) {
+		const CapRegion& r = c->regions[d.ib_region];
+		if ((r.state == RS_CACHED || r.state == RS_OK) && t_ib.count(r.hash))
+			return trig_fire(c, d, "ib", r.hash, 0, false);
+	}
+	if (t_spec.new_pairs && sh[ST_VS] && sh[ST_PS] && !t_pairs.count(pair_key(sh[ST_VS], sh[ST_PS])))
+		trig_fire(c, d, "new pair", 0, 0, false);
+}
+
+// A watched frame whose index data has been read back: hashes seen for the first time.
+static void trig_check_late(const Capture* c)
+{
+	if (t_phase != TRIG_ARMED || t_ib.empty() || c->trig_id != t_id)
+		return;
+	for (const DrawRec& d : c->draws) {
+		if (d.ib_region < 0 || !trig_counts(d))
+			continue;
+		const CapRegion& r = c->regions[d.ib_region];
+		if (r.state == RS_OK && t_ib.count(r.hash))
+			return trig_fire(c, d, "ib", r.hash, 0, true);
+	}
+}
+
 void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
                  void* indirect_buffer, uint32_t indirect_offset, const CallerInfo& caller)
 {
@@ -2508,14 +2666,54 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 		}
 	}
 
+	if (g_trig_watch && !c->trig)
+		trig_check(c, d);
 	c->draws.push_back(d);
 	c->record_ms += qpc_ms() - t0;
 }
 
 // ================================================================ continuous mode
+static uint32_t live_key_id_locked(const LiveKey& k)
+{
+	auto it = g_live_key_ids.find(k);
+	if (it != g_live_key_ids.end())
+		return it->second;
+	uint32_t id = (uint32_t)g_live_keys.size();
+	g_live_keys.push_back(k);
+	g_live_key_ids.emplace(k, id);
+	return id;
+}
+
+// Once there are many keys, the ones no kept frame uses are dropped and the rest renumbered.
+static void live_compact_keys_locked()
+{
+	if (g_live_keys.size() < g_live_compact_at)
+		return;
+	std::vector<uint32_t> remap(g_live_keys.size(), UINT32_MAX);
+	std::vector<LiveKey> keys;
+	for (LiveFrame& f : g_live_ring) {
+		for (LiveEntry& e : f.items) {
+			if (remap[e.key] == UINT32_MAX) {
+				remap[e.key] = (uint32_t)keys.size();
+				keys.push_back(g_live_keys[e.key]);
+			}
+			e.key = remap[e.key];
+		}
+	}
+	g_live_keys.swap(keys);
+	g_live_key_ids.clear();
+	for (uint32_t i = 0; i < (uint32_t)g_live_keys.size(); i++)
+		g_live_key_ids.emplace(g_live_keys[i], i);
+	g_live_key_gen++;
+	// Most of them may still be in use: then wait until as many again have come.
+	g_live_compact_at = (std::max)((size_t)1u << 18, g_live_keys.size() * 2);
+}
+
 // Collapses a frame into one line per distinct mesh/shader combination.
 static void live_push(const Capture& c)
 {
+	if (!g_live_on)
+		return;                          // a frame only the trigger watched
 	LiveFrame f;
 	f.frame = c.frame;
 	f.t_ms = c.t_end;
@@ -2524,6 +2722,8 @@ static void live_push(const Capture& c)
 	f.cost_ms = c.record_ms + c.finalize_ms;
 	f.arena_bytes = c.arena_bytes;
 
+	struct Line { LiveKey key; uint32_t draws, instances; };
+	std::vector<Line> lines;
 	typedef std::tuple<uint8_t, uint8_t, int32_t, int32_t, uint32_t, uint32_t, uint32_t, int32_t, int32_t> Key;
 	std::map<Key, size_t> index;
 	for (const DrawRec& d : c.draws) {
@@ -2534,24 +2734,26 @@ static void live_push(const Capture& c)
 		auto it = index.find(k);
 		uint32_t inst = d.a.instance_count ? d.a.instance_count : 1;
 		if (it != index.end()) {
-			f.items[it->second].draws++;
-			f.items[it->second].instances += inst;
+			lines[it->second].draws++;
+			lines[it->second].instances += inst;
 			continue;
 		}
-		LiveItem li = {};
+		Line l;
+		memset(&l, 0, sizeof(l));
+		LiveKey& li = l.key;
 		li.type = d.type;
 		li.origin = d.caller.origin;
 		li.index_count = d.a.index_count;
 		li.first_index = d.a.first_index;
 		li.vertex_count = d.a.vertex_count;
-		li.draws = 1;
-		li.instances = inst;
 		li.ib_state = 0xff;
 		if (d.ib_region >= 0) {
 			const CapRegion& r = c.regions[d.ib_region];
 			li.ib_state = r.state;
 			li.has_ib_hash = (r.state == RS_OK || r.state == RS_CACHED);
-			li.ib_hash = r.hash;
+			li.ib_hash = li.has_ib_hash ? r.hash : 0;
+			if (r.state == RS_CACHED)
+				li.ib_state = RS_OK;     // the same line whether the hash was read back or remembered
 		}
 		if (d.ib_res >= 0 && c.res[d.ib_res].known) {
 			li.has_ib_res = true;
@@ -2565,8 +2767,10 @@ static void live_push(const Capture& c)
 			li.has_ps = true;
 			li.ps = c.shaders[d.shaders[ST_PS]].info.hash;
 		}
-		index.emplace(k, f.items.size());
-		f.items.push_back(li);
+		l.draws = 1;
+		l.instances = inst;
+		index.emplace(k, lines.size());
+		lines.push_back(l);
 	}
 
 	EnterCriticalSection(&g_lock);
@@ -2577,10 +2781,24 @@ static void live_push(const Capture& c)
 		LeaveCriticalSection(&g_lock);
 		return;
 	}
+	std::unordered_map<uint32_t, size_t> at;     // two regions of a frame can come to the same line
+	f.items.reserve(lines.size());
+	for (const Line& l : lines) {
+		uint32_t id = live_key_id_locked(l.key);
+		auto it = at.find(id);
+		if (it != at.end()) {
+			f.items[it->second].draws += l.draws;
+			f.items[it->second].instances += l.instances;
+			continue;
+		}
+		at.emplace(id, f.items.size());
+		f.items.push_back({ id, l.draws, l.instances });
+	}
 	g_live_ring.push_back(std::move(f));
 	uint32_t keep = g_live.keep_frames ? g_live.keep_frames : 1;
 	while (g_live_ring.size() > keep)
 		g_live_ring.pop_front();
+	live_compact_keys_locked();
 	LeaveCriticalSection(&g_lock);
 }
 
@@ -2592,13 +2810,26 @@ void cap_live_configure(const LiveConfig& cfg)
 	if (!g_live.every) g_live.every = 1;
 	if (!cfg.enable) {
 		g_live_generation++;
-		g_live_ring.clear();
+		live_clear_locked();
 	}
 	InterlockedExchange(&g_live_on, cfg.enable ? 1 : 0);
 	LeaveCriticalSection(&g_lock);
 }
 
 static const char* k_region_state[] = { "pending", "ok", "oob", "skipped", "ok", "volatile" };
+
+// [type, origin, ib hash, ib state, ib resource hash, index count, first index, vertex count, vs, ps]
+static void live_key_json(JsonW& w, const LiveKey& k)
+{
+	w.u(k.type);
+	w.str(origin_name(k.origin));
+	if (k.has_ib_hash) w.hex32(k.ib_hash); else w.null();
+	if (k.ib_state == 0xff) w.null(); else w.str(k_region_state[k.ib_state]);
+	if (k.has_ib_res) w.hex32(k.ib_res_hash); else w.null();
+	w.u(k.index_count); w.u(k.first_index); w.u(k.vertex_count);
+	if (k.has_vs) w.hex64(k.vs); else w.null();
+	if (k.has_ps) w.hex64(k.ps); else w.null();
+}
 
 void cap_live_get(uint32_t since_frame, uint32_t max_frames, std::string* json)
 {
@@ -2623,17 +2854,10 @@ void cap_live_get(uint32_t since_frame, uint32_t max_frames, std::string* json)
 		// [type, origin, ib hash, ib state, ib resource hash, index count, first index,
 		//  vertex count, vs, ps, draws, instances]
 		w.key("items"); w.begin_arr();
-		for (const LiveItem& li : f.items) {
+		for (const LiveEntry& e : f.items) {
 			w.begin_arr();
-			w.u(li.type);
-			w.str(origin_name(li.origin));
-			if (li.has_ib_hash) w.hex32(li.ib_hash); else w.null();
-			if (li.ib_state == 0xff) w.null(); else w.str(k_region_state[li.ib_state]);
-			if (li.has_ib_res) w.hex32(li.ib_res_hash); else w.null();
-			w.u(li.index_count); w.u(li.first_index); w.u(li.vertex_count);
-			if (li.has_vs) w.hex64(li.vs); else w.null();
-			if (li.has_ps) w.hex64(li.ps); else w.null();
-			w.u(li.draws); w.u(li.instances);
+			live_key_json(w, g_live_keys[e.key]);
+			w.u(e.draws); w.u(e.instances);
 			w.end_arr();
 		}
 		w.end_arr();
@@ -2641,6 +2865,164 @@ void cap_live_get(uint32_t since_frame, uint32_t max_frames, std::string* json)
 	}
 	LeaveCriticalSection(&g_lock);
 	w.end_arr();
+	*json += w.s;
+}
+
+// The first kept frame numbered `frame` or later.
+static size_t live_find_locked(uint32_t frame)
+{
+	size_t lo = 0, hi = g_live_ring.size();
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		if (g_live_ring[mid].frame < frame) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo;
+}
+
+struct LiveAgg {
+	uint32_t present = 0, first = 0, last = 0, max_draws = 0, max_inst = 0, base = 0;
+	uint64_t draws = 0;
+};
+struct LiveTick { uint32_t frame; uint64_t t_ms; uint32_t draws, game_draws, lines; };
+
+// Adds up a stretch of the stream. The frames are gone through a few dozen at a time, each time
+// under the lock, so that a long stretch does not hold up the render thread.
+void cap_live_summary(const LiveQuery& q, std::string* json)
+{
+	uint32_t first = q.first, last = q.last, bfirst = q.base_first, blast = q.base_last;
+	uint32_t ring_first = 0, ring_last = 0;
+	size_t ring_n = 0;
+	EnterCriticalSection(&g_lock);
+	const uint32_t gen = g_live_key_gen;
+	if (!g_live_ring.empty()) {
+		ring_first = g_live_ring.front().frame;
+		ring_last = g_live_ring.back().frame;
+		ring_n = g_live_ring.size();
+		if (q.seconds > 0) {
+			const uint64_t t_end = g_live_ring.back().t_ms;
+			const uint64_t span = (uint64_t)(q.seconds * 1000.0);
+			size_t i = g_live_ring.size() - 1;
+			while (i > 0 && t_end - g_live_ring[i - 1].t_ms <= span)
+				i--;
+			first = g_live_ring[i].frame;
+			last = ring_last;
+			bfirst = blast = 0;
+			if (q.base_seconds > 0 && i > 0) {
+				const uint64_t t0 = g_live_ring[i].t_ms;
+				const uint64_t bspan = (uint64_t)(q.base_seconds * 1000.0);
+				size_t j = i;
+				while (j > 0 && t0 - g_live_ring[j - 1].t_ms <= bspan)
+					j--;
+				if (j < i) {
+					bfirst = g_live_ring[j].frame;
+					blast = g_live_ring[i - 1].frame;
+				}
+			}
+		}
+	}
+	LeaveCriticalSection(&g_lock);
+	if (!first) first = ring_first;
+	if (!last) last = ring_last;
+
+	std::unordered_map<uint32_t, LiveAgg> agg;
+	std::vector<LiveTick> ticks;
+	uint32_t n_window = 0, n_base = 0;
+	uint64_t t_first = 0, t_last = 0;
+	bool stale = false;
+	auto pass = [&](uint32_t from, uint32_t to, bool window) {
+		uint32_t next = from;
+		for (;;) {
+			EnterCriticalSection(&g_lock);
+			if (g_live_key_gen != gen) {
+				stale = true;
+				LeaveCriticalSection(&g_lock);
+				return;
+			}
+			size_t i = live_find_locked(next);
+			bool end = false;
+			for (int n = 0; n < 64; n++, i++) {
+				if (i >= g_live_ring.size() || g_live_ring[i].frame > to) {
+					end = true;
+					break;
+				}
+				const LiveFrame& f = g_live_ring[i];
+				if (window) {
+					if (!n_window++)
+						t_first = f.t_ms;
+					t_last = f.t_ms;
+					if (q.timeline && ticks.size() < 20000)
+						ticks.push_back({ f.frame, f.t_ms, f.draws, f.game_draws, (uint32_t)f.items.size() });
+					for (const LiveEntry& e : f.items) {
+						LiveAgg& a = agg[e.key];
+						if (!a.present++)
+							a.first = f.frame;
+						a.last = f.frame;
+						if (e.draws > a.max_draws) a.max_draws = e.draws;
+						if (e.instances > a.max_inst) a.max_inst = e.instances;
+						a.draws += e.draws;
+					}
+				} else {
+					n_base++;
+					for (const LiveEntry& e : f.items)
+						agg[e.key].base++;
+				}
+				next = f.frame + 1;
+			}
+			LeaveCriticalSection(&g_lock);
+			if (end)
+				return;
+		}
+	};
+	if (ring_n && bfirst && blast >= bfirst)
+		pass(bfirst, blast, false);
+	if (ring_n && !stale && last >= first)
+		pass(first, last, true);
+
+	JsonW w;
+	w.begin_obj();
+	w.key("ring"); w.begin_obj();
+	w.ku("first", ring_first); w.ku("last", ring_last); w.ku("frames", (uint64_t)ring_n);
+	w.end_obj();
+	w.key("window"); w.begin_obj();
+	w.ku("first", first); w.ku("last", last); w.ku("frames", n_window);
+	w.ku("t_first", t_first); w.ku("t_last", t_last);
+	w.end_obj();
+	w.key("baseline"); w.begin_obj();
+	w.ku("first", bfirst); w.ku("last", blast); w.ku("frames", n_base);
+	w.end_obj();
+	// [type, origin, ib hash, ib state, ib resource hash, index count, first index, vertex count, vs, ps,
+	//  frames drawn in, first frame, last frame, most draws, most instances, all draws, baseline frames]
+	w.key("items"); w.begin_arr();
+	EnterCriticalSection(&g_lock);
+	if (g_live_key_gen != gen)
+		stale = true;
+	if (!stale) {
+		for (const auto& kv : agg) {
+			const LiveAgg& a = kv.second;
+			if (!a.present)
+				continue;
+			w.begin_arr();
+			live_key_json(w, g_live_keys[kv.first]);
+			w.u(a.present); w.u(a.first); w.u(a.last); w.u(a.max_draws); w.u(a.max_inst);
+			w.u(a.draws); w.u(a.base);
+			w.end_arr();
+		}
+	}
+	LeaveCriticalSection(&g_lock);
+	w.end_arr();
+	w.kb("stale", stale);
+	if (q.timeline) {
+		// [frame, t_ms, draws, game draws, lines]
+		w.key("timeline"); w.begin_arr();
+		for (const LiveTick& t : ticks) {
+			w.begin_arr();
+			w.u(t.frame); w.u(t.t_ms); w.u(t.draws); w.u(t.game_draws); w.u(t.lines);
+			w.end_arr();
+		}
+		w.end_arr();
+	}
+	w.end_obj();
 	*json += w.s;
 }
 
@@ -2734,7 +3116,29 @@ static void complete_capture(std::shared_ptr<Capture> c)
 		return;
 	}
 	if (c->live) {
+		trig_check_late(c.get());
 		live_push(*c);
+		return;
+	}
+	if (c->trig) {
+		EnterCriticalSection(&g_lock);
+		bool keep = g_trig_state == TRIG_RECORDING && g_trig_id == c->trig_id;
+		if (keep) {
+			g_trig_result = c;
+			g_trig_state = TRIG_DONE;
+		}
+		LeaveCriticalSection(&g_lock);
+		if (t_phase == TRIG_RECORDING && t_id == c->trig_id)
+			t_phase = TRIG_OFF;
+		if (!keep) {
+			release_capture_refs(c.get());   // cancelled meanwhile
+			return;
+		}
+		if (g_last)
+			release_capture_refs(g_last.get());
+		g_last = c;
+		g_last_touch = now_ms();
+		SetEvent(g_trig_event);
 		return;
 	}
 
@@ -3273,6 +3677,55 @@ static void run_jobs()
 	}
 }
 
+// The trigger at a frame boundary: takes the client's command over, counts the baseline down,
+// expires. Returns true when the frame starting now is the one to record for it.
+static bool trig_boundary()
+{
+	bool due = false;
+	EnterCriticalSection(&g_lock);
+	const int cmd = g_trig_cmd;
+	g_trig_cmd = TCMD_NONE;
+	if (cmd == TCMD_ARM) {
+		t_spec = g_trig_next;
+		t_id = g_trig_id;
+		t_ib.clear();
+		t_shader.clear();
+		t_pairs.clear();
+		t_ib.insert(t_spec.ib.begin(), t_spec.ib.end());
+		t_shader.insert(t_spec.shader.begin(), t_spec.shader.end());
+		t_baseline_left = t_spec.new_pairs ? t_spec.baseline_frames : 0;
+		t_phase = t_baseline_left ? TRIG_BASELINE : TRIG_ARMED;
+		g_trig_state = t_phase;
+		g_trig_armed_frame = (uint32_t)g_frame_no;
+		g_trig_armed_ms = now_ms();
+		g_trig_watched = 0;
+	} else if (cmd == TCMD_CANCEL) {
+		t_phase = TRIG_OFF;
+		t_ib.clear();
+		t_shader.clear();
+		t_pairs.clear();
+	}
+	if (t_phase == TRIG_BASELINE || t_phase == TRIG_ARMED) {
+		g_trig_watched++;
+		if (t_spec.expire_ms && now_ms() - g_trig_armed_ms > t_spec.expire_ms) {
+			t_phase = TRIG_OFF;
+			if (g_trig_state == TRIG_BASELINE || g_trig_state == TRIG_ARMED) {
+				g_trig_state = TRIG_EXPIRED;
+				SetEvent(g_trig_event);
+			}
+		} else if (t_phase == TRIG_BASELINE && --t_baseline_left == 0) {
+			t_phase = TRIG_ARMED;
+			if (g_trig_state == TRIG_BASELINE)
+				g_trig_state = TRIG_ARMED;
+		}
+	} else if (t_phase == TRIG_FIRED && g_trig_state == TRIG_FIRED) {
+		due = (uint32_t)g_frame_no - t_fire_frame > t_spec.delay_frames;
+	}
+	InterlockedExchange(&g_trig_watch, (t_phase == TRIG_BASELINE || t_phase == TRIG_ARMED) ? 1 : 0);
+	LeaveCriticalSection(&g_lock);
+	return due;
+}
+
 void cap_on_frame_boundary()
 {
 	InterlockedIncrement(&g_frame_no);
@@ -3317,7 +3770,9 @@ void cap_on_frame_boundary()
 		plog("capture: released resources of frame %u after inactivity", g_last->frame);
 	}
 
-	bool start = false, live = false, hash_volatile = false, slots = false;
+	const bool trig_due = trig_boundary();
+	const bool watching = t_phase == TRIG_BASELINE || t_phase == TRIG_ARMED;
+	bool start = false, live = false, hash_volatile = false, slots = false, trig = false;
 	uint64_t live_generation = 0;
 	CaptureRequest rq;
 	EnterCriticalSection(&g_lock);
@@ -3326,11 +3781,18 @@ void cap_on_frame_boundary()
 		rq = g_req;
 		start = true;
 		g_req_state = REQ_RECORDING;
-	} else if (g_live_on && g_tracking && !g_rec && g_finalizing.size() < 8 &&
-	           (uint32_t)g_frame_no % g_live.every == 0) {
+	} else if (trig_due && !g_rec) {
+		rq = t_spec.rq;
+		start = trig = true;
+		g_trig_state = TRIG_RECORDING;
+		g_trig_capture_frame = (uint32_t)g_frame_no;
+		t_phase = TRIG_RECORDING;
+	} else if ((g_live_on || watching) && g_tracking && !g_rec && g_finalizing.size() < 8 &&
+	           (watching || (uint32_t)g_frame_no % g_live.every == 0)) {
+		// The stream's frames are also what the trigger watches: then every frame is recorded.
 		rq = CaptureRequest();
 		rq.detail = -1;
-		rq.hash_ib = g_live.hash_ib;
+		rq.hash_ib = g_live.hash_ib || watching;
 		rq.hash_vb = g_live.hash_vb;
 		rq.cb_data = false;
 		rq.hold = false;
@@ -3352,6 +3814,12 @@ void cap_on_frame_boundary()
 		if (slots)
 			slot_prepare();
 		begin_recording(rq, live, hash_volatile, live_generation, slots);
+		if (trig) {
+			g_rec->trig = true;
+			g_rec->trig_id = t_id;
+		} else if (live && t_phase == TRIG_ARMED) {
+			g_rec->trig_id = t_id;           // watched for this arming: see trig_check_late
+		}
 	}
 }
 
@@ -3378,6 +3846,12 @@ std::shared_ptr<Capture> cap_request(const CaptureRequest& rq, std::string* err)
 	if (g_req_state != REQ_NONE) {
 		LeaveCriticalSection(&g_lock);
 		*err = "another capture is already in progress";
+		return nullptr;
+	}
+	if (g_trig_state == TRIG_FIRED || g_trig_state == TRIG_RECORDING) {
+		// It would take the frame or release what the triggered capture keeps.
+		LeaveCriticalSection(&g_lock);
+		*err = "the trigger fired and its capture is being recorded: collect it with trigger_wait first";
 		return nullptr;
 	}
 	g_req = rq;
@@ -3412,6 +3886,103 @@ std::shared_ptr<Capture> cap_request(const CaptureRequest& rq, std::string* err)
 	LeaveCriticalSection(&g_lock);
 	if (!out)
 		*err = "timed out waiting for the game to present a frame (paused, minimised or loading?)";
+	return out;
+}
+
+// ---------------------------------------------------------------- trigger, the client's side
+bool cap_trigger_arm(const TriggerSpec& spec, std::string* err)
+{
+	if (!g_ctx || !g_dev || !g_swap) {
+		*err = "the probe has no device and swap chain to watch yet; is the game rendering?";
+		return false;
+	}
+	if (!g_tracking) {
+		*err = "no client is connected";
+		return false;
+	}
+	EnterCriticalSection(&g_lock);
+	if (g_trig_state == TRIG_FIRED || g_trig_state == TRIG_RECORDING) {
+		LeaveCriticalSection(&g_lock);
+		*err = "the trigger fired and its capture is being recorded: collect it with trigger_wait or cancel it first";
+		return false;
+	}
+	g_trig_next = spec;
+	g_trig_cmd = TCMD_ARM;
+	g_trig_id++;
+	g_trig_state = TRIG_ARMING;
+	g_trig_fire = TrigFire();
+	g_trig_fired_ms = 0;
+	g_trig_capture_frame = 0;
+	g_trig_watched = 0;
+	g_trig_armed_ms = now_ms();
+	g_trig_armed_frame = (uint32_t)g_frame_no;
+	g_trig_result.reset();
+	ResetEvent(g_trig_event);
+	LeaveCriticalSection(&g_lock);
+	return true;
+}
+
+void cap_trigger_cancel()
+{
+	EnterCriticalSection(&g_lock);
+	trig_cancel_locked();
+	LeaveCriticalSection(&g_lock);
+}
+
+static void trig_state_json_locked(JsonW& w)
+{
+	const uint64_t now = now_ms();
+	w.begin_obj();
+	w.ks("state", k_trig_state[g_trig_state]);
+	w.ku("id", g_trig_id);
+	w.ku("frame", (uint32_t)g_frame_no);
+	if (g_trig_state != TRIG_OFF || g_trig_armed_ms) {
+		w.ku("armed_frame", g_trig_armed_frame);
+		w.ku("armed_ms_ago", now - g_trig_armed_ms);
+		w.ku("watched_frames", g_trig_watched);
+	}
+	if (g_trig_fired_ms) {
+		const TrigFire& f = g_trig_fire;
+		w.key("fired"); w.begin_obj();
+		w.ku("frame", f.frame);
+		w.ku("draw", f.draw);
+		w.ku("type", f.type);
+		w.ks("origin", origin_name(f.origin));
+		w.ku("count", f.count);
+		w.ks("what", f.what);
+		if (f.ib) w.kh32("ib", f.ib);
+		if (f.shader) w.kh64("shader", f.shader);
+		if (f.vs) w.kh64("vs", f.vs);
+		if (f.ps) w.kh64("ps", f.ps);
+		w.kb("late", f.late);
+		w.ku("ms_ago", now - g_trig_fired_ms);
+		w.end_obj();
+	}
+	if (g_trig_capture_frame)
+		w.ku("capture_frame", g_trig_capture_frame);
+	w.end_obj();
+}
+
+std::shared_ptr<Capture> cap_trigger_wait(uint32_t timeout_ms, std::string* state)
+{
+	EnterCriticalSection(&g_lock);
+	const bool waiting = g_trig_state != TRIG_OFF && g_trig_state != TRIG_DONE && g_trig_state != TRIG_EXPIRED;
+	LeaveCriticalSection(&g_lock);
+	if (waiting && timeout_ms)
+		WaitForSingleObject(g_trig_event, timeout_ms);
+	std::shared_ptr<Capture> out;
+	JsonW w;
+	EnterCriticalSection(&g_lock);
+	trig_state_json_locked(w);
+	if (g_trig_state == TRIG_DONE) {
+		out = g_trig_result;             // handed over once; it stays the latest capture for reads
+		g_trig_result.reset();
+		g_trig_state = TRIG_OFF;
+	} else if (g_trig_state == TRIG_EXPIRED) {
+		g_trig_state = TRIG_OFF;          // said once
+	}
+	LeaveCriticalSection(&g_lock);
+	*state = w.s;
 	return out;
 }
 
@@ -3509,6 +4080,11 @@ void cap_status_json(std::string* out)
 	         g_tracking ? "true" : "false", g_recording ? "true" : "false", g_live_on ? "true" : "false",
 	         g_rcache.size(), g_chunks.size(), g_barrier ? "true" : "false", (long)g_kept_frame, (long long)g_kept_bytes,
 	         (long)g_kept_copies, (long)g_kept_lost);
+	*out += b;
+	EnterCriticalSection(&g_lock);
+	snprintf(b, sizeof(b), ",\"live_frames\":%zu,\"live_lines\":%zu,\"trigger\":\"%s\"",
+	         g_live_ring.size(), g_live_keys.size(), k_trig_state[g_trig_state]);
+	LeaveCriticalSection(&g_lock);
 	*out += b;
 }
 

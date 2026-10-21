@@ -1,5 +1,12 @@
 # EFMI MCP — Tasks
 
+## T-017: Continuous mode over time and a triggered capture (done in the sandbox, 2026-10-21)
+
+- Goal (user): read moments as quick as a boss's skill: look back over the last seconds for what was drawn only briefly, and capture such a moment in full by itself.
+- Done: probe 0.1.10 (`live_summary`, `trigger_arm` / `trigger_wait` / `trigger_cancel`, compact stream lines) and server 0.1.20 (`efmi_live_history`, `efmi_trigger_arm`, `efmi_trigger_wait`, `efmi_trigger_cancel`; 1800 kept frames by default); sandbox `--flash`; tests `continuous_test.py` (62) and `continuous_unit_test.py` (20) in `run_all.py`. Installed in `dist\`; see CURRENT_STATE.
+- To do in the real game (needs a game restart to load 0.1.10, no key press): `efmi_live_start`, any short effect (a skill), `efmi_live_history seconds=5` and `show=new baseline_seconds=10`; `efmi_trigger_arm new_pairs=true` while nothing happens, then the effect, `efmi_trigger_wait`; a shader trigger with `contents=inputs`; frame time while a trigger watches.
+- Possible later (not requested): group the lines of one effect into one entry; a trigger on a render target or a texture.
+
 ## T-014 update: a missing hash mapping cost one F10 (2026-10-18)
 
 - While building the translucent part for Yvonne (`F:\EFMI TTL`), an INI was written with the shader hashes `efmi_list_draws` / `efmi_get_draw` report; for pixel shaders a ShaderRegex rewrote they are not the hashes `[ShaderOverride]` matches, and nothing in the output says so. Still open: report XXMI's original hash next to the probe's for rewritten shaders (the FNV of `ShaderCache\<original>-ps_regex.bin`), and say when a shader carries a regex filter index.

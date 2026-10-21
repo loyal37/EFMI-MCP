@@ -79,7 +79,7 @@ static void status_json(JsonW& w)
 	// Optional abilities, so the server need not compare version strings.
 	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
 	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("rt_snapshots"); w.str("contents");
-	w.str("slot_cache"); w.end_arr();
+	w.str("slot_cache"); w.str("live_summary"); w.str("trigger"); w.end_arr();
 	bool elevated = false;
 	uint32_t integrity = 0;
 	reload_process_info(&elevated, &integrity);
@@ -191,6 +191,115 @@ static uint32_t kinds_of(const JVal* list)
 	return kinds;
 }
 
+// The options of a capture, for "capture" and for what "trigger_arm" records when it fires.
+static bool parse_capture(const JVal& rq, CaptureRequest* out, std::string* err)
+{
+	CaptureRequest& c = *out;
+	std::string detail = rq.str_or("detail", "full");
+	c.detail = (detail == "minimal") ? -1 : (detail == "light") ? 0 : 1;
+	c.hash_ib = rq.bool_or("hash_ib", true);
+	c.hash_vb = rq.bool_or("hash_vb", true);
+	c.cb_data = rq.bool_or("cb_data", false);
+	c.hold = rq.bool_or("hold", true);
+	c.max_draws = (uint32_t)rq.num_or("max_draws", 0);
+	c.timeout_ms = (uint32_t)rq.num_or("timeout_ms", 5000);
+	if (const JVal* rt = rq.get("rt")) {
+		// Copies of the render target around the draws that match; see DrawMatch.
+		if (rt->type != JVal::Obj)
+			{ *err = "rt must be an object"; return false; }
+		double n = rt->num_or("max", 8);
+		c.rt_max = n < 1 ? 1 : n > 64 ? 64 : (uint32_t)n;
+		n = rt->num_or("budget_mb", 512);
+		c.rt_budget_mb = n < 16 ? 16 : n > 4096 ? 4096 : (uint32_t)n;
+		c.rt_before = rt->bool_or("before", true);
+		c.rt_all = rt->bool_or("all", false);
+		c.rt_depth = rt->bool_or("depth", false);
+		const JVal* box = rt->get("box");
+		if (box && box->type == JVal::Arr && box->arr.size() == 4) {
+			for (int i = 0; i < 4; i++)
+				c.rt_box[i] = box->arr[i].type == JVal::Num && box->arr[i].num > 0 ? (uint32_t)box->arr[i].num : 0;
+			c.rt_has_box = c.rt_box[2] > c.rt_box[0] && c.rt_box[3] > c.rt_box[1];
+		}
+		parse_matches(rt->get("match"), &c.rt_match);
+		if (c.rt_match.empty())
+			{ *err = "rt.match selects no draw: give draw, ib, ic, fi, vs, ps, sh or o"; return false; }
+		c.detail = 1;       // the copies belong to a full record
+	}
+	if (const JVal* ct = rq.get("contents")) {
+		// What calls saw, kept as it was: "inputs" for every call (ib, vb, cb, buf, tex), "outputs"
+		// (rt, depth, uav) for the calls that "match" selects or for "all" of them.
+		if (ct->type != JVal::Obj)
+			{ *err = "contents must be an object"; return false; }
+		c.ct_kinds = kinds_of(ct->get("inputs")) & (CK_IB | CK_VB | CK_CB | CK_BUF | CK_TEX);
+		c.ct_out_kinds = kinds_of(ct->get("outputs")) & (CK_UAV | CK_RT | CK_DEPTH);
+		parse_matches(ct->get("match"), &c.ct_match);
+		c.ct_out_all = ct->bool_or("all", false);
+		c.ct_events = ct->bool_or("events", false);
+		c.ct_strict = ct->bool_or("strict", false);
+		double mb = ct->num_or("budget_mb", 1024);
+		mb = mb < 0.001 ? 0.001 : mb > 16384 ? 16384 : mb;
+		c.ct_budget = (uint64_t)(mb * 1048576.0);
+		if (c.ct_out_kinds && !c.ct_out_all && c.ct_match.empty())
+			{ *err = "contents.outputs needs contents.match (draw, first/last, ib, ic, fi, vs, ps, sh, o) or all"; return false; }
+		if (!c.contents() && !c.ct_events)
+			{ *err = "contents asks for nothing: give inputs, outputs or events"; return false; }
+		c.detail = 1;
+		c.hold = true;      // what is read in place has to stay alive
+	}
+	return true;
+}
+
+// A recorded frame: the header names the frame and the lengths of the JSON and the binary part
+// that follow it as the payload.
+static bool send_capture(HANDLE pipe, double id, const Capture& cap, const std::string* trigger)
+{
+	std::string json;
+	std::vector<uint8_t> blob;
+	cap_serialize(cap, &json, &blob);
+	JsonW w;
+	w.begin_obj();
+	w.kd("id", id);
+	w.kb("ok", true);
+	if (trigger) {
+		w.key("trigger"); w.raw(*trigger);
+	}
+	w.ku("frame", cap_frame_of(cap));
+	w.ku("json_len", json.size());
+	w.ku("bin_len", blob.size());
+	w.end_obj();
+	std::vector<uint8_t> payload;
+	payload.reserve(json.size() + blob.size());
+	payload.insert(payload.end(), json.begin(), json.end());
+	payload.insert(payload.end(), blob.begin(), blob.end());
+	return send_msg(pipe, w.s, payload.data(), payload.size());
+}
+
+// Hex hashes given as one string or a list of strings.
+static bool parse_hashes(const JVal* v, size_t digits, std::vector<uint64_t>* out)
+{
+	if (!v)
+		return true;
+	std::vector<const JVal*> items;
+	if (v->type == JVal::Str)
+		items.push_back(v);
+	else if (v->type == JVal::Arr)
+		for (const JVal& e : v->arr)
+			items.push_back(&e);
+	else
+		return false;
+	for (const JVal* e : items) {
+		if (e->type != JVal::Str || e->str.empty() || e->str.size() > digits)
+			return false;
+		char* end = nullptr;
+		uint64_t h = _strtoui64(e->str.c_str(), &end, 16);
+		if (!end || *end)
+			return false;
+		if (out->size() < 1024)
+			out->push_back(h);
+	}
+	return true;
+}
+
 static bool handle(HANDLE pipe, const JVal& rq)
 {
 	std::string cmd = rq.str_or("cmd", "");
@@ -209,77 +318,14 @@ static bool handle(HANDLE pipe, const JVal& rq)
 
 	if (cmd == "capture") {
 		CaptureRequest c;
-		std::string detail = rq.str_or("detail", "full");
-		c.detail = (detail == "minimal") ? -1 : (detail == "light") ? 0 : 1;
-		c.hash_ib = rq.bool_or("hash_ib", true);
-		c.hash_vb = rq.bool_or("hash_vb", true);
-		c.cb_data = rq.bool_or("cb_data", false);
-		c.hold = rq.bool_or("hold", true);
-		c.max_draws = (uint32_t)rq.num_or("max_draws", 0);
-		c.timeout_ms = timeout;
-		if (const JVal* rt = rq.get("rt")) {
-			// Copies of the render target around the draws that match; see DrawMatch.
-			if (rt->type != JVal::Obj)
-				return send_error(pipe, id, "rt must be an object");
-			double n = rt->num_or("max", 8);
-			c.rt_max = n < 1 ? 1 : n > 64 ? 64 : (uint32_t)n;
-			n = rt->num_or("budget_mb", 512);
-			c.rt_budget_mb = n < 16 ? 16 : n > 4096 ? 4096 : (uint32_t)n;
-			c.rt_before = rt->bool_or("before", true);
-			c.rt_all = rt->bool_or("all", false);
-			c.rt_depth = rt->bool_or("depth", false);
-			const JVal* box = rt->get("box");
-			if (box && box->type == JVal::Arr && box->arr.size() == 4) {
-				for (int i = 0; i < 4; i++)
-					c.rt_box[i] = box->arr[i].type == JVal::Num && box->arr[i].num > 0 ? (uint32_t)box->arr[i].num : 0;
-				c.rt_has_box = c.rt_box[2] > c.rt_box[0] && c.rt_box[3] > c.rt_box[1];
-			}
-			parse_matches(rt->get("match"), &c.rt_match);
-			if (c.rt_match.empty())
-				return send_error(pipe, id, "rt.match selects no draw: give draw, ib, ic, fi, vs, ps, sh or o");
-			c.detail = 1;       // the copies belong to a full record
-		}
-		if (const JVal* ct = rq.get("contents")) {
-			// What calls saw, kept as it was: "inputs" for every call (ib, vb, cb, buf, tex), "outputs"
-			// (rt, depth, uav) for the calls that "match" selects or for "all" of them.
-			if (ct->type != JVal::Obj)
-				return send_error(pipe, id, "contents must be an object");
-			c.ct_kinds = kinds_of(ct->get("inputs")) & (CK_IB | CK_VB | CK_CB | CK_BUF | CK_TEX);
-			c.ct_out_kinds = kinds_of(ct->get("outputs")) & (CK_UAV | CK_RT | CK_DEPTH);
-			parse_matches(ct->get("match"), &c.ct_match);
-			c.ct_out_all = ct->bool_or("all", false);
-			c.ct_events = ct->bool_or("events", false);
-			c.ct_strict = ct->bool_or("strict", false);
-			double mb = ct->num_or("budget_mb", 1024);
-			mb = mb < 0.001 ? 0.001 : mb > 16384 ? 16384 : mb;
-			c.ct_budget = (uint64_t)(mb * 1048576.0);
-			if (c.ct_out_kinds && !c.ct_out_all && c.ct_match.empty())
-				return send_error(pipe, id, "contents.outputs needs contents.match (draw, first/last, ib, ic, fi, vs, ps, sh, o) or all");
-			if (!c.contents() && !c.ct_events)
-				return send_error(pipe, id, "contents asks for nothing: give inputs, outputs or events");
-			c.detail = 1;
-			c.hold = true;      // what is read in place has to stay alive
-		}
+		std::string perr;
+		if (!parse_capture(rq, &c, &perr))
+			return send_error(pipe, id, perr);
 		std::string err;
 		std::shared_ptr<Capture> cap = cap_request(c, &err);
 		if (!cap)
 			return send_error(pipe, id, err);
-		std::string json;
-		std::vector<uint8_t> blob;
-		cap_serialize(*cap, &json, &blob);
-		JsonW w;
-		w.begin_obj();
-		w.kd("id", id);
-		w.kb("ok", true);
-		w.ku("frame", cap_frame_of(*cap));
-		w.ku("json_len", json.size());
-		w.ku("bin_len", blob.size());
-		w.end_obj();
-		std::vector<uint8_t> payload;
-		payload.reserve(json.size() + blob.size());
-		payload.insert(payload.end(), json.begin(), json.end());
-		payload.insert(payload.end(), blob.begin(), blob.end());
-		return send_msg(pipe, w.s, payload.data(), payload.size());
+		return send_capture(pipe, id, *cap, nullptr);
 	}
 
 	if (cmd == "read_buffer" || cmd == "read_texture" || cmd == "read_rt" || cmd == "read_content") {
@@ -369,6 +415,89 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		w.kb("flushed", flushed);
 		w.key("slot_cache"); w.raw(status);
 		w.ku("frame", (uint32_t)g_frame_no);
+		w.end_obj();
+		return send_msg(pipe, w.s, nullptr, 0);
+	}
+
+	if (cmd == "live_summary") {
+		LiveQuery q;
+		q.first = (uint32_t)rq.num_or("first", 0);
+		q.last = (uint32_t)rq.num_or("last", 0);
+		q.base_first = (uint32_t)rq.num_or("base_first", 0);
+		q.base_last = (uint32_t)rq.num_or("base_last", 0);
+		q.seconds = rq.num_or("seconds", 0);
+		q.base_seconds = rq.num_or("base_seconds", 0);
+		q.timeline = rq.bool_or("timeline", true);
+		std::string summary;
+		cap_live_summary(q, &summary);
+		JsonW w;
+		w.begin_obj();
+		w.kd("id", id);
+		w.kb("ok", true);
+		w.ku("frame", (uint32_t)g_frame_no);
+		w.end_obj();
+		return send_msg(pipe, w.s, summary.data(), summary.size());
+	}
+
+	if (cmd == "trigger_arm") {
+		// Record the frame after the one where something given appears; see TriggerSpec.
+		TriggerSpec t;
+		std::vector<uint64_t> ib;
+		if (!parse_hashes(rq.get("ib"), 8, &ib))
+			return send_error(pipe, id, "ib must be a hex hash of 8 digits or a list of them");
+		for (uint64_t h : ib)
+			t.ib.push_back((uint32_t)h);
+		if (!parse_hashes(rq.get("shader"), 16, &t.shader))
+			return send_error(pipe, id, "shader must be a hex hash of up to 16 digits or a list of them");
+		t.new_pairs = rq.bool_or("new_pairs", false);
+		if (t.ib.empty() && t.shader.empty() && !t.new_pairs)
+			return send_error(pipe, id, "the trigger watches for nothing: give ib, shader or new_pairs");
+		double n = rq.num_or("baseline_frames", 60);
+		t.baseline_frames = n < 0 ? 0 : n > 36000 ? 36000 : (uint32_t)n;
+		std::string origin = rq.str_or("origin", "");
+		t.origin = origin == "game" ? ORIGIN_GAME : origin == "xxmi" ? ORIGIN_XXMI : -1;
+		t.min_count = (uint32_t)rq.num_or("min_count", 0);
+		n = rq.num_or("delay_frames", 0);
+		t.delay_frames = n < 0 ? 0 : n > 600 ? 600 : (uint32_t)n;
+		n = rq.num_or("expire_ms", 600000);
+		t.expire_ms = n < 0 ? 0 : n > 86400000 ? 86400000 : (uint32_t)n;
+		std::string perr;
+		JVal none;
+		none.type = JVal::Obj;
+		const JVal* opt = rq.get("capture");
+		if (opt && opt->type != JVal::Obj)
+			return send_error(pipe, id, "capture must be an object of capture options");
+		if (!parse_capture(opt ? *opt : none, &t.rq, &perr))
+			return send_error(pipe, id, perr);
+		std::string err;
+		if (!cap_trigger_arm(t, &err))
+			return send_error(pipe, id, err);
+		std::string state;
+		cap_trigger_wait(0, &state);
+		JsonW w;
+		w.begin_obj();
+		w.kd("id", id);
+		w.kb("ok", true);
+		w.key("trigger"); w.raw(state);
+		w.end_obj();
+		return send_msg(pipe, w.s, nullptr, 0);
+	}
+
+	if (cmd == "trigger_wait" || cmd == "trigger_cancel") {
+		// Waits while the trigger watches or records; the capture comes back once, like "capture".
+		if (cmd == "trigger_cancel")
+			cap_trigger_cancel();
+		double n = cmd == "trigger_cancel" ? 0 : rq.num_or("wait_ms", 0);
+		uint32_t wait = n < 0 ? 0 : n > 120000 ? 120000 : (uint32_t)n;
+		std::string state;
+		std::shared_ptr<Capture> cap = cap_trigger_wait(wait, &state);
+		if (cap)
+			return send_capture(pipe, id, *cap, &state);
+		JsonW w;
+		w.begin_obj();
+		w.kd("id", id);
+		w.kb("ok", true);
+		w.key("trigger"); w.raw(state);
 		w.end_obj();
 		return send_msg(pipe, w.s, nullptr, 0);
 	}

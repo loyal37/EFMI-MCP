@@ -13,7 +13,7 @@ from .capture_model import Capture, STAGES
 from .draw_outputs import capture_draw_outputs
 from .fa_dump import DRAW_NAMES, MARKS, find_frame_dumps, parse_frame_dump
 from .hashes import crc32c, hex32, index_region
-from . import blender_runner, loyal_bridge
+from . import blender_runner, live_tools, loyal_bridge
 from .mcp_stdio import Image, Server, ToolError
 from .model_jobs import JobManager
 from .mods import ModCache
@@ -35,6 +35,10 @@ Hashes are the ones XXMI uses: the `ib` hash of a draw is the region hash that m
 Typical flow: efmi_status -> efmi_capture_frame -> efmi_list_draws / efmi_find_hash -> efmi_get_draw -> \
 efmi_read_buffer / efmi_read_texture / efmi_get_shader. For "what is on screen right now, continuously" use \
 efmi_live_start, then efmi_live_now or efmi_watch_hash.
+For something that is drawn only for a moment (a boss's skill, a hit effect): efmi_live_start some time before, \
+then efmi_live_history over the last seconds lists the lines that came and went (or were not drawn during a \
+baseline). To get such a moment in full, efmi_trigger_arm has the probe record the next frame by itself as soon \
+as a given mesh or shader, or any shader pair not seen during a baseline, is drawn; efmi_trigger_wait collects it.
 
 For texture slots use efmi_get_texture_slots after a full capture: select draw numbers or an IB hash to get \
 per-shader sampling evidence and texture bindings in one batch. It filters stale bindings by default and \
@@ -293,6 +297,59 @@ def _res_desc(r: dict | None) -> str:
     return str(kind)
 
 
+def capture_report(s: Session, cap: Capture, ms: float, chosen: str = "") -> list[str]:
+    """The summary of a new capture: draws, render targets, meshes that installed mods refer to."""
+    draws_made = list(cap.draws())
+    game = [d for d in draws_made if d["origin"] != "xxmi"]
+    st = cap.stats
+    lines = [f"capture {cap.frame} ({cap.detail}): {len(draws_made)} draws ({len(game)} from the game, {len(draws_made) - len(game)} from XXMI/mods), "
+             f"{len(cap.resources)} resources, {len(cap.shaders)} shaders; took {ms:.0f} ms "
+             f"(recording cost inside the game: {st['record_ms']:.2f} ms)"]
+    if st.get("skipped_draws"):
+        lines.append(f"WARNING: {st['skipped_draws']} draws beyond the per-frame limit were not recorded")
+    if st.get("arena_full"):
+        lines.append("WARNING: readback budget exhausted, some hashes are missing (state 'skipped')")
+    if not draws_made:
+        lines.append("WARNING: this frame contains no recorded draws; character/resource capture is not verified. "
+                     "Check the selected device/context in efmi_status and efmi_probe.log.")
+    lines += contents.summary(cap)
+    if chosen:
+        lines.append(f"  outputs kept for: {chosen}")
+    if s.mods_display and not s.mods_display["enabled"]:
+        lines.append(f"note: efmi_toggle_mods switched all mods OFF at frame {s.mods_display['frame']}; unless F11 was "
+                     "pressed by hand since, this frame shows the game's own drawing. Switch them back on when done.")
+
+    if cap.detail == "full":
+        passes: "OrderedDict[tuple, list[int]]" = OrderedDict()
+        for d in draws_made:
+            o0 = d.get("out", {}).get("o0")
+            key = (o0["res"] if o0 else -1,)
+            passes.setdefault(key, []).append(d["index"])
+        lines.append(f"render targets used ({len(passes)}):")
+        for (res,), idxs in list(passes.items())[:14]:
+            r = cap.resource(res)
+            name = "no colour target (compute/depth only)" if res < 0 else f"o0={r.get('hash') or 'backbuffer/unknown'} {_res_desc(r)}"
+            lines.append(f"  draws {idxs[0]}-{idxs[-1]} ({len(idxs)}): {name}")
+        if len(passes) > 14:
+            lines.append(f"  ... {len(passes) - 14} more")
+
+    counts: Counter = Counter()
+    info: dict = {}
+    for d in game:
+        ib = d.get("ib")
+        if ib and ib["hash"]:
+            counts[ib["hash"]] += 1
+            info.setdefault(ib["hash"], d)
+    lines.append(f"distinct index-buffer hashes drawn by the game: {len(counts)}")
+    modded = [h for h in counts if s.mods.get().by_hash.get(h)]
+    if modded:
+        lines.append("of these, referenced by installed mods:")
+        for h in modded[:20]:
+            lines.append(f"  ib={h} ic={info[h]['args'].get('index_count')} first draw #{info[h]['index']}{s.mod_note(h)}")
+    lines.append("next: efmi_list_draws (filterable), efmi_find_hash, efmi_get_draw")
+    return lines
+
+
 def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                  loyaltools_root: Path | None = None, blender_path: str = "") -> Server:
     s = Session(efmi_root, out_dir, probe_dll, loyaltools_root, blender_path)
@@ -326,7 +383,11 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             lines.append(f"seen so far: {c['draw_calls']} draw calls, {c['presents']} frames; known: {r['resources']} resources, "
                          f"{r['shaders']} shaders ({r['bytecode_bytes'] // 1024} KB of bytecode kept), {r['layouts']} input layouts")
             cap = st["capture"]
-            lines.append(f"continuous mode: {'on' if cap['live'] else 'off'}; cached region hashes: {cap['region_cache']}")
+            lines.append(f"continuous mode: {'on' if cap['live'] else 'off'}"
+                         + (f" ({cap['live_frames']} frames kept)" if cap.get("live_frames") else "")
+                         + f"; cached region hashes: {cap['region_cache']}")
+            if cap.get("trigger") not in (None, "off"):
+                lines.append(f"trigger: {cap['trigger']} (efmi_trigger_wait collects what it records)")
             if "reload_key" in st.get("features", ()):
                 level = "elevated" if st.get("process", {}).get("elevated") else "not elevated"
                 lines.append(f"reload: the probe presses F10 inside the game (game process is {level})")
@@ -369,7 +430,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         return "\n".join(lines)
 
     # ================================================================ capture
-    contents_feature, contents_request, contents_summary = contents.FEATURE, contents.request, contents.summary
+    contents_feature, contents_request = contents.FEATURE, contents.request
 
     @srv.tool("efmi_capture_frame",
               "Records the next frame the game draws and returns a summary. detail='full' records every binding of every draw "
@@ -417,56 +478,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         doc, blob = s.call(lambda c: c.capture(detail=detail, cb_data=cb_data, timeout_ms=8000, contents=wanted))
         cap = Capture(doc, blob)
         s.add_capture(cap)
-        ms = (time.perf_counter() - t0) * 1000
-        draws_made = list(cap.draws())
-        game = [d for d in draws_made if d["origin"] != "xxmi"]
-        st = cap.stats
-        lines = [f"capture {cap.frame} ({cap.detail}): {len(draws_made)} draws ({len(game)} from the game, {len(draws_made) - len(game)} from XXMI/mods), "
-                 f"{len(cap.resources)} resources, {len(cap.shaders)} shaders; took {ms:.0f} ms "
-                 f"(recording cost inside the game: {st['record_ms']:.2f} ms)"]
-        if st.get("skipped_draws"):
-            lines.append(f"WARNING: {st['skipped_draws']} draws beyond the per-frame limit were not recorded")
-        if st.get("arena_full"):
-            lines.append("WARNING: readback budget exhausted, some hashes are missing (state 'skipped')")
-        if not draws_made:
-            lines.append("WARNING: this frame contains no recorded draws; character/resource capture is not verified. "
-                         "Check the selected device/context in efmi_status and efmi_probe.log.")
-        lines += contents_summary(cap)
-        if chosen:
-            lines.append(f"  outputs kept for: {chosen}")
-        if s.mods_display and not s.mods_display["enabled"]:
-            lines.append(f"note: efmi_toggle_mods switched all mods OFF at frame {s.mods_display['frame']}; unless F11 was "
-                         "pressed by hand since, this frame shows the game's own drawing. Switch them back on when done.")
-
-        if cap.detail == "full":
-            passes: "OrderedDict[tuple, list[int]]" = OrderedDict()
-            for d in draws_made:
-                o0 = d.get("out", {}).get("o0")
-                key = (o0["res"] if o0 else -1,)
-                passes.setdefault(key, []).append(d["index"])
-            lines.append(f"render targets used ({len(passes)}):")
-            for (res,), idxs in list(passes.items())[:14]:
-                r = cap.resource(res)
-                name = "no colour target (compute/depth only)" if res < 0 else f"o0={r.get('hash') or 'backbuffer/unknown'} {_res_desc(r)}"
-                lines.append(f"  draws {idxs[0]}-{idxs[-1]} ({len(idxs)}): {name}")
-            if len(passes) > 14:
-                lines.append(f"  ... {len(passes) - 14} more")
-
-        counts: Counter = Counter()
-        info: dict = {}
-        for d in game:
-            ib = d.get("ib")
-            if ib and ib["hash"]:
-                counts[ib["hash"]] += 1
-                info.setdefault(ib["hash"], d)
-        lines.append(f"distinct index-buffer hashes drawn by the game: {len(counts)}")
-        modded = [h for h in counts if s.mods.get().by_hash.get(h)]
-        if modded:
-            lines.append("of these, referenced by installed mods:")
-            for h in modded[:20]:
-                lines.append(f"  ib={h} ic={info[h]['args'].get('index_count')} first draw #{info[h]['index']}{s.mod_note(h)}")
-        lines.append("next: efmi_list_draws (filterable), efmi_find_hash, efmi_get_draw")
-        return "\n".join(lines)
+        return "\n".join(capture_report(s, cap, (time.perf_counter() - t0) * 1000, chosen))
 
     # ================================================================ reload
     @srv.tool("efmi_reload_and_capture",
@@ -1207,13 +1219,17 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
 
     @srv.tool("efmi_live_start",
               "Switches the continuous mode on: from now on every frame is recorded at minimal detail inside the game (which mesh, "
-              "which shaders, how many instances) and the last few seconds are kept in memory there. Costs well under a millisecond "
-              "per frame; nothing is written to disk. Use efmi_live_now / efmi_watch_hash to look at it, efmi_live_stop to end it.",
+              "which shaders, how many instances) and the last keep_frames frames are kept in memory there (30 s at 60 fps "
+              "by default). Costs well under a millisecond per frame; nothing is written to disk. Use efmi_live_now / "
+              "efmi_watch_hash to look at it, efmi_live_history for what came and went over the last seconds, "
+              "efmi_live_stop to end it (that discards the kept frames).",
               {"every": {"type": "integer", "default": 1, "description": "record every n-th frame"},
-               "keep_frames": {"type": "integer", "default": 600}}, read_only=False)
-    def efmi_live_start(every: int = 1, keep_frames: int = 600):
-        r = s.call(lambda c: c.live(enable=True, every=max(1, int(every)), keep_frames=max(10, int(keep_frames))))
-        return f"continuous mode on (frame {r['frame']}); every {max(1, int(every))} frame(s), keeping {keep_frames}"
+               "keep_frames": {"type": "integer", "minimum": 10, "maximum": 3600, "default": live_tools.KEEP_FRAMES}},
+              read_only=False)
+    def efmi_live_start(every: int = 1, keep_frames: int = live_tools.KEEP_FRAMES):
+        keep = max(10, min(int(keep_frames), 3600))
+        r = s.call(lambda c: c.live(enable=True, every=max(1, int(every)), keep_frames=keep))
+        return f"continuous mode on (frame {r['frame']}); every {max(1, int(every))} frame(s), keeping {keep}"
 
     @srv.tool("efmi_live_stop", "Switches the continuous mode off and discards the frames kept in the game process.", read_only=False)
     def efmi_live_stop():
@@ -1405,5 +1421,6 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
     texture_slots.register(srv, s, CAPTURE_PROP)
     from . import slot_table
     slot_table.register(srv, s)
+    live_tools.register(srv, s, capture_report)
     model_tools.register(srv, s)
     return srv

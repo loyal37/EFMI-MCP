@@ -163,4 +163,36 @@ struct LiveConfig {
 void cap_live_configure(const LiveConfig& cfg);
 // Appends a JSON array of frame summaries newer than `since_frame`.
 void cap_live_get(uint32_t since_frame, uint32_t max_frames, std::string* json);
+
+// A stretch of the continuous stream added up per mesh/shader line: in how many frames each line
+// was drawn, first and last frame, the most draws and instances, and in how many frames of an
+// earlier baseline stretch it was drawn too. Frames are chosen by number or, when `seconds` is
+// set, as the last `seconds` of the stream (and the `base_seconds` before them).
+struct LiveQuery {
+	uint32_t first = 0, last = 0;            // 0: from the oldest / to the newest frame kept
+	uint32_t base_first = 0, base_last = 0;  // both 0: no baseline
+	double   seconds = 0, base_seconds = 0;
+	bool     timeline = true;                // one entry per frame of the stretch as well
+};
+void cap_live_summary(const LiveQuery& q, std::string* json);
+
+// A capture that starts on its own when something appears: a mesh or shader the client named, or
+// a vertex/pixel shader pair not drawn while a baseline was watched. The frame after the one it was
+// seen in (plus delay_frames) is recorded with `rq`, contents included.
+struct TriggerSpec {
+	std::vector<uint32_t> ib;        // index buffer region hashes
+	std::vector<uint64_t> shader;    // shader hashes of any stage
+	bool     new_pairs = false;      // a vertex/pixel shader pair not drawn during the baseline
+	uint32_t baseline_frames = 60;
+	int      origin = -1;            // Origin of the draws that count; -1: any
+	uint32_t min_count = 0;          // draws with fewer indices (vertices when not indexed) do not count
+	uint32_t delay_frames = 0;
+	uint32_t expire_ms = 600000;     // 0: never
+	CaptureRequest rq;
+};
+bool cap_trigger_arm(const TriggerSpec& spec, std::string* err);
+void cap_trigger_cancel();
+// Waits up to timeout_ms while the trigger is waiting or recording. `state` gets a JSON object
+// describing it; the capture is returned once, when it has been recorded (the trigger is off then).
+std::shared_ptr<Capture> cap_trigger_wait(uint32_t timeout_ms, std::string* state);
 void cap_status_json(std::string* out);             // appended as JSON members

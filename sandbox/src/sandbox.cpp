@@ -187,6 +187,15 @@ void cs_tex(uint3 id : SV_DispatchThreadID)
 }
 )";
 
+// --flash: a pixel shader drawn only while the flashing mesh is on screen.
+static const char* k_hlsl_flash = R"(
+struct VSOut { float4 pos : SV_Position; float3 nrm : NORMAL; float2 uv : TEXCOORD0; float4 col : COLOR0; };
+float4 ps_flash(VSOut i) : SV_Target
+{
+	return float4(1.0, 0.85, 0.2, 1) * (0.7 + 0.3 * i.col.r) + float4(i.uv * 0.1, 0, 0);
+}
+)";
+
 static bool compile(const char* entry, const char* target, ID3DBlob** out, const char* source = k_hlsl)
 {
 	ID3DBlob* err = nullptr;
@@ -251,6 +260,9 @@ static bool g_content_pass = false;         // --content-pass: calls between whi
 static bool g_content_static = false;       // --content-static: the same bytes in every frame (to compare two frames)
 static bool g_dynamic_ib = false;           // --dynamic-ib: one more draw of mesh 3 from an index buffer the CPU
                                             // rewrites every frame, as the game's dynamic batches are drawn
+static int g_flash_period = 0;              // --flash P,D,S: from frame S on, a mesh of its own (a 5x5 grid, 150
+static int g_flash_frames = 0;              // indices, with a pixel shader of its own) is drawn for D frames out
+static int g_flash_start = 0;               // of every P, like an effect that is on screen only for a moment
 static uint32_t g_frame_counter = 0;
 static int g_vsync = 1;                     // --novsync sets this to 0
 static unsigned g_skip = 0;                 // --skip bit mask, for bisecting a scene
@@ -270,10 +282,12 @@ struct Scene {
 	ID3D11Buffer* cb_pose = nullptr;
 	ID3D11Buffer* vb3a = nullptr, *vb3b = nullptr, *ib3 = nullptr;
 	ID3D11Buffer* ib_dyn = nullptr;            // --dynamic-ib
+	ID3D11Buffer* fl_vb0 = nullptr, *fl_vb1 = nullptr, *fl_ib = nullptr;   // --flash
+	ID3D11PixelShader* ps_flash = nullptr;
 	ID3D11Buffer* posed = nullptr;
 	ID3D11UnorderedAccessView* posed_uav = nullptr;
 
-	Mesh m1, m2, m3;
+	Mesh m1, m2, m3, mf;
 
 	ID3D11VertexShader* vs = nullptr, *vs_blit = nullptr;
 	ID3D11PixelShader* ps = nullptr, *ps_blit = nullptr;
@@ -455,6 +469,28 @@ static bool build_scene(Scene& s)
 		dd.BindFlags = D3D11_BIND_INDEX_BUFFER;
 		dd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		hr = s.dev->CreateBuffer(&dd, nullptr, &s.ib_dyn); CHECK(hr, "dynamic ib");
+	}
+
+	// ---- --flash: a mesh in immutable buffers of its own, drawn now and then
+	if (g_flash_period > 0) {
+		ID3DBlob* b = nullptr;
+		if (!compile("ps_flash", "ps_5_0", &b, k_hlsl_flash))
+			return false;
+		hr = s.dev->CreatePixelShader(b->GetBufferPointer(), b->GetBufferSize(), nullptr, &s.ps_flash);
+		b->Release();
+		CHECK(hr, "ps_flash");
+		make_grid(&s.mf, 5, 0.40f, 0.30f, 0.45f, 1.0f, 0.9f, 0.2f);
+		D3D11_BUFFER_DESC d = {};
+		D3D11_SUBRESOURCE_DATA init = {};
+		d.Usage = D3D11_USAGE_IMMUTABLE;
+		d.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+		d.ByteWidth = (UINT)(s.mf.v0.size() * sizeof(V0)); init.pSysMem = s.mf.v0.data();
+		hr = s.dev->CreateBuffer(&d, &init, &s.fl_vb0); CHECK(hr, "flash vb0");
+		d.ByteWidth = (UINT)(s.mf.v1.size() * sizeof(V1)); init.pSysMem = s.mf.v1.data();
+		hr = s.dev->CreateBuffer(&d, &init, &s.fl_vb1); CHECK(hr, "flash vb1");
+		d.BindFlags = D3D11_BIND_INDEX_BUFFER;
+		d.ByteWidth = (UINT)(s.mf.idx.size() * sizeof(uint16_t)); init.pSysMem = s.mf.idx.data();
+		hr = s.dev->CreateBuffer(&d, &init, &s.fl_ib); CHECK(hr, "flash ib");
 	}
 
 	// ---- a vertex buffer written by a compute shader every frame
@@ -1285,6 +1321,27 @@ static void render(Scene& s, float time)
 		s.ctx->DrawIndexed((UINT)s.m2.idx.size(), 0, 0);
 	}
 
+	// 6) --flash: on screen for g_flash_frames frames out of every g_flash_period
+	if (s.fl_ib) {
+		const int frame = (int)g_frame_counter - 1;
+		const bool on = frame >= g_flash_start && (frame - g_flash_start) % g_flash_period < g_flash_frames;
+		static bool was_on = false;
+		if (on != was_on)
+			say("flash %s frame=%d", on ? "on" : "off", frame);
+		was_on = on;
+		if (on) {
+			ID3D11Buffer* vbs[2] = { s.fl_vb0, s.fl_vb1 };
+			UINT strides[2] = { sizeof(V0), sizeof(V1) };
+			UINT offs[2] = { 0, 0 };
+			s.ctx->IASetVertexBuffers(0, 2, vbs, strides, offs);
+			s.ctx->IASetIndexBuffer(s.fl_ib, DXGI_FORMAT_R16_UINT, 0);
+			bind_object(s, 2);
+			s.ctx->PSSetShader(s.ps_flash, nullptr, 0);
+			s.ctx->DrawIndexed((UINT)s.mf.idx.size(), 0, 0);
+			s.ctx->PSSetShader(s.ps, nullptr, 0);
+		}
+	}
+
 	if (g_state_pass)
 		render_state_pass(s);
 	if (g_content_pass)
@@ -1477,6 +1534,14 @@ int wmain(int argc, wchar_t** argv)
 		else if (a == L"--content-pass") g_content_pass = true;
 		else if (a == L"--content-static") g_content_pass = g_content_static = true;
 		else if (a == L"--dynamic-ib") g_dynamic_ib = true;
+		else if (a == L"--flash") {
+			std::wstring v = next();
+			if (swscanf_s(v.c_str(), L"%d,%d,%d", &g_flash_period, &g_flash_frames, &g_flash_start) < 2 ||
+			    g_flash_period < 1 || g_flash_frames < 1 || g_flash_frames > g_flash_period || g_flash_start < 0) {
+				say("--flash takes PERIOD,FRAMES[,START] with 1 <= FRAMES <= PERIOD");
+				return 2;
+			}
+		}
 	}
 
 	wchar_t exe[MAX_PATH];
