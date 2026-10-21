@@ -2,6 +2,7 @@
 #include "capture.h"
 #include "registry.h"
 #include "slotcache.h"
+#include "record.h"
 
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID)
 {
@@ -20,6 +21,7 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID)
 
 		settings_load();
 		slot_init();
+		rec_init();
 		reg_init();
 		cap_init();
 		bootstrap_start();

@@ -95,11 +95,42 @@ def _row(it: list) -> dict:
     return dict(zip(ROW, it))
 
 
+def merge_unhashed(rows: list[dict], frames: int, base_frames: int) -> list[dict]:
+    """Lines without an index buffer hash, by draw type, origin, buffer and shaders.
+
+    The game draws batches it builds on the CPU from a buffer it rewrites every frame, at another
+    range each time: every frame would bring new lines that are none. Merged, `frames` and `base`
+    become upper bounds (the parts are added up, at most the stretch's frames), marked `merged`.
+    """
+    out: list[dict] = []
+    groups: dict[tuple, dict] = {}
+    for r in rows:
+        if r["ib"]:
+            out.append(r)
+            continue
+        key = (r["type"], r["origin"], r["ib_state"], r["ib_res"], r["vs"], r["ps"])
+        g = groups.get(key)
+        if g is None:
+            groups[key] = g = dict(r, merged=1)
+            out.append(g)
+            continue
+        g["merged"] += 1
+        g["frames"] = min(frames, g["frames"] + r["frames"])
+        g["base"] = min(base_frames, g["base"] + r["base"])
+        g["first"], g["last"] = min(g["first"], r["first"]), max(g["last"], r["last"])
+        for k in ("max_draws", "max_inst", "ic", "vc"):
+            g[k] = max(g[k], r[k])
+        g["draws"] += r["draws"]
+    return out
+
+
 def _line_text(r: dict, note: str = "") -> str:
     ib = r["ib"] or r["ib_state"] or "-"
-    parts = [f"{DRAW_NAMES.get(r['type'], str(r['type'])):<22}", f"{r['origin']:<5}", f"ib={ib:<8}",
-             f"ic={r['ic']}" if r["ic"] else f"vc={r['vc']}"]
-    if r["fi"]:
+    count = f"ic={r['ic']}" if r["ic"] else f"vc={r['vc']}"
+    if r.get("merged", 1) > 1:
+        count = f"{r['merged']} ranges, {count.replace('=', '<=')}"
+    parts = [f"{DRAW_NAMES.get(r['type'], str(r['type'])):<22}", f"{r['origin']:<5}", f"ib={ib:<8}", count]
+    if r["fi"] and r.get("merged", 1) == 1:
         parts.append(f"fi={r['fi']}")
     parts.append(f"vs={r['vs'] or '-'} ps={r['ps'] or '-'}")
     if r["max_draws"] > 1:
@@ -127,13 +158,18 @@ def register(server, session, capture_report) -> None:
                  "(baseline_seconds before the window), show='all' every line. The window is the last `seconds` of "
                  "the stream, or frames first..last. Needs efmi_live_start some time before the moment of interest: "
                  "the probe keeps keep_frames frames (30 s at 60 fps by default). Index buffers rewritten every frame "
-                 "have no hash ('volatile'); their lines are told apart by shaders and counts. Reads only.",
+                 "have no hash ('volatile'); their lines are merged by draw type and shaders, whatever range they "
+                 "draw. Reads only.",
                  {"seconds": {"type": "number", "minimum": 0, "default": 5.0,
                               "description": "the last this many seconds of the stream (0: use first/last)"},
                   "baseline_seconds": {"type": "number", "minimum": 0, "default": 0,
                                        "description": "this many seconds before the window count as the baseline"},
                   "first": {"type": "integer", "default": 0, "description": "first frame (seconds=0)"},
                   "last": {"type": "integer", "default": 0, "description": "last frame (seconds=0)"},
+                  "baseline_first": {"type": "integer", "default": 0,
+                                     "description": "with first/last: the baseline's first frame"},
+                  "baseline_last": {"type": "integer", "default": 0,
+                                    "description": "with first/last: the baseline's last frame"},
                   "show": {"type": "string", "enum": ["transient", "new", "all"], "default": "transient",
                            "description": "with hash given, every line that has it is shown unless set"},
                   "max_share": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5,
@@ -148,7 +184,8 @@ def register(server, session, capture_report) -> None:
                   "limit": {"type": "integer", "minimum": 1, "maximum": 300, "default": 60}})
     def efmi_live_history(seconds: float = 5.0, baseline_seconds: float = 0, first: int = 0, last: int = 0,
                           show: str = "", max_share: float = 0.5, origin: str = "game", min_index_count: int = 0,
-                          hash: str = "", timeline: bool = False, offset: int = 0, limit: int = 60):
+                          hash: str = "", timeline: bool = False, offset: int = 0, limit: int = 60,
+                          baseline_first: int = 0, baseline_last: int = 0):
         h = str(hash or "").strip().lower().removeprefix("0x")
         if h and (len(h) not in (8, 16) or any(ch not in "0123456789abcdef" for ch in h)):
             raise ToolError("hash: 8 hex digits for an index buffer, 16 for a shader")
@@ -156,14 +193,18 @@ def register(server, session, capture_report) -> None:
         seconds, baseline_seconds = max(0.0, float(seconds)), max(0.0, float(baseline_seconds))
         if not seconds and not first and not last:
             seconds = 5.0
+        bf, bl = (int(baseline_first), int(baseline_last)) if not seconds else (0, 0)
+        if bf and bl < bf:
+            raise ToolError("baseline_last has to be baseline_first or later")
         _st, feats = features()
         if SUMMARY_FEATURE in feats:
-            _now, summ = s.call(lambda c: c.live_summary(first=int(first), last=int(last), seconds=seconds,
+            _now, summ = s.call(lambda c: c.live_summary(first=int(first), last=int(last), base_first=bf,
+                                                         base_last=bl, seconds=seconds,
                                                          base_seconds=baseline_seconds, timeline=True))
             source = "probe"
         else:
             _now, frames = s.call(lambda c: c.live_get(since=0, max_frames=0))
-            summ = summarize_frames(frames, int(first), int(last), 0, 0, seconds, baseline_seconds)
+            summ = summarize_frames(frames, int(first), int(last), bf, bl, seconds, baseline_seconds)
             source = "server (probe before 0.1.10)"
         if summ.get("stale"):
             raise ToolError("the stream was restarted or cleared while it was being added up: ask again")
@@ -174,8 +215,8 @@ def register(server, session, capture_report) -> None:
         if not win["frames"]:
             raise ToolError(f"no kept frame in that window; the stream keeps frames {ring['first']}-{ring['last']}")
         if show == "new" and not base["frames"]:
-            raise ToolError("show='new' compares with a baseline: give baseline_seconds (the stream has to reach "
-                            "back that far before the window)")
+            raise ToolError("show='new' compares with a baseline: give baseline_seconds, or with first/last "
+                            "baseline_first/baseline_last (the stream has to reach back that far)")
         ticks = summ.get("timeline") or []
         t_of = {t[0]: t[1] for t in ticks}
         t0 = win["t_first"] or (ticks[0][1] if ticks else 0)
@@ -193,6 +234,7 @@ def register(server, session, capture_report) -> None:
         if h:
             rows = [r for r in rows if h in (r["ib"], r["ib_res"], r["vs"], r["ps"])]
         n = win["frames"]
+        rows = merge_unhashed(rows, n, base["frames"])
         lines = [f"stream kept by the probe: frames {ring['first']}-{ring['last']} ({ring['frames']} frames); "
                  f"window: frames {win['first']}-{win['last']}, {n} frames over {span:.2f} s"
                  + (f" ({fps:.0f} fps)" if fps else "")
@@ -230,12 +272,14 @@ def register(server, session, capture_report) -> None:
             note = ""
             if base["frames"]:
                 note = " [not in baseline]" if not r["base"] else f" [baseline {r['base']}/{base['frames']}]"
-            lines.append(f"  {at(r['first'])}..{at(r['last'])} {r['frames']}/{n} frames  "
+            lines.append(f"  {at(r['first'])}..{at(r['last'])} {'<=' if r.get('merged', 1) > 1 else ''}"
+                         f"{r['frames']}/{n} frames  "
                          + _line_text(r, note + s.mod_note(r["ib"])))
         if offset + len(page) < len(picked):
             lines.append(f"... {len(picked) - offset - len(page)} more (offset={offset + len(page)})")
         if any(r["ib_state"] == "volatile" for r in page):
-            lines.append("('volatile' index buffers are rewritten every frame: they have no stable hash)")
+            lines.append("('volatile' index buffers are rewritten every frame: they have no stable hash; their lines "
+                         "are merged by shaders, and '<=' frame counts are upper bounds)")
         if timeline and ticks:
             lines.append("timeline (per quarter second: frames, draws min-max, lines max):")
             buckets: "OrderedDict[int, list]" = OrderedDict()

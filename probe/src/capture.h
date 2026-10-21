@@ -196,3 +196,8 @@ void cap_trigger_cancel();
 // describing it; the capture is returned once, when it has been recorded (the trigger is off then).
 std::shared_ptr<Capture> cap_trigger_wait(uint32_t timeout_ms, std::string* state);
 void cap_status_json(std::string* out);             // appended as JSON members
+
+// Recording (record.h): started and stopped at the next frame boundary, as the hotkey does.
+void cap_record_request(bool start);
+bool cap_record_on();
+void cap_record_status(std::string* json);          // a JSON object

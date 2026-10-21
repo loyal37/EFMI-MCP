@@ -146,8 +146,8 @@ class ContinuousTests(unittest.TestCase):
         self.assertIn("no stable hash", text)
         order = [text.index(h) for h in ("ib=volatile", "ib=bbbbbbbb", "ib=dddddddd")]
         self.assertEqual(order, sorted(order))
-        self.assertEqual(self.probe.calls[-1], ("live_summary", {"first": 0, "last": 0, "seconds": 5.0,
-                                                                 "base_seconds": 0.0}))
+        self.assertEqual(self.probe.calls[-1], ("live_summary", {"first": 0, "last": 0, "base_first": 0, "base_last": 0,
+                                                                 "seconds": 5.0, "base_seconds": 0.0}))
 
     def test_new_lines_against_a_baseline(self):
         text, err = self.call("efmi_live_history", seconds=0.5, baseline_seconds=1, show="new")
@@ -158,6 +158,17 @@ class ContinuousTests(unittest.TestCase):
         self.assertIn("ib=dddddddd", text)
         self.assertIn("[not in baseline]", text)
         self.assertNotIn("ib=bbbbbbbb", text)            # in the baseline (frames 1250-1253)
+
+    def test_new_against_a_baseline_by_frames(self):
+        text, err = self.call("efmi_live_history", seconds=0, first=1280, last=1299, baseline_first=1200,
+                              baseline_last=1279, show="new")
+        self.assertFalse(err, text)
+        self.assertIn("baseline: frames 1200-1279 (80 frames)", text)
+        self.assertIn("ib=dddddddd", text)
+        self.assertNotIn("ib=bbbbbbbb", text)
+        text, err = self.call("efmi_live_history", seconds=0, first=1280, last=1299, baseline_first=1279,
+                              baseline_last=1200)
+        self.assertTrue(err)
 
     def test_new_needs_a_baseline(self):
         text, err = self.call("efmi_live_history", seconds=2, show="new")

@@ -15,6 +15,8 @@
      folders and restarts
  12. continuous mode over time and the trigger, against a mesh the sandbox draws now and then; the
      history and trigger tools on top (fake probe)
+ 13. recording: the folder the probe writes between switching it on and off, keyframes for news, the
+     recording tools on top (a recording written by hand, fake probe)
 """
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ def main() -> int:
         ("contents: byte for byte against XXMI's frame analysis", ["sandbox/contents_parity_test.py"]),
         ("slot cache written by the probe", ["sandbox/slot_cache_test.py"]),
         ("continuous mode history and trigger", ["sandbox/continuous_test.py"]),
+        ("recording written by the probe", ["sandbox/record_test.py"]),
         ("multiple-device regression", ["sandbox/multidevice_test.py"]),
         ("multiple-device regression with XXMI", ["sandbox/multidevice_test.py", "--xxmi"]),
         ("MCP server end to end", ["sandbox/mcp_test.py"]),
@@ -56,6 +59,7 @@ def main() -> int:
         ("shader dataflow behind the slot table", ["sandbox/shader_semantics_test.py"]),
         ("slot table of a version: three slots per mesh, groups, mod check, MCP query", ["sandbox/slot_table_test.py"]),
         ("continuous mode history and trigger tools (fake probe)", ["sandbox/continuous_unit_test.py"]),
+        ("recording tools on a recording written by hand (fake probe)", ["sandbox/record_unit_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")

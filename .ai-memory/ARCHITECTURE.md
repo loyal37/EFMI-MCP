@@ -58,6 +58,12 @@ A pipe message is `[u32 header_len][u32 payload_len][header JSON][payload]`. The
 
 On import, `hashes.py` tries to load `dist/efmi_crc32c.dll` by absolute path and accelerates CRC once the CPU SSE4.2 check and known vectors pass; when the library is missing or unsupported it keeps the Python fallback. Sources and build are in `server/native/`, completely independent of the injected probe. `decode.texture_to_pngs` produces the full PNG and the preview from one decode; compression level 1 keeps the pixels.
 
+### Probe 0.1.11: recording
+
+- `record.cpp`: `[Record]` settings, `rec_open` / `rec_lines` / `rec_runs` / `rec_frames` / `rec_open_runs` / `rec_keyframe` / `rec_close` queue tasks for a writer thread (created on first use) that makes the folder, appends the files, serializes keyframes with `cap_serialize` and rewrites `recording.json` at the end; `rec_bytes` feeds the disk limit, `rec_status_members` the status.
+- `capture.cpp`: `record_boundary` (called right after `end_recording`, before the client check, so that switching write tracking is seen in the same boundary) reads the hotkey and the client's command, starts/stops (`record_start` / `record_stop`), applies the time limit, writes the open runs every 5 s and decides keyframes; the start order is explicit request, triggered frame, keyframe, stream frame (continuous mode, trigger watch or recording), slot cache. Stream frames of a recording carry `Capture::rec` / `rec_id`; `cap_on_draw` calls `rec_check` (new game vs/ps pair after 30 frames) and `complete_capture` calls `record_push` (runs) before `live_push`; keyframes (`rec_kf`, recorded with `begin_recording(..., beside=true)` so they leave the client's capture and contents alone) go to `record_keyframe`. `live_lines` is the line builder shared by `live_push` and `record_push`.
+- Server: `record_tools.py` reads the folders (`Recording`), merges unhashed lines, clusters run starts for events and recurring groups.
+
 ### Probe 0.1.10: stream lines and the trigger
 
 - Stream: `LiveKey` (48 bytes, no padding) interned in `g_live_keys` / `g_live_key_ids`; `LiveFrame::items` holds `LiveEntry{key, draws, instances}`. `live_push` builds a frame's lines without the lock and interns them under it; `live_compact_keys_locked` renumbers when the key count reaches `g_live_compact_at`, bumping `g_live_key_gen`. `cap_live_summary` reads the ring in chunks of 64 frames under `g_lock`, binary-searching by frame number, and reports `stale` if the key generation changed.

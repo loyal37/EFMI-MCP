@@ -261,6 +261,12 @@ class ProbeClient:
         """Disarms the trigger; a capture it recorded and nobody collected is dropped."""
         return self.request("trigger_cancel")[0].get("trigger", {})
 
+    def record(self, action: str = "status", flush: bool = False, timeout_ms: int = 5000) -> dict:
+        """Recording (probe 0.1.11): "start" / "stop" as the in-game hotkey does, or "status". With flush the
+        reply comes once everything handed to the probe's writer is on disk. Returns the recording's status."""
+        reply, _ = self.request("record", action=action, flush=flush, timeout_ms=timeout_ms)
+        return reply.get("record", {})
+
     def reload_key(self, focus: bool = True, restore_focus: bool = True, max_hold_ms: int = 3000) -> dict:
         """Has the probe press XXMI's reload key (F10) inside the game. Returns its receipt."""
         reply, _ = self.request("reload_key", focus=focus, restore_focus=restore_focus, max_hold_ms=max_hold_ms)

@@ -11,6 +11,7 @@
 #include "json.h"
 #include "reload.h"
 #include "slotcache.h"
+#include "record.h"
 #include <sddl.h>
 #include <string.h>
 
@@ -79,7 +80,7 @@ static void status_json(JsonW& w)
 	// Optional abilities, so the server need not compare version strings.
 	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
 	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("rt_snapshots"); w.str("contents");
-	w.str("slot_cache"); w.str("live_summary"); w.str("trigger"); w.end_arr();
+	w.str("slot_cache"); w.str("live_summary"); w.str("trigger"); w.str("record"); w.end_arr();
 	bool elevated = false;
 	uint32_t integrity = 0;
 	reload_process_info(&elevated, &integrity);
@@ -498,6 +499,41 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		w.kd("id", id);
 		w.kb("ok", true);
 		w.key("trigger"); w.raw(state);
+		w.end_obj();
+		return send_msg(pipe, w.s, nullptr, 0);
+	}
+
+	if (cmd == "record") {
+		// "start" / "stop" as the hotkey would (at the next frame), "status"; `flush` waits until the
+		// recording's files have everything handed over so far.
+		std::string action = rq.str_or("action", "status");
+		if (action == "start" || action == "stop") {
+			const bool start = action == "start";
+			if (start && !g_swap)
+				return send_error(pipe, id, "no swap chain seen yet, so frame boundaries are unknown; is the game rendering?");
+			cap_record_request(start);
+			uint64_t until = now_ms() + 3000;
+			while (cap_record_on() != start && now_ms() < until)
+				Sleep(5);
+			if (cap_record_on() != start)
+				return send_error(pipe, id, "the game presented no frame in 3 s (paused, minimised or loading?)");
+			if (start)
+				rec_flush(2000);         // its folder is made by the writer: answer with it
+		} else if (action != "status") {
+			return send_error(pipe, id, "action must be start, stop or status");
+		}
+		bool flushed = true;
+		if (rq.bool_or("flush", false))
+			flushed = rec_flush((uint32_t)rq.num_or("timeout_ms", 5000));
+		std::string status;
+		cap_record_status(&status);
+		JsonW w;
+		w.begin_obj();
+		w.kd("id", id);
+		w.kb("ok", true);
+		w.kb("flushed", flushed);
+		w.key("record"); w.raw(status);
+		w.ku("frame", (uint32_t)g_frame_no);
 		w.end_obj();
 		return send_msg(pipe, w.s, nullptr, 0);
 	}

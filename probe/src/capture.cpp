@@ -2,6 +2,7 @@
 #include "registry.h"
 #include "json.h"
 #include "slotcache.h"
+#include "record.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
@@ -273,6 +274,12 @@ struct Capture {
 	bool     slots = false;          // looked at for the slot cache: only draws not seen before
 	bool     trig = false;           // started by the trigger
 	uint32_t trig_id = 0;            // ... of this arming; for a stream frame, the arming that watched it
+	bool     rec = false;            // a frame of the recording's stream
+	bool     rec_kf = false;         // a keyframe of the recording
+	uint32_t rec_id = 0;             // ... of this recording
+	const char* rec_reason = "";     // why the keyframe was taken
+	std::string rec_what;
+	double   t_end_qpc = 0;          // when the frame ended (ms, high resolution)
 	uint32_t slot_new = 0;           // draws recorded for it
 	uint32_t slot_deferred = 0;      // new draws left for a later frame (over max_new)
 	std::vector<SlotSeen> slot_keys; // one per recorded draw
@@ -384,6 +391,40 @@ static std::unordered_set<uint32_t> t_ib;
 static std::unordered_set<uint64_t> t_shader;
 static std::unordered_set<uint64_t> t_pairs;     // vertex/pixel shader pairs drawn during the baseline
 static uint32_t t_baseline_left = 0, t_fire_frame = 0;
+
+// Recording (see record.h). The client's command and the status are guarded by g_lock; the rest
+// belongs to the render thread.
+enum { RCMD_NONE = 0, RCMD_START, RCMD_STOP };
+static int g_rec_cmd = RCMD_NONE;
+static volatile LONG g_record_on = 0;
+static volatile LONG g_client_on = 0;            // a client is connected; buffer writes are tracked for it
+                                                 // and for a recording
+struct RecStatus {
+	uint32_t id = 0, start_frame = 0, stop_frame = 0, frames = 0, keyframes = 0, lines = 0, runs = 0, news = 0;
+	uint64_t start_ms = 0, stop_ms = 0;
+	std::string started_by, stopped_by, last_keyframe;
+	bool keyframes_stopped = false;
+};
+static RecStatus g_rs;
+struct RRun {                                    // the run a line is in, or was in last
+	uint32_t first = 0, last = 0, frames = 0, max_draws = 0, max_inst = 0;
+	uint64_t draws = 0;
+	uint32_t seen = 0, cur_draws = 0, cur_inst = 0;   // the frame being added and the line's counts in it
+	bool     open = false;
+};
+static uint32_t r_id = 0, r_start_frame = 0, r_news_frame = 0, r_news = 0, r_keyframes = 0, r_runs_done = 0;
+static uint32_t r_frames = 0;
+static double r_t0 = 0, r_last_kf = 0, r_last_checkpoint = 0;
+static bool r_first_kf = false, r_kf_stopped = false, r_key_down = false;
+static std::string r_news_what, r_kf_what;
+static const char* r_kf_reason = "";
+static std::unordered_map<LiveKey, uint32_t, LiveKeyHash> r_ids;
+static std::vector<RRun> r_runs;                 // by line number
+static std::vector<uint32_t> r_open;             // the lines whose run is open
+static std::unordered_set<uint64_t> r_pairs;     // vertex/pixel shader pairs the game drew since the start
+static std::string r_lines_out, r_runs_out;      // handed to the writer about once a second
+static std::vector<uint8_t> r_frames_out;
+static const uint32_t k_rec_baseline = 30;       // frames at the start whose shader pairs are not news
 
 static void trig_cancel_locked()
 {
@@ -589,8 +630,11 @@ void cap_invalidate_all()
 
 void cap_client_connected()
 {
+	EnterCriticalSection(&g_lock);
+	InterlockedExchange(&g_client_on, 1);
 	InterlockedIncrement(&g_client_gen);
 	InterlockedExchange(&g_tracking, 1);
+	LeaveCriticalSection(&g_lock);
 }
 
 void cap_client_disconnected()
@@ -600,7 +644,8 @@ void cap_client_disconnected()
 	g_live_generation++;
 	live_clear_locked();
 	trig_cancel_locked();                // nobody is left to collect what it would capture
-	InterlockedExchange(&g_tracking, 0);
+	InterlockedExchange(&g_client_on, 0);
+	InterlockedExchange(&g_tracking, g_record_on ? 1 : 0);   // a recording goes on without its client
 	InterlockedIncrement(&g_client_gen);
 	LeaveCriticalSection(&g_lock);
 }
@@ -2453,6 +2498,28 @@ static void trig_check_late(const Capture* c)
 	}
 }
 
+// A draw of a recorded frame: a vertex/pixel shader pair of the game's that the recording has not seen
+// yet (after its first frames) is news, and asks for a keyframe.
+static void rec_check(const Capture* c, const DrawRec& d)
+{
+	if (d.caller.origin == ORIGIN_XXMI || d.shaders[ST_VS] < 0 || d.shaders[ST_PS] < 0)
+		return;
+	const auto& vs = c->shaders[d.shaders[ST_VS]];
+	const auto& ps = c->shaders[d.shaders[ST_PS]];
+	if (!vs.known || !ps.known || !r_pairs.insert(pair_key(vs.info.hash, ps.info.hash)).second)
+		return;
+	if (c->frame - r_start_frame < k_rec_baseline)
+		return;
+	r_news++;
+	if (!r_news_frame) {
+		r_news_frame = c->frame;
+		char b[96];
+		snprintf(b, sizeof(b), "draw %u: vs %016llx ps %016llx", d.index, (unsigned long long)vs.info.hash,
+		         (unsigned long long)ps.info.hash);
+		r_news_what = b;
+	}
+}
+
 void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
                  void* indirect_buffer, uint32_t indirect_offset, const CallerInfo& caller)
 {
@@ -2666,8 +2733,12 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 		}
 	}
 
-	if (g_trig_watch && !c->trig)
-		trig_check(c, d);
+	if (!c->trig) {
+		if (g_trig_watch)
+			trig_check(c, d);
+		if (c->rec)
+			rec_check(c, d);
+	}
 	c->draws.push_back(d);
 	c->record_ms += qpc_ms() - t0;
 }
@@ -2709,26 +2780,19 @@ static void live_compact_keys_locked()
 	g_live_compact_at = (std::max)((size_t)1u << 18, g_live_keys.size() * 2);
 }
 
-// Collapses a frame into one line per distinct mesh/shader combination.
-static void live_push(const Capture& c)
-{
-	if (!g_live_on)
-		return;                          // a frame only the trigger watched
-	LiveFrame f;
-	f.frame = c.frame;
-	f.t_ms = c.t_end;
-	f.draws = (uint32_t)c.draws.size();
-	f.volatile_skips = c.volatile_skips;
-	f.cost_ms = c.record_ms + c.finalize_ms;
-	f.arena_bytes = c.arena_bytes;
+struct LiveLine { LiveKey key; uint32_t draws, instances; };
 
-	struct Line { LiveKey key; uint32_t draws, instances; };
-	std::vector<Line> lines;
+// Collapses a frame into one line per distinct mesh/shader combination (two regions of a frame can
+// still come to the same line).
+static void live_lines(const Capture& c, std::vector<LiveLine>* out, uint32_t* game_draws)
+{
+	typedef LiveLine Line;
+	std::vector<Line>& lines = *out;
 	typedef std::tuple<uint8_t, uint8_t, int32_t, int32_t, uint32_t, uint32_t, uint32_t, int32_t, int32_t> Key;
 	std::map<Key, size_t> index;
 	for (const DrawRec& d : c.draws) {
 		if (d.caller.origin != ORIGIN_XXMI)
-			f.game_draws++;
+			(*game_draws)++;
 		Key k(d.type, d.caller.origin, d.ib_region, d.ib_res, d.a.index_count, d.a.first_index,
 		      d.a.vertex_count, d.shaders[ST_VS], d.shaders[ST_PS]);
 		auto it = index.find(k);
@@ -2772,6 +2836,21 @@ static void live_push(const Capture& c)
 		index.emplace(k, lines.size());
 		lines.push_back(l);
 	}
+}
+
+static void live_push(const Capture& c)
+{
+	if (!g_live_on)
+		return;                          // a frame only the trigger or a recording looked at
+	LiveFrame f;
+	f.frame = c.frame;
+	f.t_ms = c.t_end;
+	f.draws = (uint32_t)c.draws.size();
+	f.volatile_skips = c.volatile_skips;
+	f.cost_ms = c.record_ms + c.finalize_ms;
+	f.arena_bytes = c.arena_bytes;
+	std::vector<LiveLine> lines;
+	live_lines(c, &lines, &f.game_draws);
 
 	EnterCriticalSection(&g_lock);
 	// Stop/disconnect can race both GPU readback and the summary construction.
@@ -2783,7 +2862,7 @@ static void live_push(const Capture& c)
 	}
 	std::unordered_map<uint32_t, size_t> at;     // two regions of a frame can come to the same line
 	f.items.reserve(lines.size());
-	for (const Line& l : lines) {
+	for (const LiveLine& l : lines) {
 		uint32_t id = live_key_id_locked(l.key);
 		auto it = at.find(id);
 		if (it != at.end()) {
@@ -3048,6 +3127,7 @@ static void end_recording()
 	g_rec.reset();
 	c->out_after.clear();
 	c->t_end = now_ms();
+	c->t_end_qpc = qpc_ms();
 	g_finalizing.push_back(c);
 }
 
@@ -3101,6 +3181,307 @@ static bool try_readback(Capture* c, bool block)
 	return done;
 }
 
+// ================================================================ recording
+static void rec_run_line(std::string* out, uint32_t id, const RRun& r)
+{
+	char b[160];
+	snprintf(b, sizeof(b), "[%u,%u,%u,%u,%u,%u,%llu]\n", id, r.first, r.last, r.frames, r.max_draws, r.max_inst,
+	         (unsigned long long)r.draws);
+	*out += b;
+}
+
+static uint32_t rec_t_ms(double qpc) { return qpc > r_t0 ? (uint32_t)(qpc - r_t0) : 0; }
+
+// What has piled up goes to the writer: new lines first, so that every run's line is known.
+static void rec_hand_over()
+{
+	if (!r_lines_out.empty()) rec_lines(r_id, std::move(r_lines_out));
+	if (!r_runs_out.empty()) rec_runs(r_id, std::move(r_runs_out));
+	if (!r_frames_out.empty()) rec_frames(r_id, std::move(r_frames_out));
+	r_lines_out.clear();
+	r_runs_out.clear();
+	r_frames_out.clear();
+}
+
+static void record_start(const char* how)
+{
+	int w = 0, h = 0;
+	hash_get_resolution(&w, &h);
+	r_id = rec_open(how, (uint32_t)g_frame_no, w, h);
+	r_start_frame = (uint32_t)g_frame_no;
+	r_t0 = qpc_ms();
+	r_last_kf = 0;
+	r_last_checkpoint = r_t0;
+	r_first_kf = true;
+	r_kf_stopped = false;
+	r_news_frame = r_news = r_keyframes = r_runs_done = r_frames = 0;
+	r_ids.clear();
+	r_runs.clear();
+	r_open.clear();
+	r_pairs.clear();
+	r_lines_out.clear();
+	r_runs_out.clear();
+	r_frames_out.clear();
+	EnterCriticalSection(&g_lock);
+	g_rs = RecStatus();
+	g_rs.id = r_id;
+	g_rs.start_frame = r_start_frame;
+	g_rs.start_ms = now_ms();
+	g_rs.started_by = how;
+	InterlockedExchange(&g_record_on, 1);
+	if (!g_tracking) {
+		// Without a client nothing tracked the game's writes so far; from the next frame on it does.
+		InterlockedExchange(&g_tracking, 1);
+		InterlockedIncrement(&g_client_gen);
+	}
+	LeaveCriticalSection(&g_lock);
+	if (rec_config().beep)
+		MessageBeep(MB_ICONASTERISK);
+	plog("record: recording %u started by %s at frame %u", r_id, how, r_start_frame);
+}
+
+static void record_stop(const char* why)
+{
+	for (uint32_t id : r_open) {
+		RRun& r = r_runs[id];
+		if (r.open) {
+			rec_run_line(&r_runs_out, id, r);
+			r.open = false;
+			r_runs_done++;
+		}
+	}
+	r_open.clear();
+	rec_hand_over();
+	const double dur = qpc_ms() - r_t0;
+	EnterCriticalSection(&g_lock);
+	g_rs.stop_frame = (uint32_t)g_frame_no;
+	g_rs.stop_ms = now_ms();
+	g_rs.stopped_by = why;
+	g_rs.runs = r_runs_done;
+	JsonW w;
+	w.begin_obj();
+	w.ks("stopped_by", why);
+	w.ku("stop_frame", g_rs.stop_frame);
+	w.ku("duration_ms", (uint64_t)dur);
+	w.ku("frames", g_rs.frames);
+	w.ku("lines", g_rs.lines);
+	w.ku("runs", g_rs.runs);
+	w.ku("keyframes", g_rs.keyframes);
+	w.ku("news", r_news);
+	w.kb("keyframes_stopped", r_kf_stopped);
+	w.end_obj();
+	InterlockedExchange(&g_record_on, 0);
+	if (!g_client_on && g_tracking) {
+		InterlockedExchange(&g_tracking, 0);
+		InterlockedIncrement(&g_client_gen);
+	}
+	LeaveCriticalSection(&g_lock);
+	rec_close(r_id, w.s.substr(1, w.s.size() - 2));
+	if (rec_config().beep)
+		MessageBeep(MB_OK);
+	plog("record: recording %u stopped (%s) after %.1f s", r_id, why, dur / 1000.0);
+}
+
+// The runs not finished yet, so that a recording the game ended in the middle of still has them.
+static void record_checkpoint()
+{
+	JsonW w;
+	w.begin_obj();
+	w.ku("frame", (uint32_t)g_frame_no);
+	w.key("runs"); w.begin_arr();
+	for (uint32_t id : r_open) {
+		const RRun& r = r_runs[id];
+		w.begin_arr();
+		w.u(id); w.u(r.first); w.u(r.last); w.u(r.frames); w.u(r.max_draws); w.u(r.max_inst); w.u(r.draws);
+		w.end_arr();
+	}
+	w.end_arr();
+	w.end_obj();
+	rec_hand_over();
+	rec_open_runs(r_id, std::move(w.s));
+}
+
+// A frame of the recording's stream: its lines continue the runs they are in, start runs, and end
+// the runs of lines it no longer draws.
+static void record_push(const Capture& c)
+{
+	if (!g_record_on || !c.rec || c.rec_id != r_id)
+		return;
+	std::vector<LiveLine> lines;
+	uint32_t game_draws = 0;
+	live_lines(c, &lines, &game_draws);
+	const uint32_t frame = c.frame;
+	std::vector<uint32_t> present;
+	present.reserve(lines.size());
+	for (const LiveLine& l : lines) {
+		// Index data without a hash is the game's CPU-built batches, drawn from another place in their
+		// buffer every frame: by range they would be a new line in every frame.
+		LiveKey key = l.key;
+		if (!key.has_ib_hash)
+			key.first_index = 0;
+		auto it = r_ids.find(key);
+		uint32_t id;
+		if (it == r_ids.end()) {
+			id = (uint32_t)r_runs.size();
+			r_ids.emplace(key, id);
+			r_runs.emplace_back();
+			JsonW w;
+			w.begin_obj();
+			w.ku("id", id);
+			w.ku("frame", frame);
+			w.key("line"); w.begin_arr(); live_key_json(w, key); w.end_arr();
+			w.end_obj();
+			r_lines_out += w.s;
+			r_lines_out += '\n';
+		} else {
+			id = it->second;
+		}
+		RRun& r = r_runs[id];
+		if (r.seen != frame) {
+			r.seen = frame;
+			r.cur_draws = r.cur_inst = 0;
+			present.push_back(id);
+		}
+		r.cur_draws += l.draws;
+		r.cur_inst += l.instances;
+	}
+	for (uint32_t id : present) {
+		RRun& r = r_runs[id];
+		if (!r.open) {
+			r.open = true;
+			r.first = frame;
+			r.frames = r.max_draws = r.max_inst = 0;
+			r.draws = 0;
+		}
+		r.last = frame;
+		r.frames++;
+		if (r.cur_draws > r.max_draws) r.max_draws = r.cur_draws;
+		if (r.cur_inst > r.max_inst) r.max_inst = r.cur_inst;
+		r.draws += r.cur_draws;
+	}
+	for (uint32_t id : r_open) {
+		RRun& r = r_runs[id];
+		if (r.open && r.seen != frame) {
+			rec_run_line(&r_runs_out, id, r);
+			r.open = false;
+			r_runs_done++;
+		}
+	}
+	r_open.swap(present);
+	const uint32_t rec[5] = { frame, rec_t_ms(c.t_end_qpc), (uint32_t)c.draws.size(), game_draws, (uint32_t)r_open.size() };
+	const uint8_t* b = (const uint8_t*)rec;
+	r_frames_out.insert(r_frames_out.end(), b, b + sizeof(rec));
+	r_frames++;
+	if (r_frames_out.size() >= 120 * sizeof(rec))
+		rec_hand_over();
+	EnterCriticalSection(&g_lock);
+	g_rs.frames = r_frames;
+	g_rs.lines = (uint32_t)r_runs.size();
+	g_rs.runs = r_runs_done;
+	g_rs.news = r_news;
+	LeaveCriticalSection(&g_lock);
+}
+
+static void record_keyframe(std::shared_ptr<Capture> c)
+{
+	if (!g_record_on || c->rec_id != r_id) {
+		release_capture_refs(c.get());
+		return;
+	}
+	rec_hand_over();                     // the stream up to here first
+	rec_keyframe(r_id, c, c->rec_reason, c->rec_what, rec_t_ms(c->t_end_qpc));
+	EnterCriticalSection(&g_lock);
+	g_rs.keyframes++;
+	g_rs.last_keyframe = c->rec_reason;
+	LeaveCriticalSection(&g_lock);
+}
+
+static bool key_held(uint32_t vk) { return (GetAsyncKeyState((int)vk) & 0x8000) != 0; }
+
+static bool game_in_front()
+{
+	HWND fg = GetForegroundWindow();
+	DWORD pid = 0;
+	if (fg)
+		GetWindowThreadProcessId(fg, &pid);
+	return pid == GetCurrentProcessId();
+}
+
+// The recording at a frame boundary: the hotkey and the client's command, the limits, the open runs
+// kept on disk now and then. Returns true when the frame starting now is to be a keyframe
+// (r_kf_reason says why; record_kf_started is called if it does start).
+static bool record_boundary()
+{
+	EnterCriticalSection(&g_lock);
+	int cmd = g_rec_cmd;
+	g_rec_cmd = RCMD_NONE;
+	LeaveCriticalSection(&g_lock);
+	const char* how = "client";
+	const RecordConfig& rc = rec_config();
+	if (rc.hotkey) {
+		// Exactly the configured modifiers, and only while the game is in front: typing elsewhere
+		// does nothing.
+		const bool down = key_held(rc.key) && key_held(VK_CONTROL) == rc.ctrl && key_held(VK_SHIFT) == rc.shift &&
+		                  key_held(VK_MENU) == rc.alt && game_in_front();
+		if (down && !r_key_down) {
+			cmd = g_record_on ? RCMD_STOP : RCMD_START;
+			how = "hotkey";
+		}
+		r_key_down = down;
+	}
+	if (cmd == RCMD_START && !g_record_on)
+		record_start(how);
+	else if (cmd == RCMD_STOP && g_record_on)
+		record_stop(how);
+	if (!g_record_on)
+		return false;
+
+	const double now = qpc_ms();
+	if (rc.max_minutes && now - r_t0 > rc.max_minutes * 60000.0) {
+		record_stop("time limit");
+		return false;
+	}
+	if (now - r_last_checkpoint > 5000) {
+		r_last_checkpoint = now;
+		record_checkpoint();
+	}
+	if (r_news_frame && (uint32_t)g_frame_no - r_news_frame > 30)
+		r_news_frame = 0;                // too late to show it
+	if (r_kf_stopped)
+		return false;
+	if (r_keyframes >= rc.max_keyframes || rec_bytes(r_id) >= ((uint64_t)rc.disk_mb << 20)) {
+		r_kf_stopped = true;
+		EnterCriticalSection(&g_lock);
+		g_rs.keyframes_stopped = true;
+		LeaveCriticalSection(&g_lock);
+		plog("record: no more keyframes in recording %u (%u taken, %llu bytes written)", r_id, r_keyframes,
+		     (unsigned long long)rec_bytes(r_id));
+		return false;
+	}
+	if (r_first_kf) {
+		r_kf_reason = "start";
+		r_kf_what.clear();
+	} else if (r_news_frame && now - r_last_kf >= rc.keyframe_gap_ms) {
+		r_kf_reason = "new shader pair";
+		r_kf_what = r_news_what;
+	} else if (rc.keyframe_every_s && now - r_last_kf >= rc.keyframe_every_s * 1000.0) {
+		r_kf_reason = "periodic";
+		r_kf_what.clear();
+	} else {
+		return false;
+	}
+	return true;
+}
+
+static void record_kf_started()
+{
+	r_first_kf = false;
+	r_last_kf = qpc_ms();
+	r_keyframes++;
+	if (!strcmp(r_kf_reason, "new shader pair"))
+		r_news_frame = 0;
+}
+
 static void complete_capture(std::shared_ptr<Capture> c)
 {
 	for (uint32_t ci : c->chunks) {
@@ -3117,7 +3498,12 @@ static void complete_capture(std::shared_ptr<Capture> c)
 	}
 	if (c->live) {
 		trig_check_late(c.get());
+		record_push(*c);
 		live_push(*c);
+		return;
+	}
+	if (c->rec_kf) {
+		record_keyframe(c);
 		return;
 	}
 	if (c->trig) {
@@ -3178,8 +3564,10 @@ static void process_finalizing()
 	}
 }
 
+// `beside`: a frame recorded for no client (a keyframe of a recording), which leaves the client's last
+// capture and the contents it keeps alone.
 static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volatile, uint64_t live_generation,
-                            bool slots = false)
+                            bool slots = false, bool beside = false)
 {
 	auto c = std::make_shared<Capture>();
 	c->rq = rq;
@@ -3194,7 +3582,7 @@ static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volat
 		c->draws.reserve(8192);
 		c->res.reserve(4096);
 	}
-	if (!live && !slots) {
+	if (!live && !slots && !beside) {
 		// One capture at a time has its contents kept: those of the one before end here.
 		if (g_bar)
 			cont_release(g_bar);
@@ -3740,6 +4128,8 @@ void cap_on_frame_boundary()
 	}
 	if (g_rec)
 		end_recording();
+	// Before the client check: starting or stopping a recording can switch write tracking.
+	const bool kf_due = record_boundary();
 
 	LONG gen = g_client_gen;
 	if (gen != g_seen_client_gen) {
@@ -3749,12 +4139,11 @@ void cap_on_frame_boundary()
 		g_rcache.clear();
 		if (g_bar && g_bar != g_rec.get())
 			cont_release(g_bar);
-		if (g_tracking) {
+		if (g_tracking)
 			resync_gpu_writers();
-		} else {
+		else
 			cap_state_cleared();
-			if (g_last) { release_capture_refs(g_last.get()); g_last.reset(); }
-		}
+		if (!g_client_on && g_last) { release_capture_refs(g_last.get()); g_last.reset(); }
 	}
 
 	process_finalizing();
@@ -3772,7 +4161,8 @@ void cap_on_frame_boundary()
 
 	const bool trig_due = trig_boundary();
 	const bool watching = t_phase == TRIG_BASELINE || t_phase == TRIG_ARMED;
-	bool start = false, live = false, hash_volatile = false, slots = false, trig = false;
+	const bool recording = g_record_on != 0;
+	bool start = false, live = false, hash_volatile = false, slots = false, trig = false, kf = false;
 	uint64_t live_generation = 0;
 	CaptureRequest rq;
 	EnterCriticalSection(&g_lock);
@@ -3787,12 +4177,22 @@ void cap_on_frame_boundary()
 		g_trig_state = TRIG_RECORDING;
 		g_trig_capture_frame = (uint32_t)g_frame_no;
 		t_phase = TRIG_RECORDING;
-	} else if ((g_live_on || watching) && g_tracking && !g_rec && g_finalizing.size() < 8 &&
-	           (watching || (uint32_t)g_frame_no % g_live.every == 0)) {
-		// The stream's frames are also what the trigger watches: then every frame is recorded.
+	} else if (kf_due && !g_rec && g_finalizing.size() < 8) {
+		// A keyframe of the recording: the whole frame, kept on disk instead of for reading.
+		rq = CaptureRequest();
+		rq.detail = 1;
+		rq.hash_ib = true;
+		rq.hash_vb = true;
+		rq.cb_data = rec_config().keyframe_cb;
+		rq.hold = false;
+		start = kf = true;
+	} else if ((g_live_on || watching || recording) && g_tracking && !g_rec && g_finalizing.size() < 8 &&
+	           (watching || recording || (uint32_t)g_frame_no % g_live.every == 0)) {
+		// The stream's frames are also what the trigger watches and what is recorded: then every
+		// frame is looked at.
 		rq = CaptureRequest();
 		rq.detail = -1;
-		rq.hash_ib = g_live.hash_ib || watching;
+		rq.hash_ib = g_live.hash_ib || watching || recording;
 		rq.hash_vb = g_live.hash_vb;
 		rq.cb_data = false;
 		rq.hold = false;
@@ -3813,12 +4213,23 @@ void cap_on_frame_boundary()
 	if (start) {
 		if (slots)
 			slot_prepare();
-		begin_recording(rq, live, hash_volatile, live_generation, slots);
+		begin_recording(rq, live, hash_volatile, live_generation, slots, kf);
 		if (trig) {
 			g_rec->trig = true;
 			g_rec->trig_id = t_id;
-		} else if (live && t_phase == TRIG_ARMED) {
-			g_rec->trig_id = t_id;           // watched for this arming: see trig_check_late
+		} else if (kf) {
+			g_rec->rec_kf = true;
+			g_rec->rec_id = r_id;
+			g_rec->rec_reason = r_kf_reason;
+			g_rec->rec_what = r_kf_what;
+			record_kf_started();
+		} else if (live) {
+			if (t_phase == TRIG_ARMED)
+				g_rec->trig_id = t_id;       // watched for this arming: see trig_check_late
+			if (recording) {
+				g_rec->rec = true;
+				g_rec->rec_id = r_id;
+			}
 		}
 	}
 }
@@ -4072,6 +4483,52 @@ void cap_release(uint32_t timeout_ms)
 	run_job(j, timeout_ms);
 }
 
+void cap_record_request(bool start)
+{
+	EnterCriticalSection(&g_lock);
+	g_rec_cmd = start ? RCMD_START : RCMD_STOP;
+	LeaveCriticalSection(&g_lock);
+}
+
+bool cap_record_on() { return g_record_on != 0; }
+
+void cap_record_status(std::string* out)
+{
+	JsonW w;
+	w.begin_obj();
+	EnterCriticalSection(&g_lock);
+	const RecStatus s = g_rs;
+	const bool on = g_record_on != 0;
+	LeaveCriticalSection(&g_lock);
+	w.kb("on", on);
+	w.ks("hotkey", rec_config().hotkey ? rec_hotkey_name() : std::string());
+	if (s.id) {
+		w.ku("id", s.id);
+		w.ks("started_by", s.started_by);
+		w.ku("start_frame", s.start_frame);
+		w.kd("seconds", ((on ? now_ms() : s.stop_ms) - s.start_ms) / 1000.0);
+		w.ku("frames", s.frames);
+		w.ku("lines", s.lines);
+		w.ku("runs", s.runs);
+		w.ku("keyframes", s.keyframes);
+		w.ku("news", s.news);
+		w.kb("keyframes_stopped", s.keyframes_stopped);
+		if (!s.last_keyframe.empty()) w.ks("last_keyframe", s.last_keyframe);
+		if (!on) {
+			w.ks("stopped_by", s.stopped_by);
+			w.ku("stop_frame", s.stop_frame);
+		}
+	}
+	w.end_obj();
+	std::string files;                   // the writer's: folder, error, bytes, pending, root
+	rec_status_members(&files);
+	if (!files.empty()) {
+		w.s.pop_back();
+		w.s += ',' + files + '}';
+	}
+	*out = w.s;
+}
+
 void cap_status_json(std::string* out)
 {
 	char b[384];
@@ -4086,6 +4543,9 @@ void cap_status_json(std::string* out)
 	         g_live_ring.size(), g_live_keys.size(), k_trig_state[g_trig_state]);
 	LeaveCriticalSection(&g_lock);
 	*out += b;
+	std::string rec;
+	cap_record_status(&rec);
+	*out += ",\"record\":" + rec;
 }
 
 // ================================================================ serialisation

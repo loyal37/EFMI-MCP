@@ -13,7 +13,7 @@ from .capture_model import Capture, STAGES
 from .draw_outputs import capture_draw_outputs
 from .fa_dump import DRAW_NAMES, MARKS, find_frame_dumps, parse_frame_dump
 from .hashes import crc32c, hex32, index_region
-from . import blender_runner, live_tools, loyal_bridge
+from . import blender_runner, live_tools, loyal_bridge, record_tools
 from .mcp_stdio import Image, Server, ToolError
 from .model_jobs import JobManager
 from .mods import ModCache
@@ -39,6 +39,10 @@ For something that is drawn only for a moment (a boss's skill, a hit effect): ef
 then efmi_live_history over the last seconds lists the lines that came and went (or were not drawn during a \
 baseline). To get such a moment in full, efmi_trigger_arm has the probe record the next frame by itself as soon \
 as a given mesh or shader, or any shader pair not seen during a baseline, is drawn; efmi_trigger_wait collects it.
+For a stretch the user chooses: recording, switched on and off by the user in the game (Ctrl+F9, a sound says on or \
+off) or with efmi_record. The probe writes it into a folder of its own, also without this server: what every frame \
+drew and keyframes (full frames) when something new appears. efmi_record_history shows what came and went and how \
+often (e.g. an effect seen three times), efmi_record_keyframe loads a keyframe as a capture.
 
 For texture slots use efmi_get_texture_slots after a full capture: select draw numbers or an IB hash to get \
 per-shader sampling evidence and texture bindings in one batch. It filters stale bindings by default and \
@@ -388,6 +392,16 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                          + f"; cached region hashes: {cap['region_cache']}")
             if cap.get("trigger") not in (None, "off"):
                 lines.append(f"trigger: {cap['trigger']} (efmi_trigger_wait collects what it records)")
+            rec = cap.get("record")
+            if isinstance(rec, dict):
+                s.record_hotkey = rec.get("hotkey") or ""
+                if rec.get("on"):
+                    lines.append(f"recording: ON for {rec.get('seconds', 0):.0f} s ({rec.get('frames', 0)} frames, "
+                                 f"{rec.get('keyframes', 0)} keyframes) into {rec.get('folder') or '?'}")
+                else:
+                    lines.append(f"recording: off; the user switches it with {rec.get('hotkey') or 'no key'} in the game")
+            elif "record" not in st.get("features", ()):
+                lines.append(f"recording: needs probe 0.1.11 (this is {st['probe']}). Restart the game to load {s.probe_dll}")
             if "reload_key" in st.get("features", ()):
                 level = "elevated" if st.get("process", {}).get("elevated") else "not elevated"
                 lines.append(f"reload: the probe presses F10 inside the game (game process is {level})")
@@ -1422,5 +1436,6 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
     from . import slot_table
     slot_table.register(srv, s)
     live_tools.register(srv, s, capture_report)
+    record_tools.register(srv, s, capture_report)
     model_tools.register(srv, s)
     return srv

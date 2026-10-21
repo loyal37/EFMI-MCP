@@ -1,5 +1,12 @@
 # EFMI MCP — Tasks
 
+## T-018: Recording between the user's on and off (done in the sandbox, 2026-10-21)
+
+- Goal (user): start and end of a stretch decided by the user with an on/off switch; what is recorded is the agent's choice, as complete as possible without hurting the game; folders under `captures\`.
+- Done: probe 0.1.11 (Ctrl+F9 or pipe `record`, runs per line, keyframes at start / news / every 10 s, writer thread) and server 0.1.21 (`efmi_record`, `efmi_record_list`, `efmi_record_history`, `efmi_record_keyframe`); tests `record_test.py` (46) and `record_unit_test.py` (9) in `run_all.py`.
+- To do in the game (restart to load 0.1.11, then a new desktop session): the user presses Ctrl+F9, hears the sound, dashes three times, presses Ctrl+F9 again; `efmi_record_history show=recurring` should give the dash as one group of three; look at the news keyframes; measure the frame time while recording and the size of keyframes.
+- T-017 (continuous mode, trigger): checked in the game on 2026-10-21 (history works, trigger fired on a dash); its window being too short led to T-018.
+
 ## T-017: Continuous mode over time and a triggered capture (done in the sandbox, 2026-10-21)
 
 - Goal (user): read moments as quick as a boss's skill: look back over the last seconds for what was drawn only briefly, and capture such a moment in full by itself.

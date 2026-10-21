@@ -2,6 +2,12 @@
 
 > Last updated: 2026-10-21.
 
+## LIMIT-012: Boundaries of recording (probe 0.1.11)
+
+- Keyframes hold bindings, hashes, pipeline state and constant buffers, not the contents of other buffers or textures; frames taken by a keyframe, an explicit capture or a trigger are not in the runs (a run goes on across them).
+- A recording ended by the game exiting keeps the runs still open only as of the last `open-runs.json` (at most 5 s old) and may lose the last lines of its files. One recording at a time; it stops by itself after `max_minutes`.
+- The hotkey reacts only while a window of the game process is in front; whether the game itself uses Ctrl+F9 was not checked. Scope of verification: the sandbox only.
+
 ## LIMIT-011: Boundaries of the history and the trigger (probe 0.1.10)
 
 - The trigger records the frame after the one it saw (more with `delay_frames`, a few frames for a "late" IB); an effect drawn in a single frame is then gone: the result warns and the history still has its line.
