@@ -19,7 +19,7 @@
 
 - Probe 0.1.12 / server 0.1.22 take the installation from the connected game, show whole-buffer hashes for ZZMI (`track_region_hashes = 0`), press ZZMI's F6 and read its state from the draws, and record stream-output targets. Not yet verified in Zenless Zone Zero itself; in the sandbox the F6 half of the integration test is still to be run.
 - ZZMI prints nothing after F6: with no mesh in view that a mod's `handling = skip` section replaces, the state is unknown.
-- The model workflow is EFMI's merged skeleton and refuses ZZMI until it is built on LoyalTools' ZZMI entry points (T-019). The slot cache and slot table key meshes by EFMI's region hashes.
+- The model workflow for ZZMI (LoyalTools' ZZMI entry points) is verified offline only: a live frame, deployment, reload and the comparison have not run in the game. The slot cache and slot table key meshes by EFMI's region hashes.
 - When two games carry a probe, the server prefers the one using `--efmi-root`; otherwise it connects to whichever it finds first.
 
 ## LIMIT-008: Boundaries of contents as they were at the call (probe 0.1.6)

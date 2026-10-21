@@ -309,18 +309,20 @@ def _assignments(lines: list[str]) -> dict[str, str]:
     return values
 
 
-def inspect_export(mod_dir: Path, profile: dict | None = None) -> dict:
+def inspect_export(mod_dir: Path, profile: dict | None = None, draw_sections: tuple = ("commandlist",)) -> dict:
     """Checks an exported mod as files: references, sizes, index ranges, entry points.
 
     The INI and buffers are the add-on's; nothing is repaired here. A failure
-    means the export must not be deployed.
+    means the export must not be deployed. ``draw_sections``: the kinds of
+    section whose draw commands are collected (EFMI's exports draw from command
+    lists, ZZMI's from TextureOverride sections too).
     """
     mod_dir = Path(mod_dir)
     errors, warnings = [], []
     inis = sorted(mod_dir.rglob("*.ini"))
     if not inis:
         return {"errors": ["no INI file"], "warnings": [], "ini_files": []}
-    resources, entry_points, draws = {}, [], []
+    resources, entry_points, draws, vertex_draws = {}, [], [], []
     referenced = set()
     for ini in inis:
         sections = read_ini_sections(ini)
@@ -344,17 +346,34 @@ def inspect_export(mod_dir: Path, profile: dict | None = None) -> dict:
                     warnings.append(f"{ini.name} [{name}]: empty buffer")
             elif name.lower().startswith("textureoverride") and "hash" in values:
                 entry_points.append({"ini": ini.name, "section": name, "hash": values["hash"].lower(),
+                                     # whether the game's own draw is skipped where this section applies
+                                     "skips": "skip" in values.get("handling", "").lower().split(),
                                      **{key: int(values[key]) for key in ("match_first_index", "match_index_count",
                                                                           "match_first_vertex") if values.get(key, "").lstrip("-").isdigit()}})
         for name, lines in sections:
-            if not name.lower().startswith("commandlist"):
+            if not name.lower().startswith(draw_sections):
                 continue
             bound = {}
             for line in lines:
                 key, separator, value = (part.strip() for part in line.partition("="))
                 key = key.lower()
-                if separator and key in ("ib", "vb0"):
+                if separator and key in ("ib", "vb0", "vb1", "vb2"):
                     bound[key] = value.split()[-1].lower()   # "ref ResourceX" or "ResourceX"
+                elif separator and key == "draw":
+                    # A non-indexed draw of the mod's own vertices (ZZMI: the skinning draw that streams them out).
+                    numbers = [part.strip() for part in value.split(",")]
+                    if len(numbers) != 2 or not all(n.lstrip("-").isdigit() for n in numbers):
+                        continue
+                    count, first = map(int, numbers)
+                    vb = resources.get(bound.get("vb0", ""))
+                    if not vb or "bytes" not in vb or not vb.get("stride"):
+                        continue
+                    draw = {"ini": ini.name, "section": name, "vertex_count": count, "first_vertex": first,
+                            "vb0": bound.get("vb0"), "vb0_file": vb["file"].relative_to(mod_dir.resolve()).as_posix()}
+                    vertex_draws.append(draw)
+                    if first + count > vb["bytes"] // vb["stride"]:
+                        errors.append(f"{ini.name} [{name}]: draw {count}, {first} exceeds the "
+                                      f"{vb['bytes'] // vb['stride']} vertices of {vb['file'].name}")
                 elif separator and key == "drawindexed":
                     numbers = [part.strip() for part in value.split(",")]
                     if len(numbers) != 3 or not all(n.lstrip("-").isdigit() for n in numbers):
@@ -430,7 +449,7 @@ def inspect_export(mod_dir: Path, profile: dict | None = None) -> dict:
             # has none at all would leave the game's original mesh on screen.
             warnings.append("Components without an entry point in the INI: " + ", ".join(coverage["missing"][:8]))
     return {"errors": errors, "warnings": warnings, "ini_files": [ini.relative_to(mod_dir).as_posix() for ini in inis],
-            "resources": len(resources), "draws": draws, "entry_points": entry_points,
+            "resources": len(resources), "draws": draws, "vertex_draws": vertex_draws, "entry_points": entry_points,
             "entry_point_coverage": coverage}
 
 

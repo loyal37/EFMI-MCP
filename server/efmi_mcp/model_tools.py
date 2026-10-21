@@ -9,13 +9,13 @@ import json
 import time
 from pathlib import Path
 
-from . import loyal_bridge, mod_runtime, model_capture, model_workflow
+from . import loyal_bridge, mod_runtime, model_capture, model_workflow, model_zzmi
 from .blender_runner import BlenderError
 from .capture_model import Capture
 from .loyal_bridge import BridgeError
 from .mcp_stdio import ToolError
 from .model_workflow import Project, WorkflowError
-from .probe_client import ProbeError
+from .probe_client import ProbeError, find_probes
 from .reload_workflow import confirm_on_frame, reload_and_capture
 
 WAIT = {"type": "integer", "minimum": 0, "maximum": 300, "default": 50,
@@ -57,16 +57,71 @@ def register(srv, s) -> None:
             raise ToolError("project_dir must be an absolute path")
         return Path(project_dir)
 
+    def zzmi_wanted(frame_dump: str = "") -> bool:
+        """Whether a scan or an extraction is for Zenless Zone Zero: a frame folder is (Endfield's path samples
+        the game itself), else the installation of the connected game decides."""
+        if frame_dump:
+            return True
+        if find_probes():
+            try:
+                s.probe()       # settles which game's installation is in use
+            except ToolError:
+                pass
+        if s.install.name == model_zzmi.GAME:
+            return True
+        s.require_efmi("The model workflow")
+        return False
+
+    def project_game(root: Path) -> str:
+        game = model_zzmi.project_game(root)
+        if game is None:
+            raise ToolError(f"{root} is not a model project (no LoyalTools workspace in workplace/)")
+        return game
+
+    def same_installation(game: str) -> None:
+        """Deploying and checking need the game the project was made for, and its installation."""
+        if game == model_zzmi.GAME:
+            if s.install.name != game:
+                raise ToolError(f"This is a Zenless Zone Zero project; the installation in use, {s.efmi_root}, is "
+                                f"{s.install.name}. Start Zenless Zone Zero with the probe (or the server with "
+                                "--efmi-root at ZZMI).")
+        else:
+            s.require_efmi("The model workflow")
+
     # ================================================================ scan
     @srv.tool("efmi_list_models",
               "Captures one frame and lists the characters LoyalTools recognises in it: the object names that "
               "efmi_extract_model accepts, their components (index-buffer hash, index and vertex counts) and a "
               "screenshot of the frame. A character whose mesh a mod currently replaces is not listed, because its "
               "original draws are not issued; switch mods off with efmi_toggle_mods first (or disable that mod and "
-              "reload).",
+              "reload). Zenless Zone Zero (ZZMI): lists the meshes LoyalTools' ZZMI extractor finds, skinned ones "
+              "(characters' parts) first, in frame_dump (an XXMI frame analysis folder, e.g. made with F8) or in a "
+              "frame captured now with contents and written as such a folder.",
+              {"frame_dump": {"type": "string", "default": "",
+                              "description": "ZZMI: an XXMI frame analysis folder to read instead of capturing (only read)."}},
               read_only=False)
-    def efmi_list_models():
-        s.require_efmi("The model workflow", connect=True)
+    def efmi_list_models(frame_dump=""):
+        if zzmi_wanted(frame_dump):
+            def scan(job=None):
+                folder = model_zzmi.require_dump(frame_dump) if frame_dump else None
+                frame = None
+                if folder is None:
+                    folder = s.out_dir / ("zzmi-scan-" + time.strftime("%Y%m%d-%H%M%S"))
+                    frame = model_zzmi.live_frame(s, folder)
+                listing = model_zzmi.list_models(folder, s.loyaltools_root)
+                if frame:
+                    listing["frame"] = frame
+                return listing
+            try:
+                listing = scan()
+            except (WorkflowError, ProbeError, ValueError) as exc:
+                raise _fail(exc)
+            for mesh in listing["meshes"]:
+                note = s.mod_note(mesh["ib_hash"])
+                if note:
+                    mesh["installed_mods"] = note.strip()
+            listing["loyaltools"] = s.loyaltools()
+            return listing
         try:
             listing = model_workflow.scan_models(s.probe(), s.out_dir, s.loyaltools_root)
         except (WorkflowError, BridgeError, ProbeError, ValueError) as exc:
@@ -87,8 +142,15 @@ def register(srv, s) -> None:
               "LoyalTools' JSON match), and imports the result in background Blender as <project>.blend with only the "
               "diffuse map connected to the material. The other game textures stay in the workspace for the export. "
               "Runs as a job. The character must be drawn by the game itself: with a mod active on it, switch mods "
-              "off with efmi_toggle_mods first (or disable the mod and reload).",
+              "off with efmi_toggle_mods first (or disable the mod and reload). Zenless Zone Zero (ZZMI): one frame "
+              "(frame_dump, an XXMI frame analysis folder, or one captured now with contents) goes to LoyalTools' own "
+              "ZZMI extraction in background Blender: mode='merged' is its merged skeleton (the character is found "
+              "by the bones its parts share; faces driven by shape keys keep the game's mesh), mode='skinned' every "
+              "skinned mesh as it is; object_name, samples and lod_json do not apply.",
               {"output_dir": {"type": "string", "description": "New (or empty) project folder; its name becomes the mod's name."},
+               "frame_dump": {"type": "string", "default": "",
+                              "description": "ZZMI: an XXMI frame analysis folder to extract from (only read); empty: capture now."},
+               "mode": {"type": "string", "enum": ["merged", "skinned"], "default": "merged", "description": "ZZMI only."},
                "object_name": {"type": "string", "default": "", "description": "Name from efmi_list_models; needed when several characters are in view."},
                "samples": {"type": "integer", "minimum": 3, "maximum": 6, "default": 3},
                "lod_json": {"type": "string", "default": "",
@@ -99,11 +161,20 @@ def register(srv, s) -> None:
                "blender_path": {"type": "string", "default": ""},
                "wait_s": WAIT},
               ["output_dir"], read_only=False)
-    def efmi_extract_model(output_dir, object_name="", samples=3, lod_json="", import_blender=True,
-                           materials="diffuse", blender_path="", wait_s=50):
-        s.require_efmi("The model workflow", connect=True)
+    def efmi_extract_model(output_dir, frame_dump="", mode="merged", object_name="", samples=3, lod_json="",
+                           import_blender=True, materials="diffuse", blender_path="", wait_s=50):
         root = root_of(output_dir)
         blender = blender_path or s.blender_path
+        if zzmi_wanted(frame_dump):
+            used = s.loyaltools(blender)
+
+            def run_zzmi(job):
+                return model_zzmi.extract_model(s, root, loyaltools_root=Path(used["path"]), frame_dump=frame_dump,
+                                                mode=mode, blender_path=blender, materials=materials,
+                                                protected=[s.efmi_root], job=job)
+
+            return start("extract", f"extract a Zenless Zone Zero model to {root}", run_zzmi, wait_s,
+                         not frame_dump, used)
         # The add-on of the Blender that imports the result also builds the workspace.
         used = s.loyaltools(blender)
 
@@ -137,8 +208,10 @@ def register(srv, s) -> None:
                "wait_s": WAIT},
               ["project_dir", "method"], read_only=False)
     def efmi_map_lod(project_dir, method, source="", full_source="", wait_s=50):
-        s.require_efmi("The model workflow")
         root = root_of(project_dir)
+        if model_zzmi.project_game(root) == model_zzmi.GAME:
+            raise ToolError("Zenless Zone Zero has one level of detail: there is no LoD mapping to make.")
+        s.require_efmi("The model workflow")
         used = s.loyaltools()
 
         def run(job):
@@ -163,12 +236,11 @@ def register(srv, s) -> None:
                "wait_s": WAIT},
               ["project_dir"], read_only=False)
     def efmi_export_mod(project_dir, blueprint="", blend="", blender_path="", wait_s=50):
-        s.require_efmi("The model workflow")
         root = root_of(project_dir)
+        exporter = model_zzmi.export_mod if project_game(root) == model_zzmi.GAME else model_workflow.export_mod
 
         def run(job):
-            return model_workflow.export_mod(root, blueprint=blueprint, blender_path=blender_path or s.blender_path,
-                                             blend=blend, job=job)
+            return exporter(root, blueprint=blueprint, blender_path=blender_path or s.blender_path, blend=blend, job=job)
 
         return start("export", f"export {root.name}", run, wait_s, False)
 
@@ -297,11 +369,15 @@ def register(srv, s) -> None:
               ["project_dir"], read_only=False, annotations={"destructiveHint": False, "idempotentHint": False})
     def efmi_verify_exported_mod(project_dir, export_id="latest", action="verify", deploy_dir="", settle_ms=2000,
                                  check_textures=True, wait_s=50):
-        s.require_efmi("The model workflow")
         root = root_of(project_dir)
         project = Project(root)
+        if find_probes():
+            try:
+                s.probe()       # settles which game's installation is in use
+            except ToolError:
+                pass
+        same_installation(project_game(root))
         try:
-            project.require_workspace()
             target = mod_runtime.resolve_target(s.efmi_root, deploy_dir, root.name)
             if action == "status":
                 return mod_runtime.deployment_status(target)
@@ -336,7 +412,10 @@ def register(srv, s) -> None:
               {"project_dir": PROJECT}, ["project_dir"])
     def efmi_model_project(project_dir):
         try:
-            described = model_workflow.describe_project(root_of(project_dir), s.loyaltools_root)
+            root = root_of(project_dir)
+            if model_zzmi.project_game(root) == model_zzmi.GAME:
+                return model_zzmi.describe_project(root)
+            described = model_workflow.describe_project(root, s.loyaltools_root)
         except (WorkflowError, BridgeError, ValueError) as exc:
             raise _fail(exc)
         described["loyaltools"] = s.loyaltools()

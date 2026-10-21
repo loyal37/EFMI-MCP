@@ -119,14 +119,17 @@ def _skip_matches(ref, d: dict) -> bool:
 def drawn_summary(session, cap: Capture) -> dict:
     """What the frame shows of the meshes that installed mods replace.
 
-    A game draw counts only when a mod's section for its index buffer skips it
-    ('handling = skip', with first index and index count matched): such a draw
-    is not issued while mods are on, whereas a section that only swaps textures
-    lets the game's draw through either way. XXMI's draws count as a mod's mesh
-    only with a vertex shader that the game's own draws use too: a mod draws
-    with the game's shaders, XXMI's overlay text with its own.
+    With EFMI the core replaces a draw that a mod's section names, so any game
+    draw of such an index buffer counts. Elsewhere (ZZMI) a mod skips the game's
+    draw itself: a game draw counts only when a mod's section for its index
+    buffer skips it ('handling = skip', with first index and index count
+    matched), whereas a section that only swaps textures lets the game's draw
+    through either way. XXMI's draws count as a mod's mesh only with a vertex
+    shader that the game's own draws use too: a mod draws with the game's
+    shaders, XXMI's overlay text with its own.
     """
     by_hash = session.mods.get().by_hash
+    core_replaces = session.install.is_efmi
     origins: Counter = Counter()
     by_game: Counter = Counter()
     game_vs = {d["sh"][0] for d in cap.raw_draws
@@ -142,7 +145,8 @@ def drawn_summary(session, cap: Capture) -> dict:
                 xxmi_meshes += 1
             continue
         h = cap.ib_hash(d)
-        if h and any(ref.kind == "texture" and ref.skips and _skip_matches(ref, d) for ref in by_hash.get(h, ())):
+        refs = by_hash.get(h, ()) if h else ()
+        if refs if core_replaces else any(ref.kind == "texture" and ref.skips and _skip_matches(ref, d) for ref in refs):
             by_game[h] += 1
     return {"draws": len(cap), "origins": dict(origins),
             # Meshes a mod replaces are drawn by XXMI while mods are on, by the game while they are off.

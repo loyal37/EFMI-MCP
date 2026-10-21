@@ -419,7 +419,7 @@ LOG_STYLES = ("readable", "xxmi")
 
 def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: list[str] | None = None,
                txt: bool = True, only_exact: bool = True, max_mb: int = 2048, max_seconds: float = 120.0,
-               folder: str = "", log: str = "readable") -> dict:
+               folder: str = "", log: str = "readable", files_for: set[int] | None = None) -> dict:
     """Writes the calls [first, last] of a capture as a folder laid out like an XXMI frame analysis dump.
 
     Buffers go out whole as .buf (with the .txt XXMI writes for index, vertex and constant
@@ -427,6 +427,8 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
     them. Only bytes that are those of the call are written unless only_exact is False.
     log='xxmi' writes log.txt in XXMI's own syntax, Set* calls included (worked out from the
     bindings), for tools that read XXMI's frame analysis; 'readable' writes 'bind' lines instead.
+    files_for: write files only for these calls; log.txt still lists every call of the range,
+    with the writes between them, so what earlier calls did to a resource stays visible.
     """
     kinds = set(kinds or ["ib", "vb", "cb", "buf", "tex", "out"])
     unknown = kinds - {"ib", "vb", "cb", "buf", "tex", "out"}
@@ -512,6 +514,9 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
             log_lines += [f"{prefix} {line}" for line in binding_changes(bound[d["type"] >= 8], now)]
             bound[d["type"] >= 8] = now
         log_lines.append(f"{prefix} {call_line(cap, d)}")
+        if files_for is not None and index not in files_for:
+            done = index
+            continue
 
         def named(slot: str, hash_text: str | None, resource_hash: str | None = None) -> str:
             mark = f"={hash_text}" + (f"({resource_hash})" if resource_hash and resource_hash != hash_text else "") if hash_text else ""

@@ -217,6 +217,14 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
     A buffer that has an exported file's size but was recorded with another
     hash is decided by reading it: a probe before 0.1.4 can record the hash of
     a destroyed buffer for a new one at its address, the bytes cannot be old.
+
+    Vertex buffers a stream-output draw of the frame wrote are computed at run
+    time and not compared (Zenless Zone Zero: the skinning draw streams the
+    posed vertices into the buffer the visible draws read as vb0); the mod's
+    non-indexed draws that read its own files (that skinning draw) are matched
+    like indexed ones. With ZZMI, whose mods skip the game's draw themselves, an
+    entry point no section skips (a texture-only override) keeps the game's mesh
+    by design; with EFMI the core replaces every entry point's mesh.
     """
     mod_dir = Path(manifest["mod_dir"])
     digests = {item["path"]: item for item in manifest["files"]}
@@ -248,6 +256,10 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
     for draw in manifest.get("draws", []):
         if draw.get("ib_file"):
             ini_draws.setdefault(draw["ib_file"], []).append(draw)
+    ini_vertex_draws = {}   # exported vertex file -> the INI's non-indexed draw commands that read it
+    for draw in manifest.get("vertex_draws", []):
+        ini_vertex_draws.setdefault(draw["vb0_file"], []).append(draw)
+    streamed = {entry["res"] for d in cap.draws() for entry in d.get("so", {}).values()}
     used_files: dict[str, dict] = {}
     mod_draws, foreign_draws, stale = [], 0, []
     resources_to_read: dict[int, str] = {}
@@ -303,6 +315,9 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
         used_files.setdefault(name, {"draws": 0, "resource": draw["ib"]["res"]})["draws"] += 1
         resources_to_read[draw["ib"]["res"]] = name
         for slot, binding in sorted(draw.get("vb", {}).items()):
+            if binding["res"] in streamed:
+                record["vertex_buffers"][f"vb{slot}"] = "stream_output"
+                continue
             vb_name, vb_state, _ = match_region(binding)
             record["vertex_buffers"][f"vb{slot}"] = vb_name or vb_state
             if vb_name:
@@ -311,6 +326,27 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
             elif vb_state == "same_size_different_bytes":
                 undecided.append((record, f"vb{slot}", binding))
         mod_draws.append(record)
+
+    # The mod's non-indexed draws of its own vertices (a skinning draw that streams them out).
+    vertex_draws = []
+    for draw in cap.draws():
+        if draw["origin"] != "xxmi" or draw["call"] not in ("Draw", "DrawInstanced") or not draw.get("vb"):
+            continue
+        record = {"draw": draw["index"], "vertex_count": draw["args"].get("vertex_count"),
+                  "first_vertex": draw["args"].get("first_vertex", 0), "vertex_buffers": {},
+                  "stream_output": sorted(entry["res"] for entry in draw.get("so", {}).values())}
+        for slot, binding in sorted(draw["vb"].items()):
+            vb_name, vb_state, _ = match_region(binding)
+            if vb_name is None and vb_state == "same_size_different_bytes":
+                vb_name, _ = file_with_bytes_of(binding)
+            record["vertex_buffers"][f"vb{slot}"] = vb_name or vb_state
+            if vb_name:
+                used_files.setdefault(vb_name, {"draws": 0, "resource": binding["res"]})["draws"] += 1
+                resources_to_read[binding["res"]] = vb_name
+        position = record["vertex_buffers"].get("vb0")
+        if position in ini_vertex_draws:
+            record["vertex_file"] = position
+            vertex_draws.append(record)
 
     # Whole buffers: the draw ranges above need not cover a file completely.
     for rid, name in sorted(resources_to_read.items()):
@@ -335,17 +371,30 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
             argument_mismatches.append({"draw": record["draw"], "index_file": record["index_file"],
                                         "drawn": [record["index_count"], record["first_index"], record["base_vertex"]],
                                         "ini": [[d["index_count"], d["first_index"], d["base_vertex"]] for d in expected]})
+    for record in vertex_draws:
+        expected = ini_vertex_draws[record["vertex_file"]]
+        if not any(d["vertex_count"] == record["vertex_count"] and d["first_vertex"] == record["first_vertex"]
+                   for d in expected):
+            argument_mismatches.append({"draw": record["draw"], "vertex_file": record["vertex_file"],
+                                        "drawn": [record["vertex_count"], record["first_vertex"]],
+                                        "ini": [[d["vertex_count"], d["first_vertex"]] for d in expected]})
 
     # Is the game's own mesh still drawn, and is ours drawn instead. Entry points
     # that lead to the same exported files (the full-detail entry of a component
     # and its LoD entries) are one group: they share one edited mesh.
-    after_counts = entry_draw_counts(cap, manifest.get("entry_points", []))
+    entries = manifest.get("entry_points", [])
+    after_counts = entry_draw_counts(cap, entries)
+    # ZZMI: does a section of the mod skip the game's draw where this entry applies?
+    mods_skip = manifest.get("game") == "ZZMI"
+    hash_wide_skip = {e["hash"] for e in entries if e.get("skips") and "match_index_count" not in e
+                      and "match_first_index" not in e}
     components = {}
-    for entry in manifest.get("entry_points", []):
+    for entry in entries:
         files = tuple(entry.get("index_files") or ())
         state = components.setdefault(files or ("", entry["section"]), {
             "name": entry["section"], "index_files": list(files), "entry_points": []})
         state["entry_points"].append({"section": entry["section"], "entry_hash": entry["hash"],
+                                      "skips": not mods_skip or entry.get("skips") or entry["hash"] in hash_wide_skip,
                                       "game_draws_before": (baseline_counts or {}).get(entry["section"]),
                                       "game_draws_after": after_counts[entry["section"]]})
     for state in components.values():
@@ -353,12 +402,16 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
         drawn = [r for r in mod_draws if r["index_file"] in names]
         state["mod_draws"] = len(drawn)
         state["exports_geometry"] = bool(names)
-        still_original = any(level["game_draws_after"] for level in state["entry_points"])
+        still_original = any(level["game_draws_after"] for level in state["entry_points"] if level["skips"])
+        kept = any(level["game_draws_after"] for level in state["entry_points"] if not level["skips"])
         seen_before = any(level["game_draws_before"] for level in state["entry_points"])
         if drawn and not still_original:
             state["status"] = "replaced"
         elif still_original:
             state["status"] = "original_still_drawn"
+        elif kept and not names:
+            # A texture-only override: the game draws its own mesh with the mod's textures.
+            state["status"] = "game_mesh_kept_by_export"
         elif not names and (seen_before or baseline_counts is None):
             # The add-on kept an entry point without a draw: the mesh was removed
             # in the blueprint or is left to the game by design.
@@ -397,8 +450,10 @@ def verify_capture(cap: Capture, client, manifest: dict, baseline_counts: dict[s
         "xxmi_indexed_draws": xxmi_indexed, "draws_of_this_mod": len(mod_draws),
         "xxmi_draws_of_other_content": foreign_draws, "stale_or_foreign_same_size": stale[:10],
         "components": list(components.values()),
-        "covered": sorted(s["name"] for s in components.values() if s["status"] == "replaced"),
-        "not_covered": sorted(f"{s['name']} ({s['status']})" for s in components.values() if s["status"] != "replaced"),
+        "covered": sorted(s["name"] for s in components.values() if s["status"] in ("replaced", "game_mesh_kept_by_export")),
+        "not_covered": sorted(f"{s['name']} ({s['status']})" for s in components.values()
+                              if s["status"] not in ("replaced", "game_mesh_kept_by_export")),
+        "vertex_draws_of_this_mod": vertex_draws[:50],
         "exported_buffers_seen": {name: {**info, "whole_buffer": whole.get(name, "not_read")}
                                   for name, info in sorted(used_files.items())},
         "exported_buffers_not_seen": sorted(set(geometry_files) - set(used_files)),

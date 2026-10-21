@@ -114,6 +114,10 @@ add-on generates the LoD entry points at export. These steps run as jobs: a call
 within wait_s, otherwise a job_id for efmi_model_job; while a job uses the probe the other live tools are refused. \
 Report each result with its own scope: an extraction, an export that passed its file checks, a confirmed reload \
 and a verified mod are four different things.
+Zenless Zone Zero (ZZMI): the same tools, on one frame that LoyalTools' ZZMI extractor reads: frame_dump (an XXMI \
+frame analysis folder, e.g. made with F8) or a frame captured now with contents. efmi_extract_model mode='merged' \
+is LoyalTools' merged skeleton (faces driven by shape keys keep the game's mesh), mode='skinned' every skinned mesh \
+as it is; there is no LoD mapping. Export and verification work as for Endfield; the game is taken from the project.
 """
 
 NO_PROBE = """\

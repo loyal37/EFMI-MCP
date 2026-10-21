@@ -20,6 +20,9 @@
  14. installations: EFMI and ZZMI told apart, whole-buffer hashes, which mod sections replace a draw,
      the mods switch read from the draws, log.txt in XXMI's syntax (offline; the real ZZMI core with
      F10 and F6 in a private sandbox copy is zzmi_integration_test.py, opt-in)
+ 15. the ZZMI model workflow: a frame written for LoyalTools and read by its installed ZZMI extractor, and the
+     in-game comparison of an export (the extraction and export in Blender on a real frame analysis folder is
+     zzmi_model_offline_integration.py, opt-in)
 """
 from __future__ import annotations
 
@@ -65,6 +68,8 @@ def main() -> int:
         ("recording tools on a recording written by hand (fake probe)", ["sandbox/record_unit_test.py"]),
         ("installations (EFMI, ZZMI), whole-buffer hashes, switch state from draws, XXMI-syntax log",
          ["sandbox/zzmi_unit_test.py"]),
+        ("ZZMI model workflow: a live frame read by LoyalTools' ZZMI extractor, the in-game comparison rules",
+         ["sandbox/zzmi_model_unit_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")
