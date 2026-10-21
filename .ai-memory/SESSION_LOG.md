@@ -427,3 +427,9 @@ The user asked whether a boss's skill, which lasts a moment, can be read, and th
 ## 2026-10-21: Recording switched by the user (probe 0.1.11 / server 0.1.21)
 
 0.1.10 was tried in the game: continuous mode 0.75 ms per frame; the new-pair trigger caught the user's dash (a glow particle, frame 35110 in full); the look back lost part of three dashes to its one-minute window and showed volatile batches as news (merged in the server since). At the user's request a recording switched by Ctrl+F9 in the game (or `efmi_record`), written by the probe into `captures\recording-<date>-<time>\`: runs of frames per mesh/shader line, per-frame counts, keyframes at the start, on new shader pairs and every ten seconds; the server reads it back (`efmi_record_history` events / recurring / lines, `efmi_record_keyframe`). Sandbox only: record test 46, unit tests 9 + 21, full regression 22/22 with the candidate. Installed in `dist\` (0.1.10 kept in `dist\backup-0.1.10\`); the game was not running.
+
+## 2026-10-21: Zenless Zone Zero (ZZMI) support, first part
+
+- Server 0.1.22 / probe 0.1.12: installation from the connected game, whole-buffer hashes for ZZMI, F6 mods switch with the state from the draws (stricter draw rules for both games), SO targets per call, `efmi_dump_frame log=xxmi`. Details and the scope of verification in CURRENT_STATE; next steps in T-019.
+- The key-press sandbox tests could not run to the end: the user was working in Blender and then playing Zenless Zone Zero (elevated) in the foreground. Not a fault of the change, but they are still to be run.
+- The user's new request mid-round: the model workflow should use LoyalTools' new ZZZ support; LoyalTools 1.7.1 extracts the user's dump outside Blender (reference workspace in the session's scratch folder).

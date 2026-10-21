@@ -66,6 +66,7 @@ def register(srv, s) -> None:
               "reload).",
               read_only=False)
     def efmi_list_models():
+        s.require_efmi("The model workflow", connect=True)
         try:
             listing = model_workflow.scan_models(s.probe(), s.out_dir, s.loyaltools_root)
         except (WorkflowError, BridgeError, ProbeError, ValueError) as exc:
@@ -100,6 +101,7 @@ def register(srv, s) -> None:
               ["output_dir"], read_only=False)
     def efmi_extract_model(output_dir, object_name="", samples=3, lod_json="", import_blender=True,
                            materials="diffuse", blender_path="", wait_s=50):
+        s.require_efmi("The model workflow", connect=True)
         root = root_of(output_dir)
         blender = blender_path or s.blender_path
         # The add-on of the Blender that imports the result also builds the workspace.
@@ -135,6 +137,7 @@ def register(srv, s) -> None:
                "wait_s": WAIT},
               ["project_dir", "method"], read_only=False)
     def efmi_map_lod(project_dir, method, source="", full_source="", wait_s=50):
+        s.require_efmi("The model workflow")
         root = root_of(project_dir)
         used = s.loyaltools()
 
@@ -160,6 +163,7 @@ def register(srv, s) -> None:
                "wait_s": WAIT},
               ["project_dir"], read_only=False)
     def efmi_export_mod(project_dir, blueprint="", blend="", blender_path="", wait_s=50):
+        s.require_efmi("The model workflow")
         root = root_of(project_dir)
 
         def run(job):
@@ -293,6 +297,7 @@ def register(srv, s) -> None:
               ["project_dir"], read_only=False, annotations={"destructiveHint": False, "idempotentHint": False})
     def efmi_verify_exported_mod(project_dir, export_id="latest", action="verify", deploy_dir="", settle_ms=2000,
                                  check_textures=True, wait_s=50):
+        s.require_efmi("The model workflow")
         root = root_of(project_dir)
         project = Project(root)
         try:

@@ -26,6 +26,7 @@ class HashRef:
     hash: str
     namespace: str | None = None
     match: dict = field(default_factory=dict)   # match_first_index / match_index_count ...
+    skips: bool = False     # the section has 'handling = skip': the game's own draw is not issued
 
 
 @dataclass
@@ -86,6 +87,7 @@ def _parse_ini(path: Path, rel: str, mod: str) -> tuple[list[HashRef], str | Non
     section = ""
     current: HashRef | None = None
     pending_match: dict = {}
+    pending_skip = False
     sections = 0
     for line in _read_text(path).splitlines():
         stripped = line.strip()
@@ -97,6 +99,7 @@ def _parse_ini(path: Path, rel: str, mod: str) -> tuple[list[HashRef], str | Non
             sections += 1
             current = None
             pending_match = {}
+            pending_skip = False
             continue
         m = _RE_KEY.match(line)
         if not m:
@@ -109,8 +112,13 @@ def _parse_ini(path: Path, rel: str, mod: str) -> tuple[list[HashRef], str | Non
         if low.startswith("textureoverride") or low.startswith("shaderoverride"):
             if key == "hash" and _RE_HASH.match(val):
                 current = HashRef(mod, rel, section, "texture" if low.startswith("texture") else "shader",
-                                  val.lower(), namespace, dict(pending_match))
+                                  val.lower(), namespace, dict(pending_match), pending_skip)
                 refs.append(current)
+            elif key == "handling" and "skip" in val.lower().split():
+                if current is not None:
+                    current.skips = True
+                else:
+                    pending_skip = True
             elif key.startswith("match_"):
                 if current is not None:
                     current.match[key] = val

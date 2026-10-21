@@ -13,9 +13,10 @@ DEFAULT_EFMI = r"D:\XXMI-Launcher-Portable-v2.1.6\EFMI"
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="efmi_mcp", description="MCP server for live EFMI/XXMI data")
+    ap = argparse.ArgumentParser(prog="efmi_mcp", description="MCP server for live XXMI data (EFMI, ZZMI)")
     ap.add_argument("--efmi-root", default=os.environ.get("EFMI_ROOT", DEFAULT_EFMI),
-                    help="the EFMI folder (read only): used to list mods and match hashes to them")
+                    help="the XXMI game folder (EFMI, ZZMI; read only) used until a probe is connected: mods are "
+                         "listed and hashes matched in the installation of the connected game")
     ap.add_argument("--out", default=os.environ.get("EFMI_MCP_OUT", str(PROJECT / "captures")),
                     help="where exported meshes, textures and shader listings are written")
     ap.add_argument("--probe-dll", default=str(PROJECT / "dist" / "efmi_probe.dll"),
@@ -29,7 +30,7 @@ def main() -> int:
     # stdout carries the protocol: anything else must go to stderr.
     server = build_server(Path(args.efmi_root), Path(args.out), Path(args.probe_dll),
                           Path(args.loyaltools_root) if args.loyaltools_root else None, args.blender)
-    print(f"efmi-mcp: {len(server.tools)} tools, EFMI root {args.efmi_root}", file=sys.stderr)
+    print(f"efmi-mcp: {len(server.tools)} tools, XXMI folder {args.efmi_root}", file=sys.stderr)
     server.serve()
     return 0
 

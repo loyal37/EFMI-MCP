@@ -163,6 +163,113 @@ def bindings_of(cap: Capture, d: dict) -> dict[str, str]:
     return out
 
 
+# ---------------------------------------------------------------- log.txt in XXMI's own syntax
+# The Set* calls themselves are not recorded; these lines are worked out from the bindings of each
+# call, written only where a binding differs from the call before it. Resource addresses are made up
+# (0x + the capture's resource number + 1): one address per resource within the dump, as in XXMI's log.
+_NULL = "0x0000000000000000"
+_SHADER_CALLS = (("vs", "VSSetShader", "pVertexShader"), ("hs", "HSSetShader", "pHullShader"),
+                 ("ds", "DSSetShader", "pDomainShader"), ("gs", "GSSetShader", "pShader"),
+                 ("ps", "PSSetShader", "pPixelShader"))
+
+
+def _address(rid: int | None) -> str:
+    return f"0x{rid + 1:016X}" if rid is not None and rid >= 0 else _NULL
+
+
+def _slot_line(cap: Capture, slot, rid: int, hash_text: str | None = None, view: bool = False) -> list[str]:
+    """XXMI's line under a Set* call for one bound slot; none for a resource without a hash."""
+    h = hash_text or cap.res_hash(rid)
+    if not h:
+        return []
+    return [f"       {slot}: " + (f"view={_address(rid)} " if view else "") + f"resource={_address(rid)} hash={h}"]
+
+
+def xxmi_state_lines(cap: Capture, d: dict, raw: dict, state: dict) -> list[str]:
+    """The Set* lines XXMI would have logged before this call, given the state left by the calls before.
+
+    ``state`` is updated in place. Stream-output targets are only known in full captures.
+    """
+    lines: list[str] = []
+
+    def changed(key, value) -> bool:
+        if key in state and state[key] == value:
+            return False
+        state[key] = value
+        return True
+
+    if d["type"] >= 8:
+        if changed("cs", d["shaders"].get("cs")):
+            h = d["shaders"].get("cs")
+            lines.append(f"CSSetShader(pComputeShader:{_address(raw['sh'][5]) if h else _NULL}, ppClassInstances:{_NULL}, "
+                         f"NumClassInstances:0)" + (f" hash={h}" if h else ""))
+        uavs = {int(name[1:]): entry["res"] for name, entry in d.get("out", {}).items() if name[0] == "u"}
+        if changed("cs-uav", tuple(sorted(uavs.items()))) and uavs:
+            count = max(uavs) + 1
+            lines.append(f"CSSetUnorderedAccessViews(StartSlot:0, NumUAVs:{count}, ppUnorderedAccessViews:{_NULL}, "
+                         f"pUAVInitialCounts:{_NULL})")
+            for slot in range(count):
+                if slot in uavs:
+                    lines += _slot_line(cap, slot, uavs[slot], view=True)
+        return lines
+
+    vbs = {int(slot): vb for slot, vb in d.get("vb", {}).items()}
+    if changed("vb", tuple((slot, vb["res"], vb["offset"], vb["stride"]) for slot, vb in sorted(vbs.items()))) and vbs:
+        count = max(vbs) + 1
+        lines.append(f"IASetVertexBuffers(StartSlot:0, NumBuffers:{count}, ppVertexBuffers:{_NULL}, pStrides:{_NULL}, "
+                     f"pOffsets:{_NULL})")
+        for slot in range(count):
+            if slot in vbs:
+                lines += _slot_line(cap, slot, vbs[slot]["res"], vbs[slot]["hash"])
+    ib = d.get("ib")
+    if changed("ib", (ib["res"], ib["format"], ib["offset"]) if ib else None):
+        if ib:
+            h = ib["hash"] or ib["resource_hash"]
+            lines.append(f"IASetIndexBuffer(pIndexBuffer:{_address(ib['res'])}, Format:{ib['format']}, Offset:{ib['offset']})"
+                         + (f" hash={h}" if h else ""))
+        else:
+            lines.append(f"IASetIndexBuffer(pIndexBuffer:{_NULL}, Format:0, Offset:0)")
+    if changed("topology", raw.get("topo")) and raw.get("topo") is not None:
+        lines.append(f"IASetPrimitiveTopology(Topology:{raw['topo']})")
+    if "so" in d or cap.detail == "full":
+        targets = {int(name[2:]): entry["res"] for name, entry in d.get("so", {}).items()}
+        if changed("so", tuple(sorted(targets.items()))):
+            count = max(targets) + 1 if targets else 0
+            lines.append(f"SOSetTargets(NumBuffers:{count}, ppSOTargets:{_NULL}, pOffsets:{_NULL})")
+            for slot in range(count):
+                if slot in targets:
+                    lines += _slot_line(cap, slot, targets[slot])
+    for stage, call, arg in _SHADER_CALLS:
+        h = d["shaders"].get(stage)
+        if changed(stage, h):
+            sid = raw["sh"][STAGES.index(stage)] if raw.get("sh") else -1
+            lines.append(f"{call}({arg}:{_address(sid) if h else _NULL}, ppClassInstances:{_NULL}, NumClassInstances:0)"
+                         + (f" hash={h}" if h else ""))
+    return lines
+
+
+def xxmi_event_lines(cap: Capture, event: dict) -> list[str]:
+    """A write between calls as XXMI logs it; copies with the Src/Dst lines that name both resources."""
+    kind, a, dst, src = event["type"], event["a"], event["dst"], event["src"]
+    dst_hash = cap.res_hash(dst) if dst >= 0 else None
+    tail = f" hash={dst_hash}" if dst_hash else ""
+    if kind == "CopyResource":
+        return ([f"CopyResource(pDstResource:{_address(dst)}, pSrcResource:{_address(src)})"]
+                + _slot_line(cap, "Src", src) + _slot_line(cap, "Dst", dst))
+    if kind == "CopySubresourceRegion":
+        return ([f"CopySubresourceRegion(pDstResource:{_address(dst)}, DstSubresource:{a[0]}, DstX:{a[1]}, DstY:0, DstZ:0, "
+                 f"pSrcResource:{_address(src)}, SrcSubresource:{a[3]}, pSrcBox:{_NULL})"]
+                + _slot_line(cap, "Src", src) + _slot_line(cap, "Dst", dst))
+    if kind == "Map":
+        return [f"Map(pResource:{_address(dst)}, Subresource:{a[0]}, MapType:{a[1]}, MapFlags:0, pMappedResource:{_NULL}){tail}"]
+    if kind == "Unmap":
+        return [f"Unmap(pResource:{_address(dst)}, Subresource:{a[0]}){tail}"]
+    if kind == "UpdateSubresource":
+        return [f"UpdateSubresource(pDstResource:{_address(dst)}, DstSubresource:{a[0]}, pDstBox:{_NULL}, pSrcData:{_NULL}, "
+                f"SrcRowPitch:0, SrcDepthPitch:0){tail}"]
+    return [f"{kind}(pResource:{_address(dst)}){tail}"]
+
+
 def binding_changes(before: dict[str, str] | None, now: dict[str, str]) -> list[str]:
     """One line for every slot a call has bound differently from the call before it (derived, not observed calls)."""
     if before is None:
@@ -307,19 +414,26 @@ class _Writer:
         return True
 
 
+LOG_STYLES = ("readable", "xxmi")
+
+
 def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: list[str] | None = None,
                txt: bool = True, only_exact: bool = True, max_mb: int = 2048, max_seconds: float = 120.0,
-               folder: str = "") -> dict:
+               folder: str = "", log: str = "readable") -> dict:
     """Writes the calls [first, last] of a capture as a folder laid out like an XXMI frame analysis dump.
 
     Buffers go out whole as .buf (with the .txt XXMI writes for index, vertex and constant
     buffers), textures as .dds holding the subresource a view shows, outputs as the call left
     them. Only bytes that are those of the call are written unless only_exact is False.
+    log='xxmi' writes log.txt in XXMI's own syntax, Set* calls included (worked out from the
+    bindings), for tools that read XXMI's frame analysis; 'readable' writes 'bind' lines instead.
     """
     kinds = set(kinds or ["ib", "vb", "cb", "buf", "tex", "out"])
     unknown = kinds - {"ib", "vb", "cb", "buf", "tex", "out"}
     if unknown:
         raise ToolError(f"unknown kinds {sorted(unknown)}; choose from ib, vb, cb, buf, tex, out")
+    if log not in LOG_STYLES:
+        raise ToolError(f"log must be one of {', '.join(LOG_STYLES)}")
     total = len(cap)
     last = total - 1 if last < 0 else min(last, total - 1)
     if not 0 <= first <= last:
@@ -332,10 +446,16 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
     problems: list[str] = []
     log_lines: list[str] = [f"analyse_options: efmi-mcp capture {cap.frame}",
                             "written by efmi-mcp from a live capture, laid out like XXMI's frame analysis; calls are numbered "
-                            "as in the capture (from 0), and XXMI's own command list and variable trace is not in here",
-                            "'bind' lines say what a call has bound differently from the call of its kind before it; they are "
-                            "worked out from the bindings of the calls, the Set* calls themselves were not recorded"]
+                            "as in the capture (from 0), and XXMI's own command list and variable trace is not in here"]
+    if log == "xxmi":
+        log_lines.append("the Set* lines are worked out from the bindings of the calls, where a binding differs from the "
+                         "call before; the Set* calls themselves were not recorded, and resource addresses are made up "
+                         "(one per resource of the capture)")
+    else:
+        log_lines.append("'bind' lines say what a call has bound differently from the call of its kind before it; they "
+                         "are worked out from the bindings of the calls, the Set* calls themselves were not recorded")
     bound: dict[bool, dict | None] = {False: previous_bindings(cap, first, False), True: previous_bindings(cap, first, True)}
+    state: dict = {}
     events = cap.events()
     by_call: dict[int, list[dict]] = {}
     for event in events:
@@ -379,11 +499,18 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
         d = cap.draw(index)
         prefix = f"{index:06d}"
         shaders = "".join(f"-{stage}={d['shaders'][stage]}" for stage in STAGES if d["shaders"].get(stage))
-        for event in by_call.get(index, []):
-            log_lines.append(f"{prefix} {event_text(cap, event)}")
-        now = bindings_of(cap, d)
-        log_lines += [f"{prefix} {line}" for line in binding_changes(bound[d["type"] >= 8], now)]
-        bound[d["type"] >= 8] = now
+        if log == "xxmi":
+            for event in by_call.get(index, []):
+                lines = xxmi_event_lines(cap, event)
+                log_lines += [f"{prefix} {lines[0]}"] + lines[1:]
+            for line in xxmi_state_lines(cap, d, cap.raw_draws[index], state):
+                log_lines.append(line if line.startswith(" ") else f"{prefix} {line}")
+        else:
+            for event in by_call.get(index, []):
+                log_lines.append(f"{prefix} {event_text(cap, event)}")
+            now = bindings_of(cap, d)
+            log_lines += [f"{prefix} {line}" for line in binding_changes(bound[d["type"] >= 8], now)]
+            bound[d["type"] >= 8] = now
         log_lines.append(f"{prefix} {call_line(cap, d)}")
 
         def named(slot: str, hash_text: str | None, resource_hash: str | None = None) -> str:

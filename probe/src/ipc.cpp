@@ -80,7 +80,8 @@ static void status_json(JsonW& w)
 	// Optional abilities, so the server need not compare version strings.
 	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
 	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("rt_snapshots"); w.str("contents");
-	w.str("slot_cache"); w.str("live_summary"); w.str("trigger"); w.str("record"); w.end_arr();
+	w.str("slot_cache"); w.str("live_summary"); w.str("trigger"); w.str("record"); w.str("mods_key_install");
+	w.str("stream_output"); w.end_arr();
 	bool elevated = false;
 	uint32_t integrity = 0;
 	reload_process_info(&elevated, &integrity);
@@ -573,8 +574,8 @@ static bool handle(HANDLE pipe, const JVal& rq)
 
 	if (cmd == "reload_key" || cmd == "mods_key") {
 		// Two fixed functions with a fixed key each, to this process's own window
-		// and nothing else: F10 reloads XXMI's configuration, F11 switches all
-		// mods off or on (EFMI's own key).
+		// and nothing else: F10 reloads XXMI's configuration; the key that switches
+		// all mods off or on is the installation's own (EFMI F11, ZZMI F6).
 		KeyPressRequest q;
 		q.key = cmd == "mods_key" ? GameKey::ToggleMods : GameKey::Reload;
 		q.focus = rq.bool_or("focus", true);

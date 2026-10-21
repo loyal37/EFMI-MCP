@@ -290,13 +290,14 @@ def send_reload_via_probe(client, focus_game: bool = True, restore_focus: bool =
     return _press_via_probe(client.reload_key, "F10", focus_game, restore_focus)
 
 
-def send_mods_key_via_probe(client, focus_game: bool = True, restore_focus: bool = True) -> dict:
-    """Have the probe press F11, EFMI's key that switches all mods off or on.
+def send_mods_key_via_probe(client, focus_game: bool = True, restore_focus: bool = True, key: str = "F11") -> dict:
+    """Have the probe press the installation's key that switches all mods off or on (EFMI F11, ZZMI F6).
 
-    Same guards and timing as the reload key; the probe checks EFMI's binding
-    itself and refuses when F11 alone would trigger anything else in XXMI.
+    Same guards and timing as the reload key; the probe picks the key from the
+    installation, checks its binding itself and refuses when the key alone would
+    trigger anything else in XXMI. key only names it in messages.
     """
-    return _press_via_probe(client.mods_key, "F11", focus_game, restore_focus)
+    return _press_via_probe(client.mods_key, key, focus_game, restore_focus)
 
 
 def _press_via_probe(press, key: str, focus_game: bool, restore_focus: bool) -> dict:

@@ -99,12 +99,13 @@ class FakeProbe:
                              {"kind": "buffer", "size": 4096, "bind": 8, "known": True, "origin": "xxmi"}],
                "regions": [[0, 0, 6, MESH, "ok"], [0, 0, 6, "bbbbbbbb", "ok"]],
                # Scenery no mod refers to, then the mesh a mod overrides: issued by XXMI while mods are on,
-               # by the game while they are off.
-               "draws": [{"i": 0, "t": 4, "o": "game", "ic": 3, "fi": 0, "fv": 0, "inst": 1, "topo": 4, "ib": [0, 57, 0, 1]}],
+               # by the game while they are off, with the game's shaders either way.
+               "draws": [{"i": 0, "t": 4, "o": "game", "ic": 3, "fi": 0, "fv": 0, "inst": 1, "topo": 4, "ib": [0, 57, 0, 1],
+                          "sh": [0, -1, -1, -1, 1, -1]}],
                "stats": {"record_ms": 0.01}}
         if self.mesh_in_view:
             doc["draws"].append({"i": 2, "t": 4, "o": "xxmi" if self.enabled else "game", "ic": 3, "fi": 0, "fv": 0,
-                                 "inst": 1, "topo": 4, "ib": [0, 57, 0, 0]})
+                                 "inst": 1, "topo": 4, "ib": [0, 57, 0, 0], "sh": [0, -1, -1, -1, 1, -1]})
         if getattr(self, "printing", False):
             doc["draws"].append({"i": 1, "t": 8, "o": self.notice_origin, "tg": [1, 1, 1],
                                  "srv": [[5, 100, 2], [5, 113, 1]]})

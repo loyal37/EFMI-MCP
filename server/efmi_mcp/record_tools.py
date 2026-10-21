@@ -116,7 +116,7 @@ def _union(runs: list[tuple]) -> list[tuple]:
     return [tuple(o) for o in out]
 
 
-def items_of(rec: Recording, origin: str, min_index_count: int, h: str) -> list[dict]:
+def items_of(rec: Recording, origin: str, min_index_count: int, h: str, region_hashes: bool = True) -> list[dict]:
     """Per line its runs as indexes into the recorded frames: (first, last, most draws, most instances, draws).
     Lines without an index buffer hash (data the CPU rewrites every frame, drawn from another range each
     time) are merged by draw type, origin, buffer and shaders."""
@@ -129,6 +129,8 @@ def items_of(rec: Recording, origin: str, min_index_count: int, h: str) -> list[
     groups: dict[tuple, dict] = {}
     for lid, runs in by_line.items():
         line = dict(zip(LINE, rec.lines[lid]))
+        if not region_hashes:
+            line["ib"] = line["ib_res"]     # ZZMI and the other installations without region hashes
         if origin != "all" and (line["origin"] == "xxmi") != (origin == "xxmi"):
             continue
         if (line["ic"] or line["vc"]) < min_index_count:
@@ -283,7 +285,7 @@ def register(server, session, capture_report) -> None:
         end = to_s if to_s > 0 else ts[-1]
         i1 = max(i0, max((i for i, t in enumerate(ts) if t <= end), default=i0))
         n = i1 - i0 + 1
-        items = items_of(rec, origin, int(min_index_count), h)
+        items = items_of(rec, origin, int(min_index_count), h, s.region_hashes)
         lines = [rec.describe(),
                  f"window {ts[i0]:.2f}-{ts[i1]:.2f} s: {n} recorded frames"
                  + (f" ({(n - 1) / (ts[i1] - ts[i0]):.0f} fps)" if ts[i1] > ts[i0] else "")

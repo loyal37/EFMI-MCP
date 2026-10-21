@@ -55,6 +55,10 @@ class Capture:
         self.stats: dict = doc.get("stats", {})
         self.resolution = doc.get("resolution", [-1, -1])
         self.held: bool = bool(doc.get("held"))
+        # With track_region_hashes=1 (EFMI) a mod's ib/vb hash is the hash of the part a draw uses; with 0
+        # (ZZMI and the other XXMI games) it is the creation hash of the whole buffer. Unknown: EFMI's way.
+        settings = doc.get("xxmi_settings") or {}
+        self.region_hashes: bool = bool(settings.get("track_region_hashes", True))
 
     def __len__(self) -> int:
         return len(self.raw_draws)
@@ -66,6 +70,18 @@ class Capture:
     def res_hash(self, rid: int) -> str | None:
         r = self.resource(rid)
         return r.get("hash") if r and r.get("known") else None
+
+    def mesh_hash(self, rid: int, region_id: int) -> str | None:
+        """The hash a mod uses for an index or vertex buffer binding (see region_hashes)."""
+        if not self.region_hashes:
+            return self.res_hash(rid)
+        r = self.region(region_id)
+        return r["hash"] if r else None
+
+    def ib_hash(self, raw_draw: dict) -> str | None:
+        """The index buffer hash of a raw draw record as mods use it, or None."""
+        ib = raw_draw.get("ib")
+        return self.mesh_hash(ib[0], ib[3]) if ib else None
 
     def shader_hash(self, sid: int) -> str | None:
         if 0 <= sid < len(self.shaders):
@@ -162,7 +178,7 @@ class Capture:
                 res, fmt, off, reg = d["ib"]
                 r = self.region(reg)
                 out["ib"] = {"res": res, "format": fmt, "offset": off,
-                             "hash": r["hash"] if r else None,
+                             "hash": self.mesh_hash(res, reg),
                              "resource_hash": self.res_hash(res), "region": r}
                 if "cib" in d:
                     out["ib"]["content"] = d["cib"]
@@ -170,10 +186,14 @@ class Capture:
             for n, (slot, res, stride, off, reg) in enumerate(d.get("vb", [])):
                 r = self.region(reg)
                 vbs[slot] = kept({"res": res, "stride": stride, "offset": off,
-                                  "hash": r["hash"] if r else None,
+                                  "hash": self.mesh_hash(res, reg),
                                   "resource_hash": self.res_hash(res), "region": r}, "cvb", n)
             if vbs:
                 out["vb"] = vbs
+
+        if "so" in d:
+            # Stream-output targets (probe 0.1.12, full captures): where the call writes its vertices.
+            out["so"] = {f"so{slot}": {"res": res, "hash": self.res_hash(res)} for slot, res in d["so"]}
 
         out["shaders"] = {}
         for stage, sid in zip(STAGES, d.get("sh", [])):

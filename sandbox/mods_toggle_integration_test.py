@@ -119,7 +119,8 @@ def main():
         evidence.update(target_ib=target, original_ib_counts=dict(original))
         (efmi / "Mods" / "ToggleIntegration.ini").write_text(
             f"[TextureOverrideToggleIntegration]\nhash = {target}\n"
-            f"match_index_count = {target_draw['args']['index_count']}\nhandling = skip\n", encoding="utf-8")
+            f"match_index_count = {target_draw['args']['index_count']}\nhandling = skip\ndrawindexed = auto\n",
+            encoding="utf-8")
         result, error = call("efmi_reload_and_capture", settle_ms=1000, timeout_ms=10000)
         evidence["reload"] = result
         if error:

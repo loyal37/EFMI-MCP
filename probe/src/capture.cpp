@@ -148,6 +148,10 @@ struct DrawRec {
 	float    vp[4] = {};
 	bool     has_vp = false;
 	int32_t  ib_cont = -1;       // contents: the index buffer as it was
+	// Stream-output targets (full captures). Zenless Zone Zero skins a character with a draw
+	// that streams the posed vertices into the buffer its visible draws then read as vb0.
+	int32_t  so_res[D3D11_SO_BUFFER_SLOT_COUNT] = { -1, -1, -1, -1 };
+	bool     has_so = false;
 
 	// full captures only
 	bool     has_state = false;
@@ -2480,6 +2484,10 @@ static void trig_check(const Capture* c, const DrawRec& d)
 		if ((r.state == RS_CACHED || r.state == RS_OK) && t_ib.count(r.hash))
 			return trig_fire(c, d, "ib", r.hash, 0, false);
 	}
+	// Installations without region hashes (ZZMI and the other XXMI games) name a mesh by the
+	// creation hash of the whole index buffer.
+	if (!t_ib.empty() && d.ib_res >= 0 && c->res[d.ib_res].known && t_ib.count(c->res[d.ib_res].hash))
+		return trig_fire(c, d, "ib", c->res[d.ib_res].hash, 0, false);
 	if (t_spec.new_pairs && sh[ST_VS] && sh[ST_PS] && !t_pairs.count(pair_key(sh[ST_VS], sh[ST_PS])))
 		trig_fire(c, d, "new pair", 0, 0, false);
 }
@@ -2644,6 +2652,17 @@ void cap_on_draw(uint8_t type, const DrawArgs& a, const uint32_t* thread_groups,
 			ID3D11GeometryShader* gs = nullptr;
 			OCTX(GSGetShader)(ctx, &gs, nullptr, nullptr);
 			if (gs) { d.shaders[ST_GS] = shader_id(c, gs); ID3D11GeometryShader_Release(gs); record_stage(c, &d, ST_GS, full); }
+
+			// ---- stream output
+			ID3D11Buffer* so[D3D11_SO_BUFFER_SLOT_COUNT];
+			memset(so, 0, sizeof(so));
+			OCTX(SOGetTargets)(ctx, D3D11_SO_BUFFER_SLOT_COUNT, so);
+			for (UINT i = 0; i < D3D11_SO_BUFFER_SLOT_COUNT; i++) {
+				if (!so[i]) continue;
+				d.so_res[i] = res_id(c, (ID3D11Resource*)so[i]);
+				d.has_so = true;
+				ID3D11Buffer_Release(so[i]);
+			}
 
 			// ---- output merger
 			d.out_begin = (uint32_t)c->views.size();
@@ -4923,6 +4942,14 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 			for (uint32_t k = 0; k < d.out_count; k++) {
 				const ViewBind& v = c.views[d.out_begin + k];
 				w.begin_arr(); w.u(v.stage); w.u(v.slot); w.i(v.res); w.end_arr();
+			}
+			w.end_arr();
+		}
+		if (d.has_so) {
+			w.key("so"); w.begin_arr();
+			for (uint32_t k = 0; k < D3D11_SO_BUFFER_SLOT_COUNT; k++) {
+				if (d.so_res[k] < 0) continue;
+				w.begin_arr(); w.u(k); w.i(d.so_res[k]); w.end_arr();
 			}
 			w.end_arr();
 		}

@@ -91,8 +91,12 @@ def summarize_frames(frames: list[dict], first: int = 0, last: int = 0, base_fir
             "timeline": [[f["frame"], f["t_ms"], f["draws"], f["game_draws"], len(f["items"])] for f in window]}
 
 
-def _row(it: list) -> dict:
-    return dict(zip(ROW, it))
+def _row(it: list, region_hashes: bool = True) -> dict:
+    row = dict(zip(ROW, it))
+    if not region_hashes:
+        # Mods of installations without region hashes (ZZMI) name a mesh by its whole index buffer.
+        row["ib"] = row["ib_res"]
+    return row
 
 
 def merge_unhashed(rows: list[dict], frames: int, base_frames: int) -> list[dict]:
@@ -227,7 +231,7 @@ def register(server, session, capture_report) -> None:
             t = t_of.get(frame)
             return f"+{(t - t0) / 1000.0:.2f}s" if t is not None else f"frame {frame}"
 
-        rows = [_row(it) for it in summ["items"]]
+        rows = [_row(it, s.region_hashes) for it in summ["items"]]
         if origin != "all":
             rows = [r for r in rows if (r["origin"] == "xxmi") == (origin == "xxmi")]
         rows = [r for r in rows if (r["ic"] or r["vc"]) >= min_index_count]

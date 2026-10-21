@@ -18,7 +18,9 @@ struct KeySpec {
 };
 
 static const KeySpec k_reload = { VK_F10, "F10", "reload", "the reload", "there is nothing to reload" };
-static const KeySpec k_toggle = { VK_F11, "F11", "toggle_mods", "switching mods", "there are no mods to switch" };
+// Switching all mods uses the installation's own key: EFMI's F11, ZZMI's F6.
+static const KeySpec k_toggle_efmi = { VK_F11, "F11", "toggle_mods", "switching mods", "there are no mods to switch" };
+static const KeySpec k_toggle_zzmi = { VK_F6, "F6", "toggle_mods", "switching mods", "there are no mods to switch" };
 
 static void* volatile   g_output_window = nullptr;
 static volatile LONG    g_armed = 0;
@@ -204,7 +206,8 @@ static std::string hunting_function_on_plain_key(const wchar_t* ini, const wchar
 			if (end == std::wstring::npos)
 				end = text.size();
 			std::wstring token = text.substr(at, end - at);
-			if (token == vk)
+			// "VK_F6" and "F6" name the same key
+			if (token == vk || L"vk_" + token == vk)
 				has_key = true;
 			else if (!token.empty() && token.compare(0, 3, L"no_") != 0)
 				needs_more = true;      // ctrl, shift, alt or another key
@@ -220,27 +223,56 @@ static std::string hunting_function_on_plain_key(const wchar_t* ini, const wchar
 	return std::string();
 }
 
-// EFMI's own binding, and nothing else in XXMI that F11 alone would set off.
-static bool efmi_toggles_mods_on_f11(std::string* why)
+static bool exists(const wchar_t* path)
+{
+	return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+// The installation's own binding for switching all mods, and nothing else in
+// XXMI that its key alone would set off. EFMI binds F11 in its KeyBindings.ini,
+// ZZMI binds F6 in its main.ini; any other installation, or a changed binding,
+// is refused rather than guessed.
+static const KeySpec* install_toggle_key(std::string* why)
 {
 	wchar_t ini[MAX_PATH];
-	if (!xxmi_file(L"Core\\EFMI\\KeyBindings.ini", ini)
-	    || binding(ini, L"KeyToggleMods", L"key") != L"no_modifiers vk_f11"
-	    || binding(ini, L"KeyToggleMods", L"run") != L"commandlisttogglemods") {
-		*why = "Core\\EFMI\\KeyBindings.ini does not have [KeyToggleMods] with 'Key = no_modifiers VK_F11' "
-		       "and 'run = CommandListToggleMods'. No key was sent.";
-		return false;
+	const KeySpec* key = nullptr;
+	const wchar_t* vk = nullptr;
+	if (xxmi_file(L"Core\\EFMI\\KeyBindings.ini", ini) && exists(ini)) {
+		if (binding(ini, L"KeyToggleMods", L"key") != L"no_modifiers vk_f11"
+		    || binding(ini, L"KeyToggleMods", L"run") != L"commandlisttogglemods") {
+			*why = "Core\\EFMI\\KeyBindings.ini does not have [KeyToggleMods] with 'Key = no_modifiers VK_F11' "
+			       "and 'run = CommandListToggleMods'. No key was sent.";
+			return nullptr;
+		}
+		key = &k_toggle_efmi;
+		vk = L"vk_f11";
+	} else if (xxmi_file(L"Core\\ZZMI\\main.ini", ini) && exists(ini)) {
+		std::wstring k = binding(ini, L"KeyToggleMods", L"key");
+		if ((k != L"no_modifiers f6" && k != L"no_modifiers vk_f6")
+		    || binding(ini, L"KeyToggleMods", L"$costume_mods") != L"0, 1"
+		    || binding(ini, L"KeyToggleMods", L"type") != L"cycle") {
+			*why = "Core\\ZZMI\\main.ini does not have [KeyToggleMods] with 'Key = no_modifiers F6', "
+			       "'$costume_mods = 0, 1' and 'type = cycle'. No key was sent.";
+			return nullptr;
+		}
+		key = &k_toggle_zzmi;
+		vk = L"vk_f6";
+	} else {
+		*why = "The loaded XXMI is neither EFMI (Core\\EFMI\\KeyBindings.ini) nor ZZMI (Core\\ZZMI\\main.ini), "
+		       "so its key for switching mods is not known. No key was sent.";
+		return nullptr;
 	}
-	if (!xxmi_file(L"d3dx.ini", ini)) {
+	if (!xxmi_file(L"d3dx.ini", ini) || !exists(ini)) {
 		*why = "d3dx.ini of the loaded XXMI was not found. No key was sent.";
-		return false;
+		return nullptr;
 	}
-	std::string other = hunting_function_on_plain_key(ini, L"vk_f11");
+	std::string other = hunting_function_on_plain_key(ini, vk);
 	if (!other.empty()) {
-		*why = "d3dx.ini binds [Hunting] " + other + " to F11 without a modifier, so F11 would trigger it as well. No key was sent.";
-		return false;
+		*why = "d3dx.ini binds [Hunting] " + other + " to " + key->name + " without a modifier, so " + key->name
+		     + " would trigger it as well. No key was sent.";
+		return nullptr;
 	}
-	return true;
+	return key;
 }
 
 static bool wait_foreground(DWORD ms)
@@ -306,7 +338,9 @@ static UINT send_key(int vk, bool up, DWORD* error)
 // ---------------------------------------------------------------- the press
 const char* key_press_run(const KeyPressRequest& rq, JsonW& w, std::string* message)
 {
-	const KeySpec& key = rq.key == GameKey::ToggleMods ? k_toggle : k_reload;
+	std::string toggle_why;
+	const KeySpec* toggle = rq.key == GameKey::ToggleMods ? install_toggle_key(&toggle_why) : nullptr;
+	const KeySpec& key = rq.key != GameKey::ToggleMods ? k_reload : toggle ? *toggle : k_toggle_efmi;
 	const std::string name = key.name;
 	const char* code = "ok";
 	auto fail = [&](const char* c, const std::string& m) {
@@ -344,8 +378,7 @@ const char* key_press_run(const KeyPressRequest& rq, JsonW& w, std::string* mess
 		if (!g_swap) { fail("no_swap_chain", "The probe has not found the game's swap chain yet, so it cannot follow frames."); break; }
 		if (!g_xxmi.base) { fail("xxmi_not_loaded", std::string("XXMI is not loaded in this process; ") + key.nothing + "."); break; }
 		if (rq.key == GameKey::ToggleMods) {
-			std::string why;
-			if (!efmi_toggles_mods_on_f11(&why)) { fail("binding_mismatch", why); break; }
+			if (!toggle) { fail("binding_mismatch", toggle_why); break; }
 		} else if (!xxmi_reloads_on_f10()) {
 			fail("binding_mismatch", "d3dx.ini does not bind both reload_config and reload_fixes to 'no_modifiers VK_F10'. No key was sent.");
 			break;

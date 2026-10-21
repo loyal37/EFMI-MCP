@@ -52,6 +52,8 @@ class ProbeClient:
         self._f = None
         self._lock = threading.Lock()
         self._next_id = 1
+        # [Rendering] settings of the XXMI installation in the probe's process, from its status.
+        self.xxmi_settings: dict | None = None
 
     # -- connection -----------------------------------------------------
     @classmethod
@@ -127,7 +129,10 @@ class ProbeClient:
 
     # -- commands -------------------------------------------------------
     def status(self) -> dict:
-        return self.request("status")[0]
+        st = self.request("status")[0]
+        if isinstance(st.get("xxmi_settings"), dict):
+            self.xxmi_settings = st["xxmi_settings"]
+        return st
 
     def capture(self, detail: str = "full", hash_ib: bool = True, hash_vb: bool = True,
                 cb_data: bool = False, hold: bool = True, max_draws: int = 0,
@@ -156,6 +161,14 @@ class ProbeClient:
         )
         jlen = reply["json_len"]
         doc = json.loads(payload[:jlen].decode("utf-8"))
+        # How this installation hashes buffers decides which hash a capture shows (see xxmi_install).
+        if self.xxmi_settings is None:
+            try:
+                self.status()
+            except ProbeError:
+                pass
+        if self.xxmi_settings is not None:
+            doc.setdefault("xxmi_settings", self.xxmi_settings)
         return doc, payload[jlen:]
 
     def read_buffer(self, capture_frame: int, res: int, offset: int = 0, size: int = 0,
@@ -273,6 +286,8 @@ class ProbeClient:
         return reply.get("result", {})
 
     def mods_key(self, focus: bool = True, restore_focus: bool = True, max_hold_ms: int = 3000) -> dict:
-        """Has the probe press EFMI's key that switches all mods off or on (F11). Returns its receipt."""
+        """Has the probe press the installation's key that switches all mods off or on (EFMI F11, ZZMI F6).
+
+        Returns its receipt."""
         reply, _ = self.request("mods_key", focus=focus, restore_focus=restore_focus, max_hold_ms=max_hold_ms)
         return reply.get("result", {})

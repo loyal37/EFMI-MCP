@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import threading
 import time
@@ -13,7 +14,7 @@ from .capture_model import Capture, STAGES
 from .draw_outputs import capture_draw_outputs
 from .fa_dump import DRAW_NAMES, MARKS, find_frame_dumps, parse_frame_dump
 from .hashes import crc32c, hex32, index_region
-from . import blender_runner, live_tools, loyal_bridge, record_tools
+from . import blender_runner, live_tools, loyal_bridge, record_tools, xxmi_install
 from .mcp_stdio import Image, Server, ToolError
 from .model_jobs import JobManager
 from .mods import ModCache
@@ -24,13 +25,16 @@ from .reload_workflow import reload_and_capture
 from .shader import ShaderCache
 
 INSTRUCTIONS = """\
-Live view of what Arknights: Endfield is drawing, taken from inside the running game by a probe DLL that sits \
-next to EFMI/XXMI (3DMigoto). Normal capture replaces frame-analysis dumps without pressing a hotkey or \
+Live view of what a game modded with XXMI (3DMigoto) is drawing, taken from inside the running game by a probe DLL \
+that sits next to XXMI: Arknights: Endfield with EFMI, Zenless Zone Zero with ZZMI. efmi_status names the \
+installation of the connected game. Normal capture replaces frame-analysis dumps without pressing a hotkey or \
 asking the game to write a dump. Two separate tools deliberately press a key inside the game: \
-efmi_reload_and_capture (F10) and efmi_toggle_mods (F11).
+efmi_reload_and_capture (F10) and efmi_toggle_mods (EFMI's F11, ZZMI's F6).
 
-Hashes are the ones XXMI uses: the `ib` hash of a draw is the region hash that mods put in \
-`[TextureOverride...] hash = ...`; shader hashes are 16 hex digits; texture and buffer hashes are 8.
+Hashes are the ones XXMI uses: the `ib` hash of a draw is the hash that mods put in \
+`[TextureOverride...] hash = ...`; shader hashes are 16 hex digits; texture and buffer hashes are 8. EFMI hashes the \
+part of an index or vertex buffer that a draw uses (track_region_hashes), ZZMI the whole buffer; draws and lists \
+show the installation's kind, and resource_hash is always the whole buffer's.
 
 Typical flow: efmi_status -> efmi_capture_frame -> efmi_list_draws / efmi_find_hash -> efmi_get_draw -> \
 efmi_read_buffer / efmi_read_texture / efmi_get_shader. For "what is on screen right now, continuously" use \
@@ -64,14 +68,16 @@ parsed as intended, inspect the draws/resources you changed. On a post-input err
 rather than repeating F10. A probe older than 0.1.2 cannot press the key: the error then says that the game \
 has to be restarted to load the updated efmi_probe.dll.
 
-To compare what the game draws by itself with what mods draw, use efmi_toggle_mods. The probe presses EFMI's F11 \
-inside the game, which switches every mod off (state='off') or back on ('on') without reloading or touching a \
-file, and the next frame is kept as 'latest'. Typical: efmi_capture_frame with mods on -> efmi_toggle_mods \
-state='off' -> efmi_diff_captures a=<the first frame> -> read the original buffers or textures -> efmi_toggle_mods \
-state='on'. mods_enabled in the result is what EFMI itself printed after the key press; null means unknown. With \
+To compare what the game draws by itself with what mods draw, use efmi_toggle_mods. The probe presses the \
+installation's own key inside the game (EFMI's F11, ZZMI's F6), which switches every mod off (state='off') or back \
+on ('on') without reloading or touching a file, and the next frame is kept as 'latest'. Typical: efmi_capture_frame \
+with mods on -> efmi_toggle_mods state='off' -> efmi_diff_captures a=<the first frame> -> read the original buffers \
+or textures -> efmi_toggle_mods state='on'. mods_enabled in the result is what EFMI itself printed after the key \
+press; ZZMI prints nothing, so there it is read from whether the frame still has mod draws; null means unknown. With \
 mods off, a character that a mod replaces is drawn by the game again, so efmi_list_models and efmi_extract_model \
-work on it. Mods stay off until the next F11, a reload (F10 switches them on again) or a game restart: always \
-switch them back on when you are done, and say so if you could not. Needs probe 0.1.3 or later.
+work on it. Mods stay off until the next press of that key, a reload (F10 switches them on again) or a game \
+restart: always switch them back on when you are done, and say so if you could not. Needs probe 0.1.3 or later \
+for EFMI, 0.1.12 for ZZMI.
 
 Things to know:
 - Capture and live mode work with hunting disabled; do not ask the user to press numpad 0 to collect data.
@@ -114,7 +120,8 @@ NO_PROBE = """\
 The probe is not running in any process, so live data is unavailable.
 
 The probe (efmi_probe.dll) has to be loaded when the game starts, by XXMI Launcher itself:
-  XXMI Launcher -> Settings -> Advanced -> tick "Inject Libraries" and add this path on its own line:
+  XXMI Launcher -> Settings -> the game's tab (EFMI, ZZMI) -> Advanced -> tick "Inject Libraries" and add this
+  path on its own line:
   {dll}
 then start the game from the launcher. It cannot be attached to a game that is already running.
 
@@ -134,7 +141,12 @@ def _norm_hash(h: str | None) -> str | None:
 class Session:
     def __init__(self, efmi_root: Path, out_dir: Path, probe_dll: Path,
                  loyaltools_root: Path | None = None, blender_path: str = ""):
-        self.efmi_root = efmi_root
+        # The installation named on the command line. Once a probe is connected, the installation
+        # whose d3d11.dll is loaded in that game is used instead: EFMI for Endfield, ZZMI for Zenless Zone Zero.
+        self.configured_root = Path(efmi_root)
+        self._probe_root: Path | None = None
+        self._installs: dict[Path, xxmi_install.Install] = {}
+        self._mod_caches: dict[Path, ModCache] = {}
         self.out_dir = out_dir
         self.probe_dll = probe_dll
         self.loyaltools_configured = Path(loyaltools_root) if loyaltools_root else None
@@ -146,9 +158,64 @@ class Session:
         self._shader_cache = ShaderCache()
         self.captures: "OrderedDict[int, Capture]" = OrderedDict()
         self.latest: int | None = None
-        self.mods = ModCache(efmi_root)
-        # What EFMI reported after this server's last F11: {"enabled", "frame"}; None when unknown.
+        # What the core reported after this server's last mod switch: {"enabled", "frame"}; None when unknown.
         self.mods_display: dict | None = None
+
+    # -- installation ---------------------------------------------------
+    @property
+    def efmi_root(self) -> Path:
+        """The XXMI installation in use: the connected game's, else the configured one."""
+        return self._probe_root or self.configured_root
+
+    @property
+    def install(self) -> xxmi_install.Install:
+        root = self.efmi_root
+        if root not in self._installs:
+            self._installs[root] = xxmi_install.detect(root)
+        return self._installs[root]
+
+    @property
+    def mods(self) -> ModCache:
+        root = self.efmi_root
+        if root not in self._mod_caches:
+            self._mod_caches[root] = ModCache(root)
+        return self._mod_caches[root]
+
+    @property
+    def region_hashes(self) -> bool:
+        """Whether mods name meshes by the part of a buffer a draw uses (EFMI) or by the whole buffer."""
+        connected = self.client is not None and self.client.connected
+        settings = getattr(self.client, "xxmi_settings", None) if connected else None
+        if isinstance(settings, dict) and "track_region_hashes" in settings:
+            return bool(settings["track_region_hashes"])
+        return self.install.region_hashes
+
+    def require_efmi(self, what: str, connect: bool = False) -> None:
+        if connect and find_probes():
+            try:
+                self.probe()        # settles which game's installation is in use
+            except ToolError:
+                pass
+        if not self.install.is_efmi:
+            raise ToolError(f"{what} is built for Arknights: Endfield (EFMI with LoyalTools); the installation in use, "
+                            f"{self.efmi_root}, is {self.install.name}.")
+
+    def _adopt(self, client: ProbeClient) -> bool | None:
+        """Learns which installation the probe's game uses.
+
+        True: the configured one; False: another one, which is used from now on; None: not reported.
+        """
+        try:
+            st = client.status()
+        except ProbeError:
+            return None
+        path = (st.get("xxmi") or {}).get("path")
+        if not path:
+            return None
+        root = Path(path).parent
+        self._probe_root = None if os.path.normcase(str(root.resolve())) == \
+            os.path.normcase(str(self.configured_root.resolve())) else root
+        return self._probe_root is None
 
     # -- LoyalTools -----------------------------------------------------
     def loyaltools(self, blender_path: str = "") -> dict:
@@ -195,6 +262,23 @@ class Session:
         except ProbeError as e:
             raise ToolError(f"The probe is loaded but its pipe could not be opened ({e}). "
                             "It serves one client at a time: is another tool connected to it?")
+        if self._adopt(self.client) is False:
+            # With two games running, the one using the configured installation is preferred.
+            for ep in reversed(find_probes()):
+                if ep.pid == self.client.endpoint.pid:
+                    continue
+                other = ProbeClient(ep)
+                try:
+                    other.open()
+                except OSError:
+                    continue
+                if self._adopt(other) is True:
+                    self.client.close()
+                    self.client = other
+                    break
+                other.close()
+            else:
+                self._adopt(self.client)
         return self.client
 
     def call(self, fn, *args, **kwargs):
@@ -320,7 +404,8 @@ def capture_report(s: Session, cap: Capture, ms: float, chosen: str = "") -> lis
     if chosen:
         lines.append(f"  outputs kept for: {chosen}")
     if s.mods_display and not s.mods_display["enabled"]:
-        lines.append(f"note: efmi_toggle_mods switched all mods OFF at frame {s.mods_display['frame']}; unless F11 was "
+        key = s.install.toggle.key if s.install.toggle else "the mods key"
+        lines.append(f"note: efmi_toggle_mods switched all mods OFF at frame {s.mods_display['frame']}; unless {key} was "
                      "pressed by hand since, this frame shows the game's own drawing. Switch them back on when done.")
 
     if cap.detail == "full":
@@ -379,6 +464,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             xs = st["xxmi_settings"]
             lines.append(f"hash settings mirrored from d3dx.ini: track_region_hashes={int(xs['track_region_hashes'])} "
                          f"texture_hash={xs['texture_hash']} shader_hash={['3dmigoto', 'embedded', 'bytecode'][xs['shader_hash']]}")
+            lines.append("ib/vb hashes shown: " + ("the part of the buffer a draw uses (region hashes)" if s.region_hashes
+                                                   else "the whole buffer (creation hashes), as this installation's mods use them"))
             c, r = st["counters"], st["registry"]
             if "capture_target" in st:
                 target = st["capture_target"]
@@ -408,11 +495,16 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             else:
                 lines.append(f"reload: probe {st['probe']} cannot press F10 itself; efmi_reload_and_capture needs 0.1.2+ "
                              f"when the game runs as administrator. Restart the game to load {s.probe_dll}")
-            if "mods_key" in st.get("features", ()):
-                lines.append("mods switch: the probe presses F11 inside the game (efmi_toggle_mods)")
+            toggle = s.install.toggle
+            if toggle is None:
+                lines.append(f"mods switch: no known key for {s.install.name}; efmi_toggle_mods supports EFMI (F11) and ZZMI (F6)")
+            elif ("mods_key" if s.install.is_efmi else "mods_key_install") in st.get("features", ()):
+                lines.append(f"mods switch: the probe presses {toggle.key} inside the game (efmi_toggle_mods)"
+                             + ("" if toggle.notifies else "; the state is read from the draws, since this core "
+                                                            "prints no notification"))
             else:
-                lines.append(f"mods switch: probe {st['probe']} cannot press F11; efmi_toggle_mods needs 0.1.3+. "
-                             f"Restart the game to load {s.probe_dll}")
+                lines.append(f"mods switch: probe {st['probe']} cannot press {toggle.key}; efmi_toggle_mods needs "
+                             f"{'0.1.3' if s.install.is_efmi else '0.1.12'}+. Restart the game to load {s.probe_dll}")
             if "pipeline_state" not in st.get("features", ()):
                 lines.append(f"pipeline state and render target copies around draws: need probe 0.1.5 (this is "
                              f"{st['probe']}). Restart the game to load {s.probe_dll}")
@@ -430,15 +522,18 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                              "at the same address (mod buffers after a reload); read the buffer to be sure. "
                              f"Fixed in 0.1.4: restart the game to load {s.probe_dll}")
             if s.mods_display:
-                lines.append(f"mods display: {'ON' if s.mods_display['enabled'] else 'OFF'} according to EFMI after this "
-                             f"server's last F11 (frame {s.mods_display['frame']}); a manual F11 since then is not seen")
+                key = s.install.toggle.key if s.install.toggle else "key"
+                lines.append(f"mods display: {'ON' if s.mods_display['enabled'] else 'OFF'} after this server's last "
+                             f"{key} (frame {s.mods_display['frame']}); a manual {key} since then is not seen")
             if c["command_lists"]:
                 lines.append(f"note: {c['command_lists']} deferred command lists were executed; draws inside them are not visible")
             if not st["attached"]:
                 lines.append("NOT ATTACHED: no D3D11 device is selected yet. Load the probe at game start, "
                              "wait for rendering, and check efmi_probe.log if this persists.")
         idx = s.mods.get()
-        lines.append(f"EFMI folder: {s.efmi_root} ({len(idx.mods)} active mods, {len(idx.by_hash)} distinct hashes referenced)")
+        lines.append(f"{s.install.name} folder: {s.efmi_root} ({len(idx.mods)} active mods, {len(idx.by_hash)} distinct "
+                     f"hashes referenced)" + ("" if s.efmi_root == s.configured_root else
+                                              f"; the game's installation, not the configured {s.configured_root}"))
         if s.latest is not None:
             lines.append(f"captures in memory: {list(s.captures)} (latest {s.latest})")
         return "\n".join(lines)
@@ -538,31 +633,32 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
 
     # ================================================================ mods on/off
     @srv.tool("efmi_toggle_mods",
-              "Switches ALL mods off or on with EFMI's own F11 key and captures the next frame as 'latest', so that what "
-              "the game draws by itself can be compared with what the mods draw. The probe presses one unmodified F11 "
-              "inside the game (the window is brought to the front if needed and the focus handed back). While mods "
-              "are off, EFMI no longer applies the mods' index-buffer overrides: characters look as the game draws "
-              "them, their original draws appear with origin 'game', and a modded character can be listed or "
-              "extracted. Nothing is reloaded and no file is touched; mods that hook shaders on their own are not "
-              "affected. state='toggle' presses once; 'on' and 'off' press once and, only if EFMI then reports the "
-              "other state, once more; they press nothing when this server already read the requested state from "
-              "EFMI's last notification and the current frame's draws agree. mods_enabled is read from the "
-              "notification EFMI prints after each press "
-              "('Mods Display: Enabled/Disabled') in the captured frame; null means it could not be read and the "
-              "state is unknown. Earlier captures are kept for efmi_diff_captures. Mods stay off until the next "
-              "F11, a reload (F10 switches them on again) or a game restart: switch them back on when the "
-              "comparison is done. Requires EFMI's default [KeyToggleMods] binding and probe 0.1.3 or later; "
-              "refuses held modifiers/F11 and failed focus or input, and never repeats a failed press.",
+              "Switches ALL mods off or on with the installation's own key (EFMI's F11, ZZMI's F6) and captures the "
+              "next frame as 'latest', so that what the game draws by itself can be compared with what the mods draw. "
+              "The probe presses that key once, unmodified, inside the game (the window is brought to the front if "
+              "needed and the focus handed back). While mods are off, XXMI no longer applies the mods' index-buffer "
+              "overrides: characters look as the game draws them, their original draws appear with origin 'game', "
+              "and a modded character can be listed or extracted. Nothing is reloaded and no file is touched; mods "
+              "that hook shaders on their own are not affected. state='toggle' presses once; 'on' and 'off' press "
+              "once and, only if the result then shows the other state, once more; they press nothing when this "
+              "server already knows the requested state and the current frame's draws agree. mods_enabled is read "
+              "from the notification EFMI prints after each press ('Mods Display: Enabled/Disabled'); ZZMI prints "
+              "none, so there it is read from the captured frame's draws (mod draws present or not); null means it "
+              "could not be read and the state is unknown. Earlier captures are kept for efmi_diff_captures. Mods "
+              "stay off until the key is pressed again, a reload (F10 switches them on again) or a game restart: "
+              "switch them back on when the comparison is done. Requires the installation's default [KeyToggleMods] "
+              "binding and probe 0.1.3 or later (0.1.12 for ZZMI); refuses held modifiers or a held key and failed "
+              "focus or input, and never repeats a failed press.",
               {"state": {"type": "string", "enum": ["toggle", "on", "off"], "default": "toggle"},
                "cb_data": {"type": "boolean", "default": False,
                            "description": "Also keep every constant buffer as it was at each draw of the captured frame."},
                "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 30000, "default": 8000,
-                              "description": "Probe capture timeout; F11 is not retried on timeout."},
+                              "description": "Probe capture timeout; the key is not pressed again on timeout."},
                "focus_game": {"type": "boolean", "default": True,
                               "description": "Try to bring the exact connected process's window to the foreground. "
                                              "False requires it to be already foreground."},
                "restore_focus": {"type": "boolean", "default": True,
-                                 "description": "Give the foreground back to the window that had it once F11 is "
+                                 "description": "Give the foreground back to the window that had it once the key is "
                                                 "released. Ignored when the game was already in front."}},
               read_only=False, annotations={"destructiveHint": False, "idempotentHint": False})
     def efmi_toggle_mods(state="toggle", cb_data=False, timeout_ms=8000, focus_game=True, restore_focus=True):
@@ -1140,7 +1236,9 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
               "Buffers are written whole as .buf, with the .txt XXMI writes for index buffers (the indices of the draw), "
               "vertex buffers (layout and the vertices the draw uses) and constant buffers (the bound registers); "
               "textures as .dds holding the subresource the view shows (XXMI: always the first); outputs as the call "
-              "left them; log.txt lists the calls with the writes between them. Use a capture taken with contents: "
+              "left them; log.txt lists the calls with the writes between them (log='xxmi': in XXMI's own syntax, with "
+              "Set* lines worked out from the bindings, stream-output targets included, for tools that read XXMI "
+              "dumps, such as LoyalTools' extractors). Use a capture taken with contents: "
               "then every file holds what the call saw. From a capture without, only what provably has not changed "
               "since is written unless only_exact=false. Calls are numbered as in the capture (from 0). XXMI's own "
               "command list and variable trace is not available here. A whole game frame is gigabytes: select calls "
@@ -1152,14 +1250,16 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                "only_exact": {"type": "boolean", "default": True},
                "max_mb": {"type": "integer", "minimum": 1, "maximum": 65536, "default": 2048},
                "max_seconds": {"type": "integer", "minimum": 5, "maximum": 1800, "default": 120},
-               "folder": {"type": "string", "default": "", "description": "default: <output folder>/frame-<n>/dump"}},
+               "folder": {"type": "string", "default": "", "description": "default: <output folder>/frame-<n>/dump"},
+               "log": {"type": "string", "enum": list(contents.LOG_STYLES), "default": "readable"}},
               read_only=False)
     def efmi_dump_frame(capture="latest", first: int = 0, last: int = -1, kinds=None, txt: bool = True,
-                        only_exact: bool = True, max_mb: int = 2048, max_seconds: int = 120, folder: str = ""):
+                        only_exact: bool = True, max_mb: int = 2048, max_seconds: int = 120, folder: str = "",
+                        log: str = "readable"):
         cap = s.capture(capture)
         return contents.dump_frame(s, cap, first=int(first), last=int(last), kinds=list(kinds or []), txt=bool(txt),
                                    only_exact=bool(only_exact), max_mb=int(max_mb), max_seconds=float(max_seconds),
-                                   folder=folder)
+                                   folder=folder, log=str(log))
 
     # ================================================================ what a draw paints
     @srv.tool("efmi_capture_draw_outputs",
@@ -1228,6 +1328,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
     # ================================================================ continuous mode
     def _live_item(it: list) -> dict:
         t, origin, ib, state, ib_res, ic, fi, vc, vs, ps, draws, inst = it
+        if not s.region_hashes:
+            ib = ib_res     # ZZMI and the other installations without region hashes
         return {"call": DRAW_NAMES.get(t, str(t)), "origin": origin, "ib": ib, "ib_state": state, "ib_resource": ib_res,
                 "index_count": ic, "first_index": fi, "vertex_count": vc, "vs": vs, "ps": ps, "draws": draws, "instances": inst}
 

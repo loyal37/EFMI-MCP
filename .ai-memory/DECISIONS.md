@@ -243,3 +243,11 @@
 - The switch is a hotkey read by the probe (the user's own key press; the probe sends no input) as well as a pipe command: the MCP server is idle between the agent's turns and cannot react to the user. The probe writes the files on a thread of its own, so a recording needs no client and survives one leaving.
 - Kept for every frame: which mesh/range/shaders were drawn, as runs of frames per line (size grows with how often things appear and disappear, not with time). Kept in full only for keyframes (start, a new shader pair of the game's, every ten seconds), without buffer and texture contents: a frame with contents copies 200-600 MB in the game, which no frame rate survives every frame. Explicit captures and the trigger remain the way to get contents of a chosen moment.
 - Unhashed index data (the game's CPU-built batches) is one line regardless of its range, in the probe for recordings and in the server for the live history: by range it was a new line in every frame.
+
+## D-032: The installation comes from the connected game, and the switch's state from replaced draws
+
+- Date: 2026-10-21 (ZZMI support).
+- The probe is the same DLL in every XXMI game; what differs (core, hash mode, mods key) is read from the installation whose `d3d11.dll` the connected game loaded, not from the server's command line, so one server serves Endfield and Zenless Zone Zero. A folder that names no core is treated as EFMI, the installation the tools were built for.
+- Hashes are shown as the installation's mods use them (`track_region_hashes`); the probe keeps computing both, so nothing in the probe depends on the game.
+- Where a core prints no notification (ZZMI), the state of the mods switch is read from the draws, and only clear evidence counts: game draws that a `handling = skip` section replaces (with first index and index count matched), XXMI draws made with the game's shaders, or the frame right before the key. Texture-only sections and XXMI's own overlay never count; otherwise the state is unknown and no further key is pressed. The same rules decide "no key needed" for EFMI.
+- LoyalTools' ZZMI extractor reads XXMI's frame analysis; the server writes that format (`log='xxmi'`) instead of the model workflow importing LoyalTools' internals, so the contract is XXMI's file format.

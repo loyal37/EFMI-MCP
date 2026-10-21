@@ -17,6 +17,7 @@ Nothing outside sandbox/run is written.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 import time
@@ -80,6 +81,75 @@ def compare_texts(cap: Capture, dump_dir: Path, ours: Path) -> tuple[int, int, l
     return same, different, notes
 
 
+_CALL = re.compile(r"^(\d{6}) (\w+)\((.*)\)(?: hash=([0-9a-f]+))?\s*$")
+_SLOT = re.compile(r"^\s+(\d+|D|Src|Dst): (?:view=0x[0-9A-Fa-f]+ )?resource=(0x[0-9A-Fa-f]+) hash=([0-9a-f]+)")
+_ARG = re.compile(r"(\w+):([^,]+)")
+
+
+def replay_log(path: Path) -> list[dict]:
+    """The input assembler and shader state at each draw of an XXMI-style log.txt, as XXMI's log syntax gives it."""
+    state: dict = {"vb": {}}
+    draws = []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    i = 0
+    while i < len(lines):
+        m = _CALL.match(lines[i])
+        i += 1
+        if not m:
+            continue
+        name, args, trailing = m.group(2), dict(_ARG.findall(m.group(3))), m.group(4)
+        slots = {}
+        while i < len(lines) and _SLOT.match(lines[i]):
+            s = _SLOT.match(lines[i])
+            slots[s.group(1)] = s.group(3)
+            i += 1
+        if name == "IASetVertexBuffers":
+            start = int(args.get("StartSlot", 0))
+            for slot in range(start, start + int(args.get("NumBuffers", 0))):
+                if str(slot) in slots:
+                    state["vb"][slot] = slots[str(slot)]
+                else:
+                    state["vb"].pop(slot, None)
+        elif name == "IASetIndexBuffer":
+            state["ib"] = (trailing, args.get("Format", "").strip(), args.get("Offset", "").strip())
+        elif name == "IASetPrimitiveTopology":
+            state["topology"] = args.get("Topology", "").strip()
+        elif name in ("VSSetShader", "PSSetShader"):
+            state[name[:2].lower()] = trailing
+        elif name.startswith("Draw"):
+            draws.append({"call": int(m.group(1)), "vb": dict(state["vb"]), **{k: v for k, v in state.items() if k != "vb"}})
+    return draws
+
+
+def compare_logs(theirs: Path, ours: Path, game_calls: list[int]) -> tuple[int, int, list[str]]:
+    """Each draw's state replayed from XXMI's log against the log written with log='xxmi' (only what XXMI's log says).
+
+    XXMI's log has the game's draws; the one written here every call of the capture, of which game_calls are the game's.
+    """
+    wanted = set(game_calls)
+    a, b = replay_log(theirs), [d for d in replay_log(ours) if d["call"] in wanted]
+    same = different = 0
+    notes: list[str] = []
+    for n, (x, y) in enumerate(zip(a, b)):
+        for key in ("ib", "topology", "vs", "ps"):
+            if x.get(key) is not None:
+                ok = x[key] == y.get(key)
+                same += ok
+                different += not ok
+                if not ok and len(notes) < 8:
+                    notes.append(f"  MISMATCH draw {n} {key}: XXMI {x[key]} here {y.get(key)}")
+        for slot, h in x["vb"].items():
+            ok = y["vb"].get(slot) == h
+            same += ok
+            different += not ok
+            if not ok and len(notes) < 8:
+                notes.append(f"  MISMATCH draw {n} vb{slot}: XXMI {h} here {y['vb'].get(slot)}")
+    if len(a) != len(b):
+        different += 1
+        notes.append(f"  {len(a)} draws in XXMI's log, {len(b)} here")
+    return same, different, notes
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verbose", "-v", action="store_true")
@@ -130,7 +200,7 @@ def main() -> int:
             return 2
         dump_dir = wait_for_dump(efmi, before, timeout=150)
         if not dump_dir:
-            print("XXMI did not produce a frame analysis dump")
+            print("XXMI did not produce a frame analysis dump; the sandbox said:\n" + "\n".join(sb.lines[-15:]))
             return 1
         count = settle(dump_dir)
         dump = parse_frame_dump(dump_dir)
@@ -155,8 +225,20 @@ def main() -> int:
         print("\n".join(notes))
         if different or same < 200 or written.get("problems"):
             rc = 1
+
+        # log='xxmi': the Set* lines worked out from the bindings, against the ones XXMI logged for the same calls.
+        styled = RUN / "mcp-out" / "contents-parity-xxmi-log"
+        shutil.rmtree(styled, ignore_errors=True)
+        contents.dump_frame(Reader(client, styled), cap, folder=str(styled), kinds=["ib"], max_seconds=300, log="xxmi")
+        same, different, notes = compare_logs(dump_dir / "log.txt", styled / "log.txt",
+                                              [d["index"] for d in game if d["type"] < 8])
+        print(f"log.txt in XXMI's syntax: {same} bindings at the draws agree with XXMI's log, {different} differ")
+        print("\n".join(notes))
+        if different or same < 100:
+            rc = 1
         if not args.keep:
             shutil.rmtree(out, ignore_errors=True)
+            shutil.rmtree(styled, ignore_errors=True)
         client.close()
     finally:
         sb.quit()

@@ -1,5 +1,13 @@
 # EFMI MCP — Tasks
 
+## T-019: Zenless Zone Zero (ZZMI) (in progress, 2026-10-21)
+
+- Done: installation detection and adoption, whole-buffer hashes, F6 switch with the state from the draws, SO targets, XXMI-syntax log, offline tests (see CURRENT_STATE).
+- To do without the game: the F6 half of `zzmi_integration_test.py`, `contents_parity_test.py` (XXMI-syntax log against XXMI's) and `mods_toggle_integration_test.py`, when no elevated window and no user is in the foreground (they take the focus for a moment).
+- To do in the game: the user ticks "Inject Libraries" on the launcher's ZZMI tab (path `F:\EFMI MCP\dist\efmi_probe.dll`) and restarts Zenless Zone Zero. Then: status (installation ZZMI, whole-buffer hashes), capture, set comparison with the user's dump `FrameAnalysis-2026-10-21-120040`, SO targets of the skinning draws, announced F6 off/on (restore on) and F10.
+- Model workflow for ZZMI through LoyalTools' ZZMI entry points (user, 2026-10-21): source = a frame analysis folder (the user's F8 dump, or `efmi_dump_frame log=xxmi` of a live capture with contents), `ZZMIDumpExtractor.list_skinned_draw_ibs` / `loyal.extract_from_dump` (MERGED_SKELETON) in background Blender with the ZZMI preset, `ssmt.generate_mod_blueprint` for export, checks on output files and XXMI's INI syntax only; then deploy and verify like EFMI. Acceptance: LoyalTools' workspace from the live dump equals the one from XXMI's dump of the same scene.
+- The slot cache and slot table still follow EFMI's region hashes.
+
 ## T-018: Recording between the user's on and off (done in the sandbox, 2026-10-21)
 
 - Goal (user): start and end of a stretch decided by the user with an on/off switch; what is recorded is the agent's choice, as complete as possible without hurting the game; folders under `captures\`.

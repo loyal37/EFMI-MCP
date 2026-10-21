@@ -17,6 +17,9 @@
      history and trigger tools on top (fake probe)
  13. recording: the folder the probe writes between switching it on and off, keyframes for news, the
      recording tools on top (a recording written by hand, fake probe)
+ 14. installations: EFMI and ZZMI told apart, whole-buffer hashes, which mod sections replace a draw,
+     the mods switch read from the draws, log.txt in XXMI's syntax (offline; the real ZZMI core with
+     F10 and F6 in a private sandbox copy is zzmi_integration_test.py, opt-in)
 """
 from __future__ import annotations
 
@@ -60,6 +63,8 @@ def main() -> int:
         ("slot table of a version: three slots per mesh, groups, mod check, MCP query", ["sandbox/slot_table_test.py"]),
         ("continuous mode history and trigger tools (fake probe)", ["sandbox/continuous_unit_test.py"]),
         ("recording tools on a recording written by hand (fake probe)", ["sandbox/record_unit_test.py"]),
+        ("installations (EFMI, ZZMI), whole-buffer hashes, switch state from draws, XXMI-syntax log",
+         ["sandbox/zzmi_unit_test.py"]),
     ]
     results = [(title, run(title, args)) for title, args in steps]
     print("\n======== summary")

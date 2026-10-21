@@ -58,6 +58,11 @@ A pipe message is `[u32 header_len][u32 payload_len][header JSON][payload]`. The
 
 On import, `hashes.py` tries to load `dist/efmi_crc32c.dll` by absolute path and accelerates CRC once the CPU SSE4.2 check and known vectors pass; when the library is missing or unsupported it keeps the Python fallback. Sources and build are in `server/native/`, completely independent of the injected probe. `decode.texture_to_pngs` produces the full PNG and the preview from one decode; compression level 1 keeps the pixels.
 
+### Probe 0.1.12 / server 0.1.22: installations (EFMI, ZZMI)
+
+- `reload.cpp`: `install_toggle_key` chooses EFMI's F11 (`Core\EFMI\KeyBindings.ini`) or ZZMI's F6 (`Core\ZZMI\main.ini`) from the loaded XXMI's files and checks the binding and `[Hunting]`; `capture.cpp` records `so` (stream-output targets) per call in full captures, and `trig_check` also matches whole-buffer ib hashes.
+- Server: `xxmi_install.py` (`detect`, `toggle_binding`); `Session.install` / `efmi_root` / `mods` / `region_hashes` follow the connected probe (`_adopt`); `Capture.mesh_hash` / `ib_hash` give the hash mods use; `mods_toggle.drawn_summary` / `draws_agree` / `draws_evidence` read the state from draws; `contents.xxmi_state_lines` / `xxmi_event_lines` write log.txt in XXMI's syntax.
+
 ### Probe 0.1.11: recording
 
 - `record.cpp`: `[Record]` settings, `rec_open` / `rec_lines` / `rec_runs` / `rec_frames` / `rec_open_runs` / `rec_keyframe` / `rec_close` queue tasks for a writer thread (created on first use) that makes the folder, appends the files, serializes keyframes with `cap_serialize` and rewrites `recording.json` at the end; `rec_bytes` feeds the disk limit, `rec_status_members` the status.
