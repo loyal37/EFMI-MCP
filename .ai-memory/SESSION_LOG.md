@@ -439,3 +439,9 @@ The user asked whether a boss's skill, which lasts a moment, can be read, and th
 - Server: `model_zzmi.py` and two Blender scripts drive LoyalTools 1.7.1's own ZZMI extraction (merged skeleton) and export; the tools choose the game by connection, `frame_dump` or project. The dump writer writes files only for the calls LoyalTools needs (`files_for`); the in-game comparison skips stream-output vertex buffers and keeps texture-only ZZMI entry points as kept by the export.
 - Correction of the first part: the skip-section rule of the mods switch applies to ZZMI only (LoyalTools' EFMI entry points have no `handling = skip`; EFMI's core replaces the draw).
 - Offline: 21/21 on the user's dump through the MCP tools, 6 unit tests incl. LoyalTools reading a dump this server wrote. Not in the game yet; the key-press sandbox tests are still pending (the user was in the foreground).
+
+## 2026-10-21: Zenless Zone Zero in the game
+
+- The user started the game with the probe; checked through the new server code: adoption, hashes, stream output, 4 announced F6 presses (mods on at the end), a live extraction equal to the F8 dump's, an export equal to the F8 project's. Details in CURRENT_STATE.
+- Three fixes from what the game showed: indexed draws only as draws of a mesh (skinning Draws keep an index buffer), XXMI's hash for stream-output buffers a mod's VertexLimitRaise enlarged, typeless textures in their view's format. Unit tests added; offline suites and MCP end to end 106 pass.
+- Open: deployment with F10 (needs a decision about the user's phoenix mod), the key-press sandbox tests.

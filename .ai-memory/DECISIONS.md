@@ -258,3 +258,9 @@
 - LoyalTools reads Zenless Zone Zero from XXMI's frame analysis (file names, `.txt` layouts, `log.txt` Set* lines with stream-output targets). A live capture with contents is written in that format (only the calls it needs get files), and a user's F8 folder is used as it is; the extraction, merged skeleton, import and export are the add-on's operators in background Blender with the ZZMI preset. Nothing of LoyalTools' algorithm is copied; its ZZMI extractor module is imported outside Blender only for the listing, the way the EFMI bridge imports its extractor.
 - Checks rely on output files and XXMI's INI syntax (and the workspace JSON the add-on writes), not on the wording of its log: the extraction is judged by Import.json, the submesh files and the imported objects, the export by its files.
 - In the game, buffers a stream-output draw wrote are computed at run time and not compared; entry points of a ZZMI export that no section skips (shape-keyed faces) keep the game's mesh by design and count as covered.
+
+## D-034: A buffer XXMI enlarged for a mod is shown by the hash XXMI knows it by
+
+- Date: 2026-10-21 (found live: phoenix's `VertexLimitRaise` `4ac4d074`, the probe's `2d5bb3f6`).
+- The probe sits below XXMI and sees the buffer XXMI creates, which for a mod's `override_vertex_count` is larger than the one the game asked for; XXMI keeps the hash of the requested description. Rather than hooking above XXMI, the server maps: a game-created stream-output buffer whose size is `override_vertex_count x override_byte_stride` of exactly one section of the installed mods gets that section's hash; the probe's own stays as `probe_hash`. Only for installations that hash whole buffers (ZZMI).
+- Consequence: live extractions write the same `DrawVB` and `VertexLimitRaise` hash as an F8 dump, so the exported mod's vertex-limit section matches in the game.

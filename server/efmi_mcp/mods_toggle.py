@@ -29,6 +29,9 @@ from .reload_workflow import _identity
 from .xxmi_install import Install, toggle_binding
 
 STATES = {"toggle": None, "on": True, "off": False}
+# DrawIndexed, DrawIndexedInstanced, DrawIndexedInstancedIndirect. A Draw keeps the index buffer an earlier call
+# left bound (Zenless Zone Zero's skinning draws do), so it is not a draw of that mesh.
+INDEXED_TYPES = (2, 4, 6)
 MAX_BUFFERS_READ = 48     # the notification has to be found while it is still on screen
 _OLD_PROBE_HINT = ("Probe {version} cannot press {key}, and Windows silently drops keys that this unelevated server "
                    "sends to a game running as administrator. Probe {needed} or later presses it from inside the game: "
@@ -138,7 +141,7 @@ def drawn_summary(session, cap: Capture) -> dict:
     for d in cap.raw_draws:
         origin = d.get("o", "unknown")
         origins[origin] += 1
-        if "ib" not in d:
+        if "ib" not in d or d.get("t") not in INDEXED_TYPES:
             continue
         if origin == "xxmi":
             if d.get("sh") and d["sh"][0] in game_vs:

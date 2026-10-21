@@ -59,6 +59,8 @@ class Capture:
         # (ZZMI and the other XXMI games) it is the creation hash of the whole buffer. Unknown: EFMI's way.
         settings = doc.get("xxmi_settings") or {}
         self.region_hashes: bool = bool(settings.get("track_region_hashes", True))
+        # Resource -> the hash XXMI knows it by, where that is not the one the probe computed (see alias_hashes).
+        self.hash_alias: dict[int, str] = {}
 
     def __len__(self) -> int:
         return len(self.raw_draws)
@@ -68,8 +70,30 @@ class Capture:
         return self.resources[rid] if 0 <= rid < len(self.resources) else None
 
     def res_hash(self, rid: int) -> str | None:
+        if rid in self.hash_alias:
+            return self.hash_alias[rid]
         r = self.resource(rid)
         return r.get("hash") if r and r.get("known") else None
+
+    def alias_hashes(self, vertex_limits: dict[int, set[str]]) -> int:
+        """Buffers XXMI created larger for a mod (override_vertex_count x override_byte_stride) by the hash XXMI knows.
+
+        XXMI hashes the description the game asked for and then creates the buffer larger; the probe sits
+        below XXMI and sees the larger one, so its hash is another. ``vertex_limits``: bytes -> the hashes of
+        the sections that make a buffer that large. Only installations that name buffers by their creation
+        hash, only stream-output buffers the game created (a mod's own vertex file often has exactly that many
+        vertices), and only when one section accounts for the size.
+        """
+        if self.region_hashes:
+            return 0
+        for rid, r in enumerate(self.resources):
+            streamed = r.get("kind") == "buffer" and r.get("bind", 0) & 16 and r.get("origin") != "xxmi"
+            hashes = vertex_limits.get(r.get("size")) if streamed else None
+            if hashes and len(hashes) == 1 and r.get("hash") not in hashes:
+                self.hash_alias[rid] = next(iter(hashes))
+                r["probe_hash"] = r.get("hash")
+                r["hash_note"] = "made larger by a mod's override_vertex_count: XXMI knows it by its requested description"
+        return len(self.hash_alias)
 
     def mesh_hash(self, rid: int, region_id: int) -> str | None:
         """The hash a mod uses for an index or vertex buffer binding (see region_hashes)."""

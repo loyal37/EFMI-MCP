@@ -632,8 +632,14 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
                     if not meta.get("exact", False) and only_exact:
                         skipped["not_exact"] += 1
                         continue
-                    dds = decode.make_dds(meta["width"], meta["height"], meta["format"], data, depth=meta.get("depth", 0))
-                    target = writer.store(key, "{crc}-" + meta["format_name"] + ".dds", lambda: dds)
+                    fmt, fmt_name = meta["format"], meta["format_name"]
+                    view_format = (entry.get("view") or {}).get("format", "")
+                    if fmt_name.endswith("_TYPELESS") and view_format in decode.FORMAT_NAMES \
+                            and not view_format.endswith("_TYPELESS"):
+                        # As the shader reads it, and as XXMI writes a typeless texture: in a typed format.
+                        fmt, fmt_name = decode.FORMAT_NAMES.index(view_format), view_format
+                    dds = decode.make_dds(meta["width"], meta["height"], fmt, data, depth=meta.get("depth", 0))
+                    target = writer.store(key, "{crc}-" + fmt_name + ".dds", lambda: dds)
                 else:
                     target = writer.by_key[key]
                 writer.link(target, stem + ".dds")

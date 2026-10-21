@@ -173,6 +173,14 @@ class Switch(Folder):
         self.assertEqual(drawn["game_draws_of_meshes_that_mods_override"], 1)
         self.assertEqual(self.summary(self.frame(["33333333"], first_index=300))["game_draws_of_meshes_that_mods_override"], 1)
 
+    def test_a_draw_that_keeps_an_earlier_index_buffer_is_not_a_draw_of_that_mesh(self):
+        # Zenless Zone Zero's skinning draws are Draws with the last index buffer still bound.
+        cap = self.frame(["22222222"], xxmi_mesh=1)
+        cap.raw_draws.append({"i": 9, "t": 1, "o": "game", "vc": 30, "topo": 1, "ib": [0, 57, 0, -1],
+                              "sh": [0, -1, -1, -1, 1, -1]})
+        self.assertEqual(self.summary(cap)["game_draws_of_meshes_that_mods_override"], 0)
+        self.assertIs(mods_toggle.draws_evidence(self.summary(cap), 2)["mods_enabled"], True)
+
     def test_xxmi_overlay_text_is_not_a_mod_mesh(self):
         self.assertEqual(self.summary(self.frame(["22222222"], overlay=3))["mesh_draws_by_xxmi"], 0)
         self.assertEqual(self.summary(self.frame(["22222222"], xxmi_mesh=2))["mesh_draws_by_xxmi"], 2)
@@ -191,6 +199,50 @@ class Switch(Folder):
         # The game and a mod both drawing it is no clear picture.
         mixed = self.summary(self.frame(["11111111"], xxmi_mesh=1))
         self.assertIsNone(mods_toggle.draws_evidence(mixed, 2, off, 1)["mods_enabled"])
+
+
+class VertexLimit(Folder):
+    """A buffer XXMI made larger for a mod (override_vertex_count) keeps the hash of what the game asked for."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("d3dx.ini", ZZMI_D3DX)
+        self.write("Mods/m/mod.ini", "\n".join([
+            "[TextureOverride_body_VertexLimitRaise]", "hash = 4ac4d074", "override_byte_stride = 40",
+            "override_vertex_count = 1000", ""]))
+        self.session = tools.Session(self.root, self.root / "out", self.root / "probe.dll")
+
+    def doc(self, region_hashes=False):
+        resources = [{"kind": "buffer", "size": 40000, "known": True, "hash": "2d5bb3f6", "bind": 25, "origin": "game"},
+                     {"kind": "buffer", "size": 40000, "known": True, "hash": "9054b3c4", "bind": 9, "origin": "xxmi"},
+                     {"kind": "buffer", "size": 4000, "known": True, "hash": "11111111", "bind": 25, "origin": "game"}]
+        return {"frame": 3, "detail": "full", "resources": resources, "regions": [],
+                "xxmi_settings": {"track_region_hashes": region_hashes},
+                "draws": [{"i": 0, "t": 1, "o": "xxmi", "vc": 1000, "topo": 1, "vb": [[0, 1, 40, 0, -1]],
+                           "so": [[0, 0]], "sh": [-1] * 6}]}
+
+    def test_the_index_records_the_vertex_limit(self):
+        ref = mods.scan_mods(self.root).refs[0]
+        self.assertEqual(ref.vertex_limit, (1000, 40))
+
+    def test_the_enlarged_stream_output_buffer_is_shown_by_xxmis_hash(self):
+        cap = Capture(self.doc())
+        self.session.add_capture(cap)
+        d = cap.draw(0)
+        self.assertEqual(d["so"]["so0"]["hash"], "4ac4d074")
+        self.assertEqual(cap.resources[0]["probe_hash"], "2d5bb3f6")
+        # The mod's own vertex file has as many vertices, but it is not what XXMI enlarged.
+        self.assertEqual(d["vb"][0]["hash"], "9054b3c4")
+        self.assertEqual(cap.res_hash(2), "11111111")
+
+    def test_two_sections_for_one_size_or_region_hashes_leave_it_alone(self):
+        self.write("Mods/m/other.ini", "[TextureOverride_x]\nhash = 0ca0d1db\noverride_byte_stride = 20\n"
+                                       "override_vertex_count = 2000\n")
+        self.session.mods.invalidate()
+        cap = Capture(self.doc())
+        self.session.add_capture(cap)
+        self.assertEqual(cap.res_hash(0), "2d5bb3f6")
+        self.assertEqual(Capture(self.doc(region_hashes=True)).alias_hashes({40000: {"4ac4d074"}}), 0)
 
 
 def skinning_doc() -> dict:
@@ -269,6 +321,33 @@ class XxmiLog(unittest.TestCase):
             readable = Path(json.loads(call(server, "efmi_dump_frame", folder=str(root / "readable"))[0])["log"])
             self.assertNotIn("IASetVertexBuffers", readable.read_text(encoding="utf-8"))
             self.assertIn("log must be one of", call(server, "efmi_dump_frame", log="other")[0])
+
+    def test_a_typeless_texture_is_written_in_the_format_its_view_reads(self):
+        build = ROOT / "sandbox" / "build"
+        tmp = tempfile.TemporaryDirectory(prefix="zzmi-dds-", dir=build)
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "Mods").mkdir()
+        probe = FakeProbe()
+        typeless = probe.read_content
+
+        def read_content(*args, **kwargs):
+            meta, data = typeless(*args, **kwargs)
+            if "format" in meta:
+                meta = {**meta, "format": 27, "format_name": "R8G8B8A8_TYPELESS"}
+            return meta, data
+        probe.read_content = read_content
+        session = tools.Session(root, root / "out", root / "probe.dll")
+        session.client = probe
+        with patch.object(tools, "Session", return_value=session), \
+                patch.object(tools.ProbeClient, "connect", side_effect=ProbeNotFound("test: no probe")):
+            server = tools.build_server(root, root / "out", root / "probe.dll")
+            call(server, "efmi_capture_frame", contents="inputs")
+            folder = Path(json.loads(call(server, "efmi_dump_frame", kinds=["tex"], log="xxmi")[0])["folder"])
+        names = sorted(p.name for p in (folder / "deduped").glob("*.dds"))
+        self.assertTrue(names and all(name.endswith("-R8G8B8A8_UNORM.dds") for name in names), names)
+        raw = next((folder / "deduped").glob("*.dds")).read_bytes()
+        self.assertEqual(int.from_bytes(raw[128:132], "little"), 28)      # the DX10 header's DXGI format
 
 
 if __name__ == "__main__":

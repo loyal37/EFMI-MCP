@@ -1,5 +1,15 @@
 # EFMI MCP — Current development state
 
+## Zenless Zone Zero checked in the game (probe 0.1.12 / server 0.1.22, 2026-10-21, PID 35288)
+
+- The user enabled the probe for ZZMI and started the game; the session's MCP server was still the old code, so the new server code was driven directly through its tool handlers (scripts in the session's scratch folder; evidence under `captures/verify-zzmi-live/`).
+- Injection, connection: probe 0.1.12 in `ZenlessZoneZero.exe`; the server, started for EFMI, adopted `D:\XXMI-Launcher-Portable-v2.1.6\ZZMI` (3 active mods), whole-buffer hashes, mods key F6.
+- Capture: 374 draws, 264 indexed game draws, every ib hash = the whole buffer's; 7 stream-output skinning `Draw`s recorded. On screen: the character of the user's F8 dump, its body replaced by the user's mod `phoenix`.
+- F6 (4 presses in all, each announced; mods off twice for about half a minute; mods on at the end, read back from the draws): off read from the draws (the game draws 26 / 17 meshes phoenix replaces, XXMI none); on read from the draws (XXMI 16 mesh draws, the game none). Focus taken and given back every time.
+- Live model workflow (mods off): `efmi_list_models` 7 skinned meshes = the dump's; `efmi_extract_model` 12 parts, 35179 vertices, 45141 triangles, 432 bones = the F8 extraction. File by file against the F8 extraction: 44/48 geometry files byte-identical, the 4 others the Position buffers of the shape-keyed face parts (another expression); 101/101 textures in both with identical pixels (others are scene-dependent); the live project's export INI equals the F8 project's export section by section (86 sections, only the order differs).
+- Fixed on the way and checked again live: (1) the skinning `Draw` keeps an index buffer bound; `drawn_summary` and the capture summary now count indexed draws only (the first "on" read had said unknown). (2) XXMI creates a stream-output buffer larger for a mod's `override_vertex_count` and keeps the hash of the requested description; the probe, below XXMI, hashed the larger one (`2d5bb3f6` for phoenix's `4ac4d074`). `Session.add_capture` now gives such buffers (game-created, stream output, one section of the installed mods accounting for the size) the section's hash (`Capture.alias_hashes`, `probe_hash` kept); a live extraction then wrote `DrawVB` / `VertexLimitRaise` `4ac4d074` like the F8 dump. (3) Typeless textures are written in the format their view reads (`R16_UNORM`, as XXMI does).
+- Not done: deploying an export with F10 and the comparison (phoenix overrides the same meshes; it may only be disabled when the user asks for it), the key-press sandbox tests.
+
 ## Zenless Zone Zero (ZZMI) support (probe 0.1.12 / server 0.1.22, 2026-10-21; sandbox and offline verified in part, installed, not yet loaded by a game)
 
 - Request (user, 2026-10-21): make the MCP support ZZMI, with `D:\XXMI-Launcher-Portable-v2.1.6\ZZMI\FrameAnalysis-2026-10-21-120040` as reference; then "the model workflow can follow LoyalTools too, it supports ZZZ now" (LoyalTools 1.7.1: `extract/zzmi_dump_extractor.py`, merged skeleton for ZZMI).

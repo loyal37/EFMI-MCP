@@ -27,6 +27,8 @@ class HashRef:
     namespace: str | None = None
     match: dict = field(default_factory=dict)   # match_first_index / match_index_count ...
     skips: bool = False     # the section has 'handling = skip': the game's own draw is not issued
+    # override_vertex_count / override_byte_stride: XXMI creates the buffer of this hash that much larger
+    vertex_limit: tuple[int, int] | None = None
 
 
 @dataclass
@@ -114,6 +116,10 @@ def _parse_ini(path: Path, rel: str, mod: str) -> tuple[list[HashRef], str | Non
                 current = HashRef(mod, rel, section, "texture" if low.startswith("texture") else "shader",
                                   val.lower(), namespace, dict(pending_match), pending_skip)
                 refs.append(current)
+            elif key in ("override_vertex_count", "override_byte_stride") and current is not None \
+                    and val.strip().isdigit():
+                count, stride = current.vertex_limit or (0, 0)
+                current.vertex_limit = (int(val), stride) if key == "override_vertex_count" else (count, int(val))
             elif key == "handling" and "skip" in val.lower().split():
                 if current is not None:
                     current.skips = True

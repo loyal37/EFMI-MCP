@@ -310,6 +310,12 @@ class Session:
 
     # -- captures -------------------------------------------------------
     def add_capture(self, cap: Capture) -> None:
+        if not cap.region_hashes:
+            limits: dict[int, set[str]] = {}
+            for ref in self.mods.get().refs:
+                if ref.vertex_limit and all(ref.vertex_limit):
+                    limits.setdefault(ref.vertex_limit[0] * ref.vertex_limit[1], set()).add(ref.hash)
+            cap.alias_hashes(limits)
         self.captures[cap.frame] = cap
         self.latest = cap.frame
         while len(self.captures) > 6:
@@ -430,7 +436,8 @@ def capture_report(s: Session, cap: Capture, ms: float, chosen: str = "") -> lis
     info: dict = {}
     for d in game:
         ib = d.get("ib")
-        if ib and ib["hash"]:
+        # Only indexed draws use their index buffer; a Draw may keep one an earlier call left bound.
+        if ib and ib["hash"] and d["call"].startswith("DrawIndexed"):
             counts[ib["hash"]] += 1
             info.setdefault(ib["hash"], d)
     lines.append(f"distinct index-buffer hashes drawn by the game: {len(counts)}")

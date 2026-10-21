@@ -1,11 +1,12 @@
 # EFMI MCP — Tasks
 
-## T-019: Zenless Zone Zero (ZZMI) (in progress, 2026-10-21)
+## T-019: Zenless Zone Zero (ZZMI) (checked in the game, 2026-10-21; deployment still to do)
 
 - Done: installation detection and adoption, whole-buffer hashes, F6 switch with the state from the draws, SO targets, XXMI-syntax log, offline tests (see CURRENT_STATE).
 - To do without the game: the F6 half of `zzmi_integration_test.py`, `contents_parity_test.py` (XXMI-syntax log against XXMI's) and `mods_toggle_integration_test.py`, when no elevated window and no user is in the foreground (they take the focus for a moment).
-- To do in the game: the user ticks "Inject Libraries" on the launcher's ZZMI tab (path `F:\EFMI MCP\dist\efmi_probe.dll`) and restarts Zenless Zone Zero. Then: status (installation ZZMI, whole-buffer hashes), capture, set comparison with the user's dump `FrameAnalysis-2026-10-21-120040`, SO targets of the skinning draws, announced F6 off/on (restore on) and F10.
-- Model workflow for ZZMI through LoyalTools' ZZMI entry points (user, 2026-10-21): done offline (list, extract, export, file checks; see CURRENT_STATE). To do in the game: `efmi_list_models` / `efmi_extract_model` on a live frame (mods off), and the acceptance check that LoyalTools' workspace from the live frame equals the one from an F8 dump of the same scene (Position/Texcoord/Blend/Index bytes per part); then `efmi_verify_exported_mod` (deploy into `<ZZMI>\Mods\EFMI-MCP\<project>`, one announced F10, comparison) and its removal.
+- Done in the game (2026-10-21): status, capture, whole-buffer hashes, SO targets, F6 off/on with the state from the draws, live list and extraction equal to the F8 extraction, export equal to the F8 project's (see CURRENT_STATE).
+- Still to do in the game: `efmi_verify_exported_mod` (deploy, one announced F10, comparison, removal); the user's `phoenix` overrides the same meshes, so ask whether it may be disabled for the test, or test another character without a mod.
+- Model workflow for ZZMI through LoyalTools' ZZMI entry points (user, 2026-10-21): done offline (list, extract, export, file checks; see CURRENT_STATE). The live extraction and its acceptance against an F8 dump are done (2026-10-21); deployment is the item above.
 - The slot cache and slot table still follow EFMI's region hashes.
 
 ## T-018: Recording between the user's on and off (done in the sandbox, 2026-10-21)
