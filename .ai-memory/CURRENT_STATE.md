@@ -1,5 +1,13 @@
 # EFMI MCP — Current development state
 
+## Slot cache off by default with ZZMI (probe 0.1.13, 2026-10-22; sandbox verified, installed, not yet loaded by a game)
+
+- Request (user, 2026-10-22): ZZMI also used the slot cache; ZZMI should not use it by default.
+- `slotcache.cpp`: without `enable` in `efmi_probe.ini` the probe decides at the first frame it would look at (`slot_decide`): on when the loaded XXMI's folder has `Core\EFMI` or no XXMI is loaded (the sandbox), off otherwise; `enabled_by` in the status says why. An explicit `enable` (ini or a `slot_cache` command that sets something) wins; `ipc.cpp` no longer treats a flush-only `slot_cache` request as setting. `efmi_status` shows a `slot cache:` line.
+- The running game (PID 5516, probe 0.1.12) had recorded 4472 lines this session, 10532 in `dist\slot-cache\3.3.0+6f1fee902673\`; switched off in that process with the `slot_cache` command (no key, no file changed). The folder was left as it is.
+- Verification: `slot_cache_test.py` 80/80 on the candidate, with a new ZZMI case (a private copy of the real core: off by default with the reason, a client can switch it on) and EFMI on by default "because the loaded XXMI is EFMI"; self-test 143, contents 73, continuous 62, recording 46, MCP end to end 106, multi-device with XXMI 96 on the candidate.
+- Installed: `dist\efmi_probe.dll` = 0.1.13 (sha256 `E0502A27DB778EA3…`); 0.1.12 kept in `dist\backup-0.1.12\`. The running game keeps 0.1.12 (with its slot cache now switched off) until it is restarted.
+
 ## Zenless Zone Zero checked in the game (probe 0.1.12 / server 0.1.22, 2026-10-21, PID 35288)
 
 - The user enabled the probe for ZZMI and started the game; the session's MCP server was still the old code, so the new server code was driven directly through its tool handlers (scripts in the session's scratch folder; evidence under `captures/verify-zzmi-live/`).

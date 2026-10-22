@@ -500,6 +500,12 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                     lines.append(f"recording: off; the user switches it with {rec.get('hotkey') or 'no key'} in the game")
             elif "record" not in st.get("features", ()):
                 lines.append(f"recording: needs probe 0.1.11 (this is {st['probe']}). Restart the game to load {s.probe_dll}")
+            slots = st.get("slot_cache")
+            if isinstance(slots, dict) and "every" in slots:
+                where = f", {slots.get('records_in_folder', 0)} records in {slots['folder']}" if slots.get("folder") else ""
+                why = f" ({slots['enabled_by']})" if slots.get("enabled_by") else ""
+                lines.append(f"slot cache: {'on' if slots.get('enabled') else 'off'}{why}{where}; "
+                             "[SlotCache] enable = 1 / 0 in efmi_probe.ini next to the DLL decides it")
             if "reload_key" in st.get("features", ()):
                 level = "elevated" if st.get("process", {}).get("elevated") else "not elevated"
                 lines.append(f"reload: the probe presses F10 inside the game (game process is {level})")

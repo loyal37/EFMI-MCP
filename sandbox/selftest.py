@@ -57,10 +57,10 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 class Sandbox:
-    def __init__(self, extra: list[str], xxmi: bool = True):
+    def __init__(self, extra: list[str], xxmi: bool = True, xxmi_dll: Path | None = None):
         args = [str(RUN / "efmi_sandbox.exe"), "--probe", str(PROBE), "--seconds", "60"] + extra
         if xxmi:
-            args += ["--xxmi", str(RUN / "EFMI" / "d3d11.dll")]
+            args += ["--xxmi", str(xxmi_dll or RUN / "EFMI" / "d3d11.dll")]
         self.proc = subprocess.Popen(args, cwd=str(RUN), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True, encoding="utf-8", errors="replace")
         self.pid = self.proc.pid

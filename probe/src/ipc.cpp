@@ -403,7 +403,11 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		sc.static_only = rq.bool_or("static_only", sc.static_only);
 		sc.max_new = (uint32_t)rq.num_or("max_new", sc.max_new);
 		sc.subdir = rq.str_or("subdir", sc.subdir.c_str());
-		if (!slot_set_config(sc))
+		// Only a request that sets something replaces the settings (and the default for this installation).
+		bool sets = false;
+		for (const char* k : { "enable", "every", "skinned_only", "bones_only", "static_only", "max_new", "subdir" })
+			sets = sets || rq.get(k) != nullptr;
+		if (sets && !slot_set_config(sc))
 			return send_error(pipe, id, "subdir must be a plain folder name (letters, digits, '.', '-', '_')");
 		bool flushed = true;
 		if (rq.bool_or("flush", false))

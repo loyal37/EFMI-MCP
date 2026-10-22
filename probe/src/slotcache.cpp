@@ -5,6 +5,7 @@
 // its own: working out the game version, loading what earlier sessions wrote, appending new
 // records, saving the bytecode of shaders that were not saved yet.
 #include "slotcache.h"
+#include "hooks.h"
 #include "registry.h"
 #include "json.h"
 #include <deque>
@@ -19,6 +20,9 @@ static SlotCacheConfig g_sc;                  // guarded by g_cs
 static volatile LONG g_enable = 0, g_every = 30, g_skinned = 1, g_bones = 1, g_static = 1, g_max_new = 256;
 static volatile LONG g_gen = 0;
 static HANDLE g_thread = nullptr;             // guarded by g_cs
+// efmi_probe.ini does not say whether to record: decided by the installation once XXMI is known.
+static volatile LONG g_auto = 0;
+static const char* g_enable_source = "efmi_probe.ini";   // guarded by g_cs
 
 struct Item { std::string rec, key; uint64_t vs, ps; };
 static std::deque<Item> g_q;                  // guarded by g_cs
@@ -76,7 +80,8 @@ void slot_init()
 	wchar_t path[MAX_PATH];
 	swprintf_s(path, L"%s\\efmi_probe.ini", probe_dir());
 	SlotCacheConfig c;
-	c.enable = GetPrivateProfileIntW(L"SlotCache", L"enable", 1, path) != 0;
+	const int enable = GetPrivateProfileIntW(L"SlotCache", L"enable", -1, path);
+	c.enable = enable != 0;
 	c.every = (uint32_t)GetPrivateProfileIntW(L"SlotCache", L"every", 30, path);
 	c.skinned_only = GetPrivateProfileIntW(L"SlotCache", L"skinned_only", 1, path) != 0;
 	c.bones_only = GetPrivateProfileIntW(L"SlotCache", L"bones_only", 1, path) != 0;
@@ -88,7 +93,14 @@ void slot_init()
 	if (plain_name(s))
 		c.subdir = s;
 	slot_set_config(c);
-	plog("slot cache: %s, one frame in %u, %s draws%s%s, folder %s", c.enable ? "on" : "off", c.every,
+	if (enable == -1) {
+		EnterCriticalSection(&g_cs);
+		g_enable_source = "default";
+		InterlockedExchange(&g_auto, 1);
+		LeaveCriticalSection(&g_cs);
+	}
+	plog("slot cache: %s, one frame in %u, %s draws%s%s, folder %s", enable == -1 ? "on unless the loaded XXMI is not EFMI"
+	     : c.enable ? "on" : "off", c.every,
 	     c.skinned_only ? "skinned" : "all", c.bones_only ? " with a bone pool" : "",
 	     c.static_only ? " from static index data" : "", c.subdir.c_str());
 }
@@ -114,6 +126,9 @@ bool slot_set_config(const SlotCacheConfig& cfg)
 	const bool again = g_sc.subdir != c.subdir || (g_sc.skinned_only && !c.skinned_only) ||
 	                   (g_sc.bones_only && !c.bones_only) || (g_sc.static_only && !c.static_only);
 	g_sc = c;
+	// Whoever sets it now decides; the default no longer applies.
+	g_enable_source = "efmi_probe.ini or a client";
+	InterlockedExchange(&g_auto, 0);
 	LeaveCriticalSection(&g_cs);
 	if (again)
 		InterlockedIncrement(&g_gen);
@@ -126,8 +141,38 @@ bool slot_set_config(const SlotCacheConfig& cfg)
 	return true;
 }
 
+// The records follow LoyalTools' rules for Endfield's characters (EFMI). With another XXMI loaded
+// (ZZMI, ...) the slot cache is off unless efmi_probe.ini or a client switches it on; without XXMI
+// (the sandbox) it stays on. Decided at the first looked-at frame: XXMI is known by then.
+static void slot_decide()
+{
+	if (InterlockedCompareExchange(&g_auto, 0, 1) != 1)
+		return;
+	bool efmi = true;
+	const char* source = "default: on, no XXMI is loaded";
+	if (g_xxmi.base) {
+		wchar_t dir[MAX_PATH];
+		wcscpy_s(dir, g_xxmi.path);
+		wchar_t* slash = wcsrchr(dir, L'\\');
+		if (slash) {
+			slash[1] = 0;
+			wcscat_s(dir, L"Core\\EFMI");
+			efmi = GetFileAttributesW(dir) != INVALID_FILE_ATTRIBUTES;
+		}
+		source = efmi ? "default: on, the loaded XXMI is EFMI" : "default: off, the loaded XXMI is not EFMI";
+	}
+	EnterCriticalSection(&g_cs);
+	g_sc.enable = efmi;
+	g_enable_source = source;
+	LeaveCriticalSection(&g_cs);
+	InterlockedExchange(&g_enable, efmi ? 1 : 0);
+	plog("slot cache: %s", source);
+}
+
 bool slot_due(uint32_t frame)
 {
+	if (g_auto)
+		slot_decide();
 	LONG every = g_every;
 	return g_enable && every > 0 && frame % (uint32_t)every == 0;
 }
@@ -553,6 +598,7 @@ void slot_status_object(std::string* out)
 	}
 	EnterCriticalSection(&g_cs);
 	w.kb("enabled", g_sc.enable);
+	w.ks("enabled_by", g_auto ? "default, decided at the first frame" : g_enable_source);
 	w.ku("every", g_sc.every);
 	w.kb("skinned_only", g_sc.skinned_only);
 	w.kb("bones_only", g_sc.bones_only);

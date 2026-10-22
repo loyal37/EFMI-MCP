@@ -124,6 +124,8 @@ After updating the probe the game has to be quit and started again; the DLL in t
 
 **Probe 0.1.12 / MCP server 0.1.22** (2026-10-21; **the game has to be restarted to load the new probe**; verified in the sandbox and offline, not yet in a game): Zenless Zone Zero with ZZMI. The server works with the installation of the game it is connected to, whatever `--efmi-root` says, and shows hashes the way that installation's mods use them; `efmi_toggle_mods` presses ZZMI's F6; full captures record stream-output targets; `efmi_dump_frame log=xxmi` writes `log.txt` in XXMI's own syntax; the model workflow extracts and exports Zenless Zone Zero characters through LoyalTools' own ZZMI entry points. See "Zenless Zone Zero (ZZMI)" and "Model workflow for Zenless Zone Zero" below. With EFMI nothing changes, except that when `efmi_toggle_mods` compares the draws with the state, XXMI draws count as a mod's only when they use the game's shaders (XXMI's own overlay text no longer does). The 0.1.11 DLL is kept in `dist\backup-0.1.11\`.
 
+**Probe 0.1.13** (2026-10-22; **the game has to be restarted to load the new probe**; verified in the sandbox): the slot cache is off by default where the loaded XXMI is not EFMI (Zenless Zone Zero); `enable` in `efmi_probe.ini` still decides when it is set. A `slot_cache` command that only flushes no longer counts as changing the settings. `efmi_status` has a `slot cache:` line. The 0.1.12 DLL is kept in `dist\backup-0.1.12\`.
+
 Uninstalling: untick "Inject Libraries" in the launcher; the probe leaves nothing elsewhere.
 
 ## Tools
@@ -183,7 +185,7 @@ Texture slots written as `ps-tN = …` move when a game update changes a shader 
 
 ```ini
 [SlotCache]
-enable=1          ; 0 switches it off
+enable=1          ; 1 on, 0 off; without this line (0.1.13): on with EFMI or without XXMI, off with another XXMI (ZZMI)
 every=30          ; look at one frame in this many
 skinned_only=1    ; 0 records every indexed draw (also XXMI's overlay text, see below)
 bones_only=1      ; 0 also records draws without a buffer (the bone pool) at vs-t0 (0.1.9)
@@ -193,6 +195,8 @@ dir=slot-cache    ; folder next to the DLL, a plain name
 ```
 
 The probe command `slot_cache` changes the same settings in a running game (`enable`, `every`, `skinned_only`, `bones_only`, `static_only`, `max_new`, `subdir`) and with `flush=true` waits until everything is on disk; its reply and `efmi_status` show the version, the folder and counters (`frames_looked_at`, `new_draws`, `deferred`, `records_written`, `duplicates`, `shaders_written`, `record_ms_last`). There is no MCP tool for it yet.
+
+**Only for Endfield by default (probe 0.1.13).** The records follow LoyalTools' rules for Endfield's characters, and the slot table reads them by EFMI's region hashes, so with another XXMI loaded (Zenless Zone Zero's ZZMI) the slot cache stays off unless `enable` in `efmi_probe.ini`, or the `slot_cache` command, switches it on. The probe decides at the first frame it would look at, when XXMI is known: on when the loaded XXMI's folder has `Core\EFMI`, or when no XXMI is loaded (the sandbox); off otherwise. `enabled_by` in the status (and the `slot cache:` line of `efmi_status`) says why. Probe 0.1.12 recorded Zenless Zone Zero by default; those lines are in `slot-cache\3.3.0+…\` and are not removed by the probe.
 
 **Cost.** A draw that was seen costs a few queries of the bound state and a table lookup in a frame looked at; the stack walk that tells `game` from `xxmi` is done only for new draws. Sandbox, about 3000 draws per frame with XXMI: no measurable difference of the frame time even when every frame is looked at, and 0.13–0.3 ms by the probe's own timing per frame looked at. Index data is read back only for new draws, asynchronously like a capture. Not yet measured in the real game.
 
@@ -360,7 +364,7 @@ The probe works at the D3D11 level and is the same DLL for both games; what diff
 - **Stream output.** Zenless Zone Zero skins a character with a `Draw` that streams the posed vertices into a buffer, which the visible draws then read as `vb0`. Full captures from probe 0.1.12 record each call's stream-output targets (`so` in `efmi_get_draw`).
 - **XXMI's log syntax.** `efmi_dump_frame log=xxmi` writes `log.txt` with the `IASetVertexBuffers` / `IASetIndexBuffer` / `SOSetTargets` / `…SetShader` / `CSSetUnorderedAccessViews` lines and the `CopyResource` Src / Dst lines in XXMI's own form, so tools that read XXMI's frame analysis (LoyalTools' Zenless Zone Zero extractor among them) can read the dump. The Set* lines are worked out from the bindings where they change from the call before, and resource addresses are made up (one per resource of the capture); the header of the log says so.
 - **Model workflow.** Through LoyalTools' own ZZMI entry points, see "Model workflow for Zenless Zone Zero" below.
-- **Not for ZZMI yet.** The slot cache and slot table follow EFMI's region hashes.
+- **Not for ZZMI yet.** The slot cache and slot table follow EFMI's region hashes; from probe 0.1.13 the slot cache is off by default with ZZMI (see "Slot cache").
 - **Verification so far** (sandbox copy with the real ZZMI core, `sandbox/zzmi_integration_test.py`): the installation is adopted from the probe although the server was started for another folder; every game draw names its buffers by the whole-buffer hash; a mod written with the region hash leaves the mesh drawn, one written with the hash shown has XXMI skip the game's draw after one F10; the trigger fires on that hash. The F6 steps of the test were stopped by a window that took the foreground during a key press and have not run to the end yet. Offline: `sandbox/zzmi_unit_test.py` (13 tests: installations, hashes, which sections replace a draw, the state from the draws, the log in XXMI's syntax).
 
 ### Seeing what a draw painted

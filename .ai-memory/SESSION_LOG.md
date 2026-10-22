@@ -445,3 +445,7 @@ The user asked whether a boss's skill, which lasts a moment, can be read, and th
 - The user started the game with the probe; checked through the new server code: adoption, hashes, stream output, 4 announced F6 presses (mods on at the end), a live extraction equal to the F8 dump's, an export equal to the F8 project's. Details in CURRENT_STATE.
 - Three fixes from what the game showed: indexed draws only as draws of a mesh (skinning Draws keep an index buffer), XXMI's hash for stream-output buffers a mod's VertexLimitRaise enlarged, typeless textures in their view's format. Unit tests added; offline suites and MCP end to end 106 pass.
 - Open: deployment with F10 (needs a decision about the user's phoenix mod), the key-press sandbox tests.
+
+## 2026-10-22: Slot cache off by default with ZZMI (probe 0.1.13)
+
+- At the user's request: the probe decides the slot cache's default by the loaded installation (on for EFMI and without XXMI, off otherwise); an explicit setting still wins; flush-only requests no longer count as settings. Switched off in the running game's 0.1.12 by command. Sandbox: slot cache test 80/80 with a new ZZMI case, plus the other probe regressions without key input.

@@ -264,3 +264,8 @@
 - Date: 2026-10-21 (found live: phoenix's `VertexLimitRaise` `4ac4d074`, the probe's `2d5bb3f6`).
 - The probe sits below XXMI and sees the buffer XXMI creates, which for a mod's `override_vertex_count` is larger than the one the game asked for; XXMI keeps the hash of the requested description. Rather than hooking above XXMI, the server maps: a game-created stream-output buffer whose size is `override_vertex_count x override_byte_stride` of exactly one section of the installed mods gets that section's hash; the probe's own stays as `probe_hash`. Only for installations that hash whole buffers (ZZMI).
 - Consequence: live extractions write the same `DrawVB` and `VertexLimitRaise` hash as an F8 dump, so the exported mod's vertex-limit section matches in the game.
+
+## D-035: The slot cache records by default only where it was built for
+
+- Date: 2026-10-22 (user: ZZMI should not use the slot cache by default).
+- Its filters are LoyalTools' notion of an Endfield character and the slot table reads its records by EFMI's region hashes, so the default is on only when the loaded XXMI is EFMI (its folder has `Core\EFMI`) or no XXMI is loaded (the sandbox, whose tests rely on it); any other installation, ZZMI included, starts with it off. The decision is taken at the first frame the cache would look at, when XXMI's module is known; `enable` in `efmi_probe.ini` or a client's setting overrides it.

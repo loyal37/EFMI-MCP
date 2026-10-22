@@ -35,6 +35,10 @@ Without XXMI, where every draw is the sandbox's own and the counts are exact:
     a line the last session left unfinished does not run into the next one; records of the older
     format (probe 0.1.7, no "fmt") are moved to draws-fmt1.jsonl instead of being mixed in.
 
+With ZZMI loaded (a private copy of the real ZZMI core; probe 0.1.13): the records follow
+LoyalTools' rules for Endfield's characters, so by default nothing is looked at, and the status says
+why; a client (or efmi_probe.ini) can still switch it on.
+
 Only folders this test creates next to the probe DLL are written, and they are removed at the end;
 no key is pressed.
 """
@@ -54,7 +58,10 @@ from efmi_mcp.capture_model import Capture  # noqa: E402
 from efmi_mcp.hashes import fnv64  # noqa: E402
 from efmi_mcp.probe_client import ProbeClient, ProbeError  # noqa: E402
 from contents_test import connect  # noqa: E402
+from reload_integration_test import private_copy  # noqa: E402
 from selftest import PROBE, Sandbox  # noqa: E402
+
+ZZMI = Path(r"D:\XXMI-Launcher-Portable-v2.1.6\ZZMI")
 
 SUB_X = "slot-cache-test-xxmi"
 SUB_A = "slot-cache-test-a"
@@ -130,8 +137,8 @@ def folder_of(st: dict) -> Path:
     return Path(st["folder"])
 
 
-def start(xxmi: bool, extra: list[str] | None = None) -> tuple[Sandbox, ProbeClient | None]:
-    sb = Sandbox(["--seconds", "90"] + (extra or []), xxmi=xxmi)
+def start(xxmi: bool, extra: list[str] | None = None, xxmi_dll: Path | None = None) -> tuple[Sandbox, ProbeClient | None]:
+    sb = Sandbox(["--seconds", "90"] + (extra or []), xxmi=xxmi, xxmi_dll=xxmi_dll)
     if not check("the sandbox started", sb.ready.wait(30)):
         return sb, None
     client = connect(sb.pid)
@@ -280,6 +287,10 @@ def with_xxmi(base: Path) -> None:
         check("the defaults: on, one frame in 30, skinned draws with a bone pool from static index data",
               st["enabled"] and st["every"] == 30 and st["skinned_only"] and st["bones_only"] and st["static_only"]
               and st["subdir"] == "slot-cache", json.dumps(st))
+        if "enabled_by" in st:
+            st = wait_looked_at(client, 1)
+            check("on by default because the loaded XXMI is EFMI", st["enabled"] and "is EFMI" in st["enabled_by"],
+                  json.dumps(st))
 
         configure(client, every=2)
         st = wait_looked_at(client, 6)
@@ -473,6 +484,31 @@ def restart(folder: Path, game: set[str], n_draws: int) -> None:
         sb.quit()
 
 
+def with_zzmi() -> None:
+    run, xxmi = private_copy(ZZMI, PROBE)
+    sb = None
+    try:
+        sb, client = start(xxmi=True, xxmi_dll=xxmi / "d3d11.dll")
+        if not client:
+            return
+        hello, _ = client.request("status")
+        check("XXMI is loaded from the ZZMI copy", hello.get("xxmi", {}).get("present") is True
+              and Path(hello["xxmi"]["path"]).resolve() == (xxmi / "d3d11.dll").resolve(), json.dumps(hello.get("xxmi")))
+        time.sleep(2.0)                 # many frames: the default is decided at the first one looked at
+        st = status(client)
+        check("off by default, and the status says why", st["enabled"] is False
+              and "not EFMI" in st.get("enabled_by", "") and st["frames_looked_at"] == 0, json.dumps(st))
+        configure(client, enable=True, subdir=SUB_X, skinned_only=False, bones_only=False, every=2)
+        st = wait_looked_at(client, 4)
+        check("a client can still switch it on", st["enabled"] and st["frames_looked_at"] >= 4
+              and "client" in st.get("enabled_by", ""), json.dumps(st))
+        client.close()
+    finally:
+        if sb is not None:
+            sb.quit()
+        shutil.rmtree(run, ignore_errors=True)
+
+
 def main() -> int:
     if not PROBE.exists():
         print(f"no probe at {PROBE}")
@@ -486,6 +522,11 @@ def main() -> int:
     try:
         print("\n== with XXMI")
         with_xxmi(base)
+        if ZZMI.is_dir():
+            print("\n== with ZZMI")
+            with_zzmi()
+        else:
+            print("\n== with ZZMI: skipped, no ZZMI installation at " + str(ZZMI))
         print("\n== without XXMI")
         got = strict(base)
         if got:
