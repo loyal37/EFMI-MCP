@@ -419,7 +419,8 @@ LOG_STYLES = ("readable", "xxmi")
 
 def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: list[str] | None = None,
                txt: bool = True, only_exact: bool = True, max_mb: int = 2048, max_seconds: float = 120.0,
-               folder: str = "", log: str = "readable", files_for: set[int] | None = None) -> dict:
+               folder: str = "", log: str = "readable", files_for: set[int] | None = None,
+               leave_out: set[int] | None = None) -> dict:
     """Writes the calls [first, last] of a capture as a folder laid out like an XXMI frame analysis dump.
 
     Buffers go out whole as .buf (with the .txt XXMI writes for index, vertex and constant
@@ -429,6 +430,8 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
     bindings), for tools that read XXMI's frame analysis; 'readable' writes 'bind' lines instead.
     files_for: write files only for these calls; log.txt still lists every call of the range,
     with the writes between them, so what earlier calls did to a resource stays visible.
+    leave_out: calls that are not in the folder at all, as if they had not been issued; the
+    writes before them stay in log.txt.
     """
     kinds = set(kinds or ["ib", "vb", "cb", "buf", "tex", "out"])
     unknown = kinds - {"ib", "vb", "cb", "buf", "tex", "out"}
@@ -505,6 +508,9 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
             for event in by_call.get(index, []):
                 lines = xxmi_event_lines(cap, event)
                 log_lines += [f"{prefix} {lines[0]}"] + lines[1:]
+            if leave_out and index in leave_out:
+                done = index
+                continue
             for line in xxmi_state_lines(cap, d, cap.raw_draws[index], state):
                 log_lines.append(line if line.startswith(" ") else f"{prefix} {line}")
         else:

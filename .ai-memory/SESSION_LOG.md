@@ -449,3 +449,7 @@ The user asked whether a boss's skill, which lasts a moment, can be read, and th
 ## 2026-10-22: Slot cache off by default with ZZMI (probe 0.1.13)
 
 - At the user's request: the probe decides the slot cache's default by the loaded installation (on for EFMI and without XXMI, off otherwise); an explicit setting still wins; flush-only requests no longer count as settings. Switched off in the running game's 0.1.12 by command. Sandbox: slot cache test 80/80 with a new ZZMI case, plus the other probe regressions without key input.
+
+## 2026-10-22: Two characters extracted from one Zenless Zone Zero scene
+
+- `exclude_ibs` for live ZZMI extractions (the merged skeleton takes the largest character only), and the Blender import check now allows triangles Blender merges (same vertex set) with a warning. Two characters extracted live into `E:\ZZZ mods\character-c0975bbf` and `character-e12e13f8`; no key pressed. Unit tests for leaving out a mesh; offline suites pass.

@@ -1,5 +1,12 @@
 # EFMI MCP — Current development state
 
+## Two characters extracted from one scene of Zenless Zone Zero (server, 2026-10-22)
+
+- Request (user): extract the two characters on screen into `E:\ZZZ mods`. No mod replaced them, so no key was pressed (game PID 5516, probe 0.1.12, LoyalTools 1.7.3).
+- LoyalTools' merged skeleton takes only the character of the largest skinned mesh. New `exclude_ibs` (efmi_extract_model, ZZMI, live frame): `model_zzmi.left_out_calls` leaves the excluded index buffers' draws, and skinning draws feeding nothing else, out of the written frame (`contents.dump_frame(leave_out=...)`, the writes before them stay in log.txt), so LoyalTools takes the next character.
+- Results: `E:\ZZZ mods\character-c0975bbf` (11 parts: c0975bbf, d7f5ad00, 41a44a7a, 4d2e9e81 merged with 348 bones; 16420b5e, d1c37a30 shape-keyed) and `E:\ZZZ mods\character-e12e13f8` (12 parts: 4d63fc9a, 4b55e749, 8124fc03, e12e13f8, deeb209c, f22a9f08, 6f4a1cab merged with 310 bones; 66d0868d, e9ec2588 shape-keyed); every skinned mesh of the frame is in one of them; each part has its diffuse map connected.
+- The first attempt failed on this tool's own import check: Blender keeps one face per vertex set, and `41a44a7a-16581-0` has 12 triangles repeating another's vertices; the check now accepts the count of distinct triangles and warns. The failed folder (this tool's) was removed.
+
 ## Slot cache off by default with ZZMI (probe 0.1.13, 2026-10-22; sandbox verified, installed, not yet loaded by a game)
 
 - Request (user, 2026-10-22): ZZMI also used the slot cache; ZZMI should not use it by default.

@@ -129,6 +129,15 @@ class LiveFrame(unittest.TestCase):
         cap = Capture(frame_doc(1))
         self.assertEqual(model_zzmi.skinned_calls(cap), {0, 1})
 
+    def test_an_excluded_mesh_and_its_skinning_draw_are_not_in_the_frame(self):
+        cap = Capture(frame_doc(1))
+        self.assertEqual(model_zzmi.skinned_calls(cap, {"9040e2c4"}), set())
+        self.assertEqual(model_zzmi.left_out_calls(cap, {"9040e2c4"}), {0, 1})
+        self.assertEqual(model_zzmi.left_out_calls(cap, set()), set())
+        # A frame without any skinned mesh left is refused rather than written empty.
+        with self.assertRaises(model_zzmi.WorkflowError):
+            model_zzmi.live_frame(self.session, self.root / "frame", exclude={"9040e2c4"})
+
     def test_loyaltools_reads_the_written_frame(self):
         addon = installed_loyaltools()
         if addon is None:

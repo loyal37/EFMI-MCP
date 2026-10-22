@@ -96,8 +96,11 @@ def list_models(dump: Path, loyaltools_root: Path) -> dict:
 
 
 # ---------------------------------------------------------------- a frame from the running game
-def skinned_calls(cap: Capture) -> set[int]:
-    """The calls LoyalTools needs files of: skinning draws (stream output) and the draws that read what they wrote."""
+def skinned_calls(cap: Capture, exclude: set[str] = frozenset()) -> set[int]:
+    """The calls LoyalTools needs files of: skinning draws (stream output) and the draws that read what they wrote.
+
+    ``exclude``: index buffer hashes whose draws, and the skinning draws that feed only them, are left out.
+    """
     writers: dict[int, list[int]] = {}
     for d in cap.draws():
         # By the call: an index buffer left bound from an earlier draw is recorded for a Draw too.
@@ -107,39 +110,69 @@ def skinned_calls(cap: Capture) -> set[int]:
     chosen: set[int] = set()
     for d in cap.draws():
         vb0 = (d.get("vb") or {}).get(0)
-        if d["call"].startswith("DrawIndexed") and vb0 and vb0["res"] in writers:
+        if d["call"].startswith("DrawIndexed") and vb0 and vb0["res"] in writers and d["ib"]["hash"] not in exclude:
             chosen.add(d["index"])
             chosen.update(writers[vb0["res"]])
     return chosen
 
 
-def live_frame(session, folder: Path, on_stage=None) -> dict:
-    """Capture the next frame with contents and write it as a frame analysis folder LoyalTools reads."""
+def left_out_calls(cap: Capture, exclude: set[str]) -> set[int]:
+    """The draws of the excluded index buffers, and the skinning draws that feed nothing else."""
+    if not exclude:
+        return set()
+    out = {d["index"] for d in cap.draws() if d["call"].startswith("DrawIndexed") and d.get("ib")
+           and d["ib"]["hash"] in exclude}
+    kept_reads = {d["vb"][0]["res"] for d in cap.draws() if d["index"] not in out and d["call"].startswith("DrawIndexed")
+                  and (d.get("vb") or {}).get(0)}
+    for d in cap.draws():
+        targets = {entry["res"] for entry in d.get("so", {}).values()}
+        if d["call"] in ("Draw", "DrawInstanced") and targets and not targets & kept_reads:
+            out.add(d["index"])
+    return out
+
+
+def live_frame(session, folder: Path, on_stage=None, exclude: set[str] = frozenset()) -> dict:
+    """Capture the next frame with contents and write it as a frame analysis folder LoyalTools reads.
+
+    ``exclude``: index buffer hashes left out of the folder, with the skinning draws that feed only
+    them, as if the game had not drawn them (another character, one already extracted).
+    """
     stage = on_stage or (lambda text: None)
     stage("capturing a frame with contents")
     doc, blob = session.call(lambda c: c.capture(detail="full", cb_data=False, timeout_ms=15000, contents=CONTENTS))
     cap = Capture(doc, blob)
     session.add_capture(cap)
-    chosen = skinned_calls(cap)
+    chosen = skinned_calls(cap, exclude)
     if not chosen:
         raise WorkflowError("The frame has no skinned character draws (no stream-output skinning draw is read by an "
                             "indexed draw). Is a character on screen, drawn by the game (mods off), and is the probe "
                             "0.1.12 or later?", {"frame": cap.frame, "draws": len(cap)})
     stage(f"writing {len(chosen)} calls as a frame analysis folder")
+    left_out = left_out_calls(cap, exclude)
     written = contents.dump_frame(session, cap, folder=str(folder), log="xxmi", files_for=chosen,
-                                  max_seconds=600, max_mb=8192)
+                                  leave_out=left_out, max_seconds=600, max_mb=8192)
     if written.get("stopped") or written.get("skipped", {}).get("not_exact") or written.get("skipped", {}).get("failed"):
         raise WorkflowError("The frame could not be written completely", {"dump": written})
-    return {"frame": cap.frame, "folder": str(folder), "calls_with_files": len(chosen), "files": written["files"],
+    return {"frame": cap.frame, "folder": str(folder), "calls_with_files": len(chosen), "calls_left_out": len(left_out),
+            "excluded_ibs": sorted(exclude), "files": written["files"],
             "megabytes": written["megabytes"], "contents": cap.stats.get("ct_bytes"),
             "lost": cap.stats.get("ct_lost", 0)}
 
 
 # ---------------------------------------------------------------- extraction
 def extract_model(session, root: str | Path, *, loyaltools_root: Path, frame_dump: str = "", mode: str = "merged",
-                  blender_path: str = "", materials: str = "diffuse", protected: list[Path] = (), job=None) -> dict:
-    """A frame (the user's folder, or one captured now) -> LoyalTools' ZZMI workspace -> <project>.blend."""
+                  blender_path: str = "", materials: str = "diffuse", exclude_ibs=(), protected: list[Path] = (),
+                  job=None) -> dict:
+    """A frame (the user's folder, or one captured now) -> LoyalTools' ZZMI workspace -> <project>.blend.
+
+    exclude_ibs: index buffer hashes left out of a live frame. LoyalTools' merged skeleton takes the
+    character of the largest skinned mesh; leaving out one character already extracted lets it take
+    the next.
+    """
     project = Project(root)
+    exclude = {str(h).strip().lower() for h in exclude_ibs or () if str(h).strip()}
+    if exclude and frame_dump:
+        raise WorkflowError("exclude_ibs works on a frame captured now; a frame analysis folder is used as it is")
     guard_output(project.root, [loyaltools_root, *protected])
     if mode not in ("merged", "skinned"):
         raise WorkflowError("mode must be 'merged' or 'skinned'")
@@ -157,7 +190,7 @@ def extract_model(session, root: str | Path, *, loyaltools_root: Path, frame_dum
     try:
         if dump is None:
             folder = project.source / time.strftime("frame-%Y%m%d-%H%M%S")
-            result["stages"]["frame"] = live_frame(session, folder, on_stage=step)
+            result["stages"]["frame"] = live_frame(session, folder, on_stage=step, exclude=exclude)
             if job:
                 job.probe_done()        # the frame is on disk; extraction needs no game
             dump = folder
@@ -202,7 +235,7 @@ def extract_model(session, root: str | Path, *, loyaltools_root: Path, frame_dum
     record = project.record()
     record["game"] = GAME
     write_json(project.record_path, record)
-    project.note("extracted", game=GAME, mode=mode, source=str(dump), materials=materials,
+    project.note("extracted", game=GAME, mode=mode, source=str(dump), materials=materials, exclude_ibs=sorted(exclude),
                  game_process={"pid": status.get("pid"), "exe": status.get("exe"), "probe": status.get("probe")},
                  blender=result["stages"]["blender"]["versions"])
     result["blend"] = str(project.blend)

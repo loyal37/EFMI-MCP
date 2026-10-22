@@ -151,6 +151,10 @@ def register(srv, s) -> None:
                "frame_dump": {"type": "string", "default": "",
                               "description": "ZZMI: an XXMI frame analysis folder to extract from (only read); empty: capture now."},
                "mode": {"type": "string", "enum": ["merged", "skinned"], "default": "merged", "description": "ZZMI only."},
+               "exclude_ibs": {"type": "array", "items": {"type": "string"}, "default": [],
+                               "description": "ZZMI, live frame: index buffer hashes to leave out of the frame. The "
+                                            "merged skeleton takes the character of the largest skinned mesh; leave "
+                                            "out the parts of a character already extracted to get the next one."},
                "object_name": {"type": "string", "default": "", "description": "Name from efmi_list_models; needed when several characters are in view."},
                "samples": {"type": "integer", "minimum": 3, "maximum": 6, "default": 3},
                "lod_json": {"type": "string", "default": "",
@@ -161,8 +165,8 @@ def register(srv, s) -> None:
                "blender_path": {"type": "string", "default": ""},
                "wait_s": WAIT},
               ["output_dir"], read_only=False)
-    def efmi_extract_model(output_dir, frame_dump="", mode="merged", object_name="", samples=3, lod_json="",
-                           import_blender=True, materials="diffuse", blender_path="", wait_s=50):
+    def efmi_extract_model(output_dir, frame_dump="", mode="merged", exclude_ibs=None, object_name="", samples=3,
+                           lod_json="", import_blender=True, materials="diffuse", blender_path="", wait_s=50):
         root = root_of(output_dir)
         blender = blender_path or s.blender_path
         if zzmi_wanted(frame_dump):
@@ -171,7 +175,7 @@ def register(srv, s) -> None:
             def run_zzmi(job):
                 return model_zzmi.extract_model(s, root, loyaltools_root=Path(used["path"]), frame_dump=frame_dump,
                                                 mode=mode, blender_path=blender, materials=materials,
-                                                protected=[s.efmi_root], job=job)
+                                                exclude_ibs=list(exclude_ibs or []), protected=[s.efmi_root], job=job)
 
             return start("extract", f"extract a Zenless Zone Zero model to {root}", run_zzmi, wait_s,
                          not frame_dump, used)

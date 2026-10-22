@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import struct
 from pathlib import Path
 import sys
 import traceback
@@ -60,17 +61,29 @@ def part_report(bpy, obj, submesh: dict, folder: Path, report: dict) -> dict:
             check(report, size % width == 0, f"{obj.name}: {entry['FileName']} is not a whole number of {width}-byte rows")
         buffers[entry["FileName"]] = {"bytes": size, "stride": width, "rows": size // width if width and size >= 0 else None}
     indices = None
+    distinct = None         # triangles Blender can hold: one face per set of three vertices
     for entry in submesh.get("IndexBufferList", []):
         path = folder / entry["FileName"]
         width = 2 if entry.get("DXGI_FORMAT") == "R16_UINT" else 4
         check(report, path.is_file(), f"{obj.name}: missing {entry['FileName']}")
         if path.is_file():
-            indices = path.stat().st_size // width
+            data = path.read_bytes()
+            indices = len(data) // width
+            values = struct.unpack(f"<{indices}{'H' if width == 2 else 'I'}", data[:indices * width])
+            corners = [values[n:n + 3] for n in range(0, indices - indices % 3, 3)]
+            distinct = len({frozenset(t) for t in corners if len(set(t)) == 3})
     mesh = obj.data
     triangles = sum(len(polygon.vertices) - 2 for polygon in mesh.polygons)
     check(report, len(mesh.vertices) > 0 and triangles > 0, f"{obj.name}: the imported mesh is empty")
     if indices is not None:
-        check(report, indices == triangles * 3, f"{obj.name}: {triangles} triangles imported, the index file has {indices} indices")
+        check(report, triangles in (indices // 3, distinct),
+              f"{obj.name}: {triangles} triangles imported, the index file has {indices // 3} ({distinct} distinct)")
+        if triangles == distinct != indices // 3:
+            # Blender keeps one face per set of vertices: a face drawn twice (both sides) or a degenerate one is
+            # dropped on import, and the export will not have it.
+            report["warnings"].append(f"{obj.name}: {indices // 3 - triangles} of {indices // 3} triangles repeat the "
+                                      "vertices of another or have two equal corners; Blender keeps one face per set "
+                                      "of vertices, so the export will not draw them")
     return {"name": obj.name, "vertices": len(mesh.vertices), "triangles": triangles, "index_count": indices,
             "vertex_groups": len(obj.vertex_groups), "buffers": buffers,
             "materials": [slot.material.name for slot in obj.material_slots if slot.material],
