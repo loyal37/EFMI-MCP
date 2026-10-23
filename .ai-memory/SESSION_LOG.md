@@ -453,3 +453,7 @@ The user asked whether a boss's skill, which lasts a moment, can be read, and th
 ## 2026-10-22: Two characters extracted from one Zenless Zone Zero scene
 
 - `exclude_ibs` for live ZZMI extractions (the merged skeleton takes the largest character only), and the Blender import check now allows triangles Blender merges (same vertex set) with a warning. Two characters extracted live into `E:\ZZZ mods\character-c0975bbf` and `character-e12e13f8`; no key pressed. Unit tests for leaving out a mesh; offline suites pass.
+
+## 2026-10-23: EFMI TTL 0.2.0, opacity from the calling mod
+
+The user found the opacity key in the shared library wrong: like RabbitFX, the library should only offer an interface. `$\EFMITTL\alpha` is now a per-call parameter, stored per pixel through a second draw with the library's own pixel shader, and Yvonne's mod got its own variable and Ctrl T key (backup `yvonne.ini.bak-20261023-mod-alpha`). Offline checks only; the game was not running. Committed in `F:\EFMI TTL` (`96d1f76`); this repository's code is unchanged.
