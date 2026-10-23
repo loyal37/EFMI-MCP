@@ -473,3 +473,7 @@ The user started the game (build `1.6.3+eeabd1bbccd3`; the TTL hooks' hashes unc
 ## 2026-10-23: EFMI TTL, the right second part
 
 The user pointed out that the second translucent part was the wrong one: they meant the black inner dress seen through the skirt. A draw-outputs capture of every forward-pass draw under the translucent area (last writer per pixel) separated the body skin `2f49f2ad` (lit VS `5869b530`) from the dress `bf9de7d5`; the user confirmed the dress from isolated pictures. In `yvonne.ini` the part picked first (`79650,345018`) is drawn as before again and `85329,879330` calls EFMI TTL at 0.5 (backup `yvonne.ini.bak-20261023-before-inner-dress`); one F10, confirmed. The dress's draw also holds its chest cups, which turned translucent too (told the user). `F:\EFMI TTL` commit `54f6a04`.
+
+## 2026-10-23: EFMI TTL, the leotard under the dress
+
+The user reported that the dress's lower strip still looked opaque. I wrongly said the black band under it was painted on the body; the user corrected me (the body texture has only the stockings). The last-writer analysis of a draw-outputs capture showed the band is `1be02f09` (`79650,345018`), a black mesh leotard. At the user's choice it is translucent too (0.5; backup `yvonne.ini.bak-20261023-before-leotard`), so `yvonne.ini` differs from the original in three calls: skirt 0.7, dress 0.5, leotard 0.5. One F10, confirmed; three layers in use, shadows kept. `F:\EFMI TTL` commit `810f07f`.
