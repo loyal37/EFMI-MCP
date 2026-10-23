@@ -457,3 +457,7 @@ The user asked whether a boss's skill, which lasts a moment, can be read, and th
 ## 2026-10-23: EFMI TTL 0.2.0, opacity from the calling mod
 
 The user found the opacity key in the shared library wrong: like RabbitFX, the library should only offer an interface. `$\EFMITTL\alpha` is now a per-call parameter, stored per pixel through a second draw with the library's own pixel shader, and Yvonne's mod got its own variable and Ctrl T key (backup `yvonne.ini.bak-20261023-mod-alpha`). Offline checks only; the game was not running. Committed in `F:\EFMI TTL` (`96d1f76`); this repository's code is unchanged.
+
+## 2026-10-23: EFMI TTL, the opacity written as a value
+
+The user: the adjustable value should not be fixed as a variable; a mod may pass a number or a variable, and by default a plain value. Yvonne's call now reads `$\EFMITTL\alpha = 0.7`; the variable and key added earlier the same day were removed (backup `yvonne.ini.bak-20261023-alpha-variable`), so her INI differs from the original only in that call. The tutorial shows the value first and the variable with a key as an option. `F:\EFMI TTL` commit `faeadd6`; offline only, the game was not running.
