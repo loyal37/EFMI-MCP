@@ -461,3 +461,7 @@ The user found the opacity key in the shared library wrong: like RabbitFX, the l
 ## 2026-10-23: EFMI TTL, the opacity written as a value
 
 The user: the adjustable value should not be fixed as a variable; a mod may pass a number or a variable, and by default a plain value. Yvonne's call now reads `$\EFMITTL\alpha = 0.7`; the variable and key added earlier the same day were removed (backup `yvonne.ini.bak-20261023-alpha-variable`), so her INI differs from the original only in that call. The tutorial shows the value first and the variable with a key as an option. `F:\EFMI TTL` commit `faeadd6`; offline only, the game was not running.
+
+## 2026-10-23: EFMI TTL 0.3.0, several translucent layers
+
+At the user's request (and choices: between parts first, layers assigned automatically) every captured call now takes a layer of its own for the frame (up to four, then shared), with RGBA16F colour targets holding the opacity in A, and the composite sorts up to eight surfaces per pixel by depth and blends them back to front. Deployed into Yvonne's mod as library files only (`EFMITTL\` replaced, XXMI's compiled copies of the changed shaders removed; `yvonne.ini` unchanged). Offline checks only (fxc, INI structure, a model of the composite against back-to-front blending); the game was not running, and a test needs a second translucent part. `F:\EFMI TTL` commit `deee380`.
