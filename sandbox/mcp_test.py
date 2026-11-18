@@ -568,6 +568,11 @@ def main() -> int:
                   not err and f"before #{call[4]:<5} bind vs-t9: " in text and "binding changes" in text
                   and "bind ps-cb2" not in text and f"before #{call[5]:<5} bind" not in text, text)
 
+            text, err, _ = mcp.call("efmi_binding_trace", stage="ps", cb=2)
+            trace = json.loads(text) if not err else {}
+            check("binding trace returns observed PS b2 calls", trace.get("matches", 0) >= 3 and
+                  any(r["method"] == "PSSetConstantBuffers" and r["args"][2] == [None]
+                      for r in trace["calls"]), text)
             dump_dir = OUT / "contents-dump"
             shutil.rmtree(dump_dir, ignore_errors=True)
             text, err, _ = mcp.call("efmi_dump_frame", first=call[4], last=call[7], folder=str(dump_dir))
@@ -577,6 +582,7 @@ def main() -> int:
                   b.get("calls_written") == [call[4], call[7]] and not b.get("skipped") and "stopped" not in b
                   and b.get("files", 0) > 60, text)
             if dump_dir.exists():
+                check("dump includes original binding calls", (dump_dir / "binding-calls.jsonl").is_file())
                 dump = parse_frame_dump(dump_dir)
                 p4 = fill(4096, 4, fc)
                 p6 = patched(p5, 256, fill(64, 6, fc))

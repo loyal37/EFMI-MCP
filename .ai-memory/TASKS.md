@@ -231,3 +231,8 @@ The target workplace and liimo merge.blend were generated with the original Loya
 - The user asked for a release with DLLs: [v0.1.13](https://github.com/loyal37/EFMI-MCP/releases/tag/v0.1.13) is published, for source `77c1dfd`, server 0.1.13 / probe 0.1.6.
 - The four assets are complete: the full Windows x64 package, the separate probe DLL, the CRC acceleration DLL and SHA256SUMS; after publication they were downloaded and checked byte for byte. The README got the installation entry for the prebuilt package.
 - In that round the sandbox checks 143 + 73 + 102, the 8 CRC checks and the stdio start with 29 tools after unpacking pass; no new real-game test and no ZZMI support. Evidence and boundaries in the section of the same name in CURRENT_STATE; nothing left to do for the release.
+
+
+## Binding trace (2026-11-18)
+
+Binding call tracing implemented and sandbox-tested. Pending: verify the affected shadow/color PS b2 sequence in the real scene.

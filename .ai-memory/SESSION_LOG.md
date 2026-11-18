@@ -573,3 +573,8 @@ The user asked for the texture interface to carry RabbitFX's name ("把mod要用
 ## 2026-11-08: four mods restored from the EFMI TTL slot binding to their own writing
 
 The user asked for the four mods that called the library's texture binding to go back to slots ("把这4个mod还原成槽位"), then added "如果原来是rabbit写法那就保持rabbit". Each INI was first saved as `<name>.ini.bak-20261108-before-restore`. `Yvonne Ensnared Heart 1.8`, `ardelia lily whisper 1.5` and `perlica Crimson Rumor 1.7` were put back to their pre-conversion backups (`*.ini.bak-20261102-before-slots`, `perlica.ini.bak-20261101-before-slots`), byte-identical: fixed `ps-tN` lines, and RabbitFX for Yvonne's and Perlica's hair; the INIs had not been changed since the conversion apart from it. `Mods\zhuangfangyi` is a LoyalTools export written in RabbitFX style (its `use_rabbitfx_slot` option; LoyalTools itself only writes EFMITTL Draw calls), and only its component 1 had been switched to the library, without a backup; it got the four RabbitFX lines its siblings have. No installed mod calls `BindTextures` any more, so the library's alias was removed (`F:\EFMI TTL` commit 0e191fd, deployed, archive rebuilt). RabbitFX is not installed at the moment, so the RabbitFX parts show the game's own textures until it is back. Not checked in the game: it was not running. Yvonne's INI has no translucency call (none in the 11-02 backup either); Ardelia keeps one Draw call.
+
+
+## Binding trace (2026-11-18)
+
+Added capture-time state setter arguments, an ordered slot query and dump sidecar. Sandbox confirmed a PS b2 bind/null/rebind before one draw. No real game reload or capture.

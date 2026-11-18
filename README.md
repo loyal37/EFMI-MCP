@@ -555,3 +555,9 @@ captures\   exported meshes, textures, shader disassembly
 ## Project memory
 
 When continuing development across sessions, read `.ai-memory/CURRENT_STATE.md` and `.ai-memory/TASKS.md` first. Seven memory documents record the overview, architecture, current state, technical decisions, known issues, tasks and session summaries; the conventions for maintaining them are in `AGENTS.md` in the root directory.
+
+### Observed immediate-context bindings (probe 0.1.14)
+
+Capture with `efmi_capture_frame(contents="trace")`, then query `efmi_binding_trace(stage="ps", cb=2)` to locate every call covering PS b2, including null binds, repeated binds and Context1 subranges. Omit the filters to include all six shader stages, input assembly, stream output, rasterizer, output merger, CS UAVs and predication. ClearState, context-state swaps and command-list execution appear as boundaries. The trace covers explicit calls on the selected runtime immediate context. Deferred list internals, implicit hazard unbinds and calls suppressed upstream are outside its scope.
+
+The sequence starts at zero. before_draw identifies the following draw or dispatch (the draw count for trailing calls). after_resource_events gives the position relative to the resource event list. Arguments follow the native method signature excluding the context and output parameters. Object pointers identify addresses within the trace, null denotes a null argument, and floating-point arguments preserve their IEEE-754 bits as unsigned integers. The payload budget is 16 MiB per frame and the result reports dropped calls. Dumps include the ordered binding-calls.jsonl sidecar alongside the compatibility log. Captures with buffer or texture contents also include this trace.

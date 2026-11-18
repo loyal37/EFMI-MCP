@@ -3,6 +3,7 @@
 #include "registry.h"
 #include "hash.h"
 #include "reload.h"
+#include "json.h"
 #include <psapi.h>
 #include <string.h>
 
@@ -1016,12 +1017,269 @@ static void STDMETHODCALLTYPE H_DiscardView1(ID3D11DeviceContext1* This, ID3D11V
 	CTX1_ORIG(h)->DiscardView1(This, pView, pRects, NumRects);
 }
 
+// Record argument values before forwarding the call. Object identities are capture-local addresses.
+void cap_binding(const char*, const JsonW&);
+template<class T> static void arg(JsonW& w, T* value) { if (value) w.ptr(value); else w.null(); }
+static void arg(JsonW& w, UINT value) { w.u(value); }
+static void arg(JsonW& w, float value) { UINT bits; memcpy(&bits,&value,4); w.u(bits); }
+static void arg(JsonW& w, const D3D11_VIEWPORT& v) {
+ w.begin_arr(); for(float x : {v.TopLeftX,v.TopLeftY,v.Width,v.Height,v.MinDepth,v.MaxDepth}) arg(w,x); w.end_arr();
+}
+static void arg(JsonW& w, const D3D11_RECT& v) {
+ w.begin_arr(); w.i(v.left); w.i(v.top); w.i(v.right); w.i(v.bottom); w.end_arr();
+}
+template<class T> static void args(JsonW& w, T* values, UINT count) {
+ if (!values || count == UINT(-1)) { w.null(); return; }
+ w.begin_arr(); for(UINT i=0;i<count && i<256;i++) arg(w,values[i]); w.end_arr();
+}
+static void STDMETHODCALLTYPE T_VSSetConstantBuffers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11Buffer* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("VSSetConstantBuffers", w); }
+	CTX_ORIG(h)->VSSetConstantBuffers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_VSSetShaderResources(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11ShaderResourceView* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("VSSetShaderResources", w); }
+	CTX_ORIG(h)->VSSetShaderResources(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_VSSetSamplers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11SamplerState* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("VSSetSamplers", w); }
+	CTX_ORIG(h)->VSSetSamplers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_VSSetConstantBuffers1(ID3D11DeviceContext1* This, UINT start, UINT count, ID3D11Buffer* const* objects, const UINT* first, const UINT* lengths)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); args(w, first,count); args(w, lengths,count); w.end_arr(); cap_binding("VSSetConstantBuffers1", w); }
+	CTX1_ORIG(h)->VSSetConstantBuffers1(This, start, count, objects, first, lengths);
+}
+static void STDMETHODCALLTYPE T_VSSetShader(ID3D11DeviceContext* This, ID3D11VertexShader* shader, ID3D11ClassInstance* const* instances, UINT count)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, shader); args(w, instances,count); arg(w, count); w.end_arr(); cap_binding("VSSetShader", w); }
+	CTX_ORIG(h)->VSSetShader(This, shader, instances, count);
+}
+static void STDMETHODCALLTYPE T_HSSetConstantBuffers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11Buffer* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("HSSetConstantBuffers", w); }
+	CTX_ORIG(h)->HSSetConstantBuffers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_HSSetShaderResources(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11ShaderResourceView* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("HSSetShaderResources", w); }
+	CTX_ORIG(h)->HSSetShaderResources(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_HSSetSamplers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11SamplerState* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("HSSetSamplers", w); }
+	CTX_ORIG(h)->HSSetSamplers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_HSSetConstantBuffers1(ID3D11DeviceContext1* This, UINT start, UINT count, ID3D11Buffer* const* objects, const UINT* first, const UINT* lengths)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); args(w, first,count); args(w, lengths,count); w.end_arr(); cap_binding("HSSetConstantBuffers1", w); }
+	CTX1_ORIG(h)->HSSetConstantBuffers1(This, start, count, objects, first, lengths);
+}
+static void STDMETHODCALLTYPE T_HSSetShader(ID3D11DeviceContext* This, ID3D11HullShader* shader, ID3D11ClassInstance* const* instances, UINT count)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, shader); args(w, instances,count); arg(w, count); w.end_arr(); cap_binding("HSSetShader", w); }
+	CTX_ORIG(h)->HSSetShader(This, shader, instances, count);
+}
+static void STDMETHODCALLTYPE T_DSSetConstantBuffers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11Buffer* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("DSSetConstantBuffers", w); }
+	CTX_ORIG(h)->DSSetConstantBuffers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_DSSetShaderResources(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11ShaderResourceView* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("DSSetShaderResources", w); }
+	CTX_ORIG(h)->DSSetShaderResources(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_DSSetSamplers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11SamplerState* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("DSSetSamplers", w); }
+	CTX_ORIG(h)->DSSetSamplers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_DSSetConstantBuffers1(ID3D11DeviceContext1* This, UINT start, UINT count, ID3D11Buffer* const* objects, const UINT* first, const UINT* lengths)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); args(w, first,count); args(w, lengths,count); w.end_arr(); cap_binding("DSSetConstantBuffers1", w); }
+	CTX1_ORIG(h)->DSSetConstantBuffers1(This, start, count, objects, first, lengths);
+}
+static void STDMETHODCALLTYPE T_DSSetShader(ID3D11DeviceContext* This, ID3D11DomainShader* shader, ID3D11ClassInstance* const* instances, UINT count)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, shader); args(w, instances,count); arg(w, count); w.end_arr(); cap_binding("DSSetShader", w); }
+	CTX_ORIG(h)->DSSetShader(This, shader, instances, count);
+}
+static void STDMETHODCALLTYPE T_GSSetConstantBuffers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11Buffer* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("GSSetConstantBuffers", w); }
+	CTX_ORIG(h)->GSSetConstantBuffers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_GSSetShaderResources(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11ShaderResourceView* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("GSSetShaderResources", w); }
+	CTX_ORIG(h)->GSSetShaderResources(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_GSSetSamplers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11SamplerState* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("GSSetSamplers", w); }
+	CTX_ORIG(h)->GSSetSamplers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_GSSetConstantBuffers1(ID3D11DeviceContext1* This, UINT start, UINT count, ID3D11Buffer* const* objects, const UINT* first, const UINT* lengths)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); args(w, first,count); args(w, lengths,count); w.end_arr(); cap_binding("GSSetConstantBuffers1", w); }
+	CTX1_ORIG(h)->GSSetConstantBuffers1(This, start, count, objects, first, lengths);
+}
+static void STDMETHODCALLTYPE T_GSSetShader(ID3D11DeviceContext* This, ID3D11GeometryShader* shader, ID3D11ClassInstance* const* instances, UINT count)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, shader); args(w, instances,count); arg(w, count); w.end_arr(); cap_binding("GSSetShader", w); }
+	CTX_ORIG(h)->GSSetShader(This, shader, instances, count);
+}
+static void STDMETHODCALLTYPE T_PSSetConstantBuffers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11Buffer* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("PSSetConstantBuffers", w); }
+	CTX_ORIG(h)->PSSetConstantBuffers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_PSSetShaderResources(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11ShaderResourceView* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("PSSetShaderResources", w); }
+	CTX_ORIG(h)->PSSetShaderResources(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_PSSetSamplers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11SamplerState* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("PSSetSamplers", w); }
+	CTX_ORIG(h)->PSSetSamplers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_PSSetConstantBuffers1(ID3D11DeviceContext1* This, UINT start, UINT count, ID3D11Buffer* const* objects, const UINT* first, const UINT* lengths)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); args(w, first,count); args(w, lengths,count); w.end_arr(); cap_binding("PSSetConstantBuffers1", w); }
+	CTX1_ORIG(h)->PSSetConstantBuffers1(This, start, count, objects, first, lengths);
+}
+static void STDMETHODCALLTYPE T_PSSetShader(ID3D11DeviceContext* This, ID3D11PixelShader* shader, ID3D11ClassInstance* const* instances, UINT count)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, shader); args(w, instances,count); arg(w, count); w.end_arr(); cap_binding("PSSetShader", w); }
+	CTX_ORIG(h)->PSSetShader(This, shader, instances, count);
+}
+static void STDMETHODCALLTYPE T_CSSetConstantBuffers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11Buffer* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("CSSetConstantBuffers", w); }
+	CTX_ORIG(h)->CSSetConstantBuffers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_CSSetShaderResources(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11ShaderResourceView* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("CSSetShaderResources", w); }
+	CTX_ORIG(h)->CSSetShaderResources(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_CSSetSamplers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11SamplerState* const* objects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); w.end_arr(); cap_binding("CSSetSamplers", w); }
+	CTX_ORIG(h)->CSSetSamplers(This, start, count, objects);
+}
+static void STDMETHODCALLTYPE T_CSSetConstantBuffers1(ID3D11DeviceContext1* This, UINT start, UINT count, ID3D11Buffer* const* objects, const UINT* first, const UINT* lengths)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, objects,count); args(w, first,count); args(w, lengths,count); w.end_arr(); cap_binding("CSSetConstantBuffers1", w); }
+	CTX1_ORIG(h)->CSSetConstantBuffers1(This, start, count, objects, first, lengths);
+}
+static void STDMETHODCALLTYPE T_CSSetShader(ID3D11DeviceContext* This, ID3D11ComputeShader* shader, ID3D11ClassInstance* const* instances, UINT count)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, shader); args(w, instances,count); arg(w, count); w.end_arr(); cap_binding("CSSetShader", w); }
+	CTX_ORIG(h)->CSSetShader(This, shader, instances, count);
+}
+static void STDMETHODCALLTYPE T_IASetVertexBuffers(ID3D11DeviceContext* This, UINT start, UINT count, ID3D11Buffer* const* buffers, const UINT* strides, const UINT* offsets)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, start); arg(w, count); args(w, buffers,count); args(w, strides,count); args(w, offsets,count); w.end_arr(); cap_binding("IASetVertexBuffers", w); }
+	CTX_ORIG(h)->IASetVertexBuffers(This, start, count, buffers, strides, offsets);
+}
+static void STDMETHODCALLTYPE T_IASetIndexBuffer(ID3D11DeviceContext* This, ID3D11Buffer* buffer, DXGI_FORMAT format, UINT offset)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, buffer); arg(w, UINT(format)); arg(w, offset); w.end_arr(); cap_binding("IASetIndexBuffer", w); }
+	CTX_ORIG(h)->IASetIndexBuffer(This, buffer, format, offset);
+}
+static void STDMETHODCALLTYPE T_IASetInputLayout(ID3D11DeviceContext* This, ID3D11InputLayout* layout)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, layout); w.end_arr(); cap_binding("IASetInputLayout", w); }
+	CTX_ORIG(h)->IASetInputLayout(This, layout);
+}
+static void STDMETHODCALLTYPE T_IASetPrimitiveTopology(ID3D11DeviceContext* This, D3D11_PRIMITIVE_TOPOLOGY topology)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, UINT(topology)); w.end_arr(); cap_binding("IASetPrimitiveTopology", w); }
+	CTX_ORIG(h)->IASetPrimitiveTopology(This, topology);
+}
+static void STDMETHODCALLTYPE T_RSSetState(ID3D11DeviceContext* This, ID3D11RasterizerState* state)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, state); w.end_arr(); cap_binding("RSSetState", w); }
+	CTX_ORIG(h)->RSSetState(This, state);
+}
+static void STDMETHODCALLTYPE T_RSSetViewports(ID3D11DeviceContext* This, UINT count, const D3D11_VIEWPORT* views)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, count); args(w, views,count); w.end_arr(); cap_binding("RSSetViewports", w); }
+	CTX_ORIG(h)->RSSetViewports(This, count, views);
+}
+static void STDMETHODCALLTYPE T_RSSetScissorRects(ID3D11DeviceContext* This, UINT count, const D3D11_RECT* rects)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, count); args(w, rects,count); w.end_arr(); cap_binding("RSSetScissorRects", w); }
+	CTX_ORIG(h)->RSSetScissorRects(This, count, rects);
+}
+static void STDMETHODCALLTYPE T_OMSetBlendState(ID3D11DeviceContext* This, ID3D11BlendState* state, const FLOAT* factor, UINT mask)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, state); args(w, factor,4); arg(w, mask); w.end_arr(); cap_binding("OMSetBlendState", w); }
+	CTX_ORIG(h)->OMSetBlendState(This, state, factor, mask);
+}
+static void STDMETHODCALLTYPE T_OMSetDepthStencilState(ID3D11DeviceContext* This, ID3D11DepthStencilState* state, UINT ref)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, state); arg(w, ref); w.end_arr(); cap_binding("OMSetDepthStencilState", w); }
+	CTX_ORIG(h)->OMSetDepthStencilState(This, state, ref);
+}
+static void STDMETHODCALLTYPE T_SetPredication(ID3D11DeviceContext* This, ID3D11Predicate* predicate, BOOL value)
+{
+	auto* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, predicate); arg(w, UINT(value)); w.end_arr(); cap_binding("SetPredication", w); }
+	CTX_ORIG(h)->SetPredication(This, predicate, value);
+}
+
 // ---- GPU-side writers
 static void STDMETHODCALLTYPE H_CSSetUnorderedAccessViews(ID3D11DeviceContext* This, UINT StartSlot, UINT NumUAVs,
                                                           ID3D11UnorderedAccessView* const* ppUAVs,
                                                           const UINT* pInitialCounts)
 {
 	HookedObj* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, StartSlot); arg(w, NumUAVs); args(w, ppUAVs,NumUAVs); args(w, pInitialCounts,NumUAVs); w.end_arr(); cap_binding("CSSetUnorderedAccessViews", w); }
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_set_cs_uavs(StartSlot, NumUAVs, ppUAVs);
 	if (g_barrier && h == g_ctx)
@@ -1033,6 +1291,7 @@ static void STDMETHODCALLTYPE H_OMSetRenderTargets(ID3D11DeviceContext* This, UI
                                                    ID3D11RenderTargetView* const* ppRTVs, ID3D11DepthStencilView* pDSV)
 {
 	HookedObj* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, NumViews); args(w, ppRTVs,NumViews); arg(w, pDSV); w.end_arr(); cap_binding("OMSetRenderTargets", w); }
 	discover_render_targets(NumViews, ppRTVs);
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_set_om_uavs(0, 0, nullptr);          // this call unbinds all OM UAVs
@@ -1046,6 +1305,7 @@ static void STDMETHODCALLTYPE H_OMSetRenderTargetsAndUnorderedAccessViews(
 	UINT UAVStartSlot, UINT NumUAVs, ID3D11UnorderedAccessView* const* ppUAVs, const UINT* pUAVInitialCounts)
 {
 	HookedObj* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, NumRTVs); args(w, ppRTVs,NumRTVs); arg(w, pDSV); arg(w, UAVStartSlot); arg(w, NumUAVs); args(w, ppUAVs,NumUAVs); args(w, pUAVInitialCounts,NumUAVs); w.end_arr(); cap_binding("OMSetRenderTargetsAndUnorderedAccessViews", w); }
 	discover_render_targets(NumRTVs, ppRTVs);
 	if (g_swap && g_tracking && h == g_ctx && NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS)
 		cap_set_om_uavs(UAVStartSlot, NumUAVs, ppUAVs);
@@ -1059,6 +1319,7 @@ static void STDMETHODCALLTYPE H_SOSetTargets(ID3D11DeviceContext* This, UINT Num
                                              ID3D11Buffer* const* ppTargets, const UINT* pOffsets)
 {
 	HookedObj* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, NumBuffers); args(w, ppTargets,NumBuffers); args(w, pOffsets,NumBuffers); w.end_arr(); cap_binding("SOSetTargets", w); }
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_set_so_targets(NumBuffers, ppTargets);
 	if (g_barrier && h == g_ctx)
@@ -1069,6 +1330,7 @@ static void STDMETHODCALLTYPE H_SOSetTargets(ID3D11DeviceContext* This, UINT Num
 static void STDMETHODCALLTYPE H_ClearState(ID3D11DeviceContext* This)
 {
 	HookedObj* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr();  w.end_arr(); cap_binding("ClearState", w); }
 	if (g_swap && g_tracking && h == g_ctx)
 		cap_state_cleared();
 	if (h == g_ctx) {
@@ -1081,6 +1343,7 @@ static void STDMETHODCALLTYPE H_ClearState(ID3D11DeviceContext* This)
 static void STDMETHODCALLTYPE H_ExecuteCommandList(ID3D11DeviceContext* This, ID3D11CommandList* pList, BOOL Restore)
 {
 	HookedObj* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, pList); arg(w, UINT(Restore)); w.end_arr(); cap_binding("ExecuteCommandList", w); }
 	g_hstats.exec_cmdlists++;
 	// Whatever the list wrote is invisible to us: forget everything we cached.
 	if (g_swap && g_tracking && h == g_ctx)
@@ -1096,6 +1359,7 @@ static void STDMETHODCALLTYPE H_SwapDeviceContextState(ID3D11DeviceContext1* Thi
                                                        ID3DDeviceContextState** ppPrevious)
 {
 	HookedObj* h = ctx_of(This);
+	if (g_events && h == g_ctx) { JsonW w; w.begin_arr(); arg(w, pState); w.end_arr(); cap_binding("SwapDeviceContextState", w); }
 	CTX1_ORIG(h)->SwapDeviceContextState(This, pState, ppPrevious);
 	// Every binding is another one now: ask the runtime instead of going by what was set.
 	if (g_swap && h == g_ctx && (g_tracking || g_barrier))
@@ -1106,6 +1370,40 @@ static void apply_context_hooks(HookedObj* h, bool ctx1)
 {
 	ID3D11DeviceContextVtbl* v = (ID3D11DeviceContextVtbl*)h->clone;
 	v->Draw = H_Draw;
+	v->VSSetConstantBuffers = T_VSSetConstantBuffers;
+	v->VSSetShaderResources = T_VSSetShaderResources;
+	v->VSSetSamplers = T_VSSetSamplers;
+	v->VSSetShader = T_VSSetShader;
+	v->HSSetConstantBuffers = T_HSSetConstantBuffers;
+	v->HSSetShaderResources = T_HSSetShaderResources;
+	v->HSSetSamplers = T_HSSetSamplers;
+	v->HSSetShader = T_HSSetShader;
+	v->DSSetConstantBuffers = T_DSSetConstantBuffers;
+	v->DSSetShaderResources = T_DSSetShaderResources;
+	v->DSSetSamplers = T_DSSetSamplers;
+	v->DSSetShader = T_DSSetShader;
+	v->GSSetConstantBuffers = T_GSSetConstantBuffers;
+	v->GSSetShaderResources = T_GSSetShaderResources;
+	v->GSSetSamplers = T_GSSetSamplers;
+	v->GSSetShader = T_GSSetShader;
+	v->PSSetConstantBuffers = T_PSSetConstantBuffers;
+	v->PSSetShaderResources = T_PSSetShaderResources;
+	v->PSSetSamplers = T_PSSetSamplers;
+	v->PSSetShader = T_PSSetShader;
+	v->CSSetConstantBuffers = T_CSSetConstantBuffers;
+	v->CSSetShaderResources = T_CSSetShaderResources;
+	v->CSSetSamplers = T_CSSetSamplers;
+	v->CSSetShader = T_CSSetShader;
+	v->IASetVertexBuffers = T_IASetVertexBuffers;
+	v->IASetIndexBuffer = T_IASetIndexBuffer;
+	v->IASetInputLayout = T_IASetInputLayout;
+	v->IASetPrimitiveTopology = T_IASetPrimitiveTopology;
+	v->RSSetState = T_RSSetState;
+	v->RSSetViewports = T_RSSetViewports;
+	v->RSSetScissorRects = T_RSSetScissorRects;
+	v->OMSetBlendState = T_OMSetBlendState;
+	v->OMSetDepthStencilState = T_OMSetDepthStencilState;
+	v->SetPredication = T_SetPredication;
 	v->DrawIndexed = H_DrawIndexed;
 	v->DrawInstanced = H_DrawInstanced;
 	v->DrawIndexedInstanced = H_DrawIndexedInstanced;
@@ -1134,6 +1432,13 @@ static void apply_context_hooks(HookedObj* h, bool ctx1)
 	v->ResolveSubresource = H_ResolveSubresource;
 	if (ctx1) {
 		ID3D11DeviceContext1Vtbl* v1 = (ID3D11DeviceContext1Vtbl*)h->clone;
+
+	v1->VSSetConstantBuffers1 = T_VSSetConstantBuffers1;
+	v1->HSSetConstantBuffers1 = T_HSSetConstantBuffers1;
+	v1->DSSetConstantBuffers1 = T_DSSetConstantBuffers1;
+	v1->GSSetConstantBuffers1 = T_GSSetConstantBuffers1;
+	v1->PSSetConstantBuffers1 = T_PSSetConstantBuffers1;
+	v1->CSSetConstantBuffers1 = T_CSSetConstantBuffers1;
 		v1->UpdateSubresource1 = H_UpdateSubresource1;
 		v1->CopySubresourceRegion1 = H_CopySubresourceRegion1;
 		v1->DiscardResource = H_DiscardResource;

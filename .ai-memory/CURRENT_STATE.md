@@ -553,3 +553,8 @@ Read this file and `TASKS.md` first; implementation details are in `ARCHITECTURE
 - In that round the private sandbox was run with the probe staged for the release: selftest 143, contents 73 and MCP 102 all pass; the 8 checks of the CRC acceleration library pass. For the unpacked package, integrity, per-file hashes, Python compilation, a real stdio initialize / tools/list (29 tools) / ping, and loading of the native CRC all pass. No new real-game test, and nothing was injected into the user's game, no key sent, no restart; ZZMI is still not adapted or tested.
 - After publication on GitHub the four assets were downloaded again and are byte-identical to the local ones, and the GitHub SHA256 and the checksum list both pass; not draft, not prerelease, Latest, tag and source commit were checked to agree. Release notes and records are in `captures/release-v0.1.13-20261010/`, the assets in `dist/releases/v0.1.13/` (both ignored).
 - Git transport met a connection reset / a failed connection to 443, so the README commit was uploaded through the Git Data API with the same blob / tree / commit SHAs, and main was then fast-forwarded with `force=false`; history was not rewritten. The Ardelia memory changes that existed at the start of that round were kept, and what was staged in that round contains only the release records. Nothing remains for the release.
+
+
+## Binding trace (2026-11-18)
+
+Probe 0.1.14 / server 0.1.23 record ordered immediate-context binding calls. The candidate passed 76 contents and 108 MCP sandbox checks. Installed locally with a 0.1.13 backup. Real-game verification awaits restart.

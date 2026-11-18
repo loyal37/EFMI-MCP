@@ -1007,6 +1007,9 @@ static void render_content_pass(Scene& s)
 	s.ctx->VSSetShader(s.c_vs, nullptr, 0);
 	s.ctx->PSSetShader(s.c_ps_fill, nullptr, 0);
 	s.ctx->PSSetConstantBuffers(2, 1, &s.c_k);
+	ID3D11Buffer* empty_cb = nullptr;
+	s.ctx->PSSetConstantBuffers(2, 1, &empty_cb);
+	s.ctx->PSSetConstantBuffers(2, 1, &s.c_k);
 	s.ctx->CSSetConstantBuffers(2, 1, &s.c_k);
 	s.ctx->RSSetViewports(1, &vp16);
 	s.ctx->OMSetRenderTargets(1, &s.c_aux_rtv, nullptr);

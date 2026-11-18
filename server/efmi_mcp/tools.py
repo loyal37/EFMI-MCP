@@ -593,6 +593,8 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         wanted, chosen = None, ""
         if contents not in (None, "", "none"):
             status = s.call(lambda c: c.status())
+            if contents == "trace" and "binding_trace" not in status.get("features", ()):
+                raise ToolError("Reload probe 0.1.14 or later for binding traces.")
             if contents_feature not in (status.get("features") or ()):
                 raise ToolError(f"Probe {status.get('probe')} cannot keep contents; this needs 0.1.6. "
                                 f"Restart the game to load the updated {s.probe_dll}.")
@@ -1557,4 +1559,32 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
     live_tools.register(srv, s, capture_report)
     record_tools.register(srv, s, capture_report)
     model_tools.register(srv, s)
+    @srv.tool("efmi_binding_trace", "Observed D3D11 immediate-context state calls in issue order, including repeated "
+              "sets and unbinds. Capture with contents=trace, buffers, inputs or outputs. Use stage=ps, cb=2 for PS b2.",
+              {"capture": {"type": ["integer", "string"]}, "stage": {"type": "string"},
+               "cb": {"type": "integer"}, "first": {"type": "integer"}, "last": {"type": "integer"},
+               "offset": {"type": "integer"}, "limit": {"type": "integer"}})
+    def efmi_binding_trace(capture="latest", stage="", cb=-1, first=0, last=-1, offset=0, limit=100):
+        cap = s.capture(capture)
+        if "bindings" not in cap.doc:
+            raise ToolError("Capture with probe 0.1.14 or later and contents=trace, buffers, inputs or outputs.")
+        stage = stage.upper()
+        if stage and stage not in ("VS", "HS", "DS", "GS", "PS", "CS"):
+            raise ToolError("Unknown shader stage")
+        rows = []
+        for sequence, (draw, writes, method, args) in enumerate(cap.doc["bindings"]):
+            if draw < first or (last >= 0 and draw > last):
+                continue
+            boundary = method in ("ClearState", "SwapDeviceContextState", "ExecuteCommandList")
+            if stage and not boundary and not method.startswith(stage + "Set"):
+                continue
+            if cb >= 0 and not boundary:
+                if "SetConstantBuffers" not in method or not args[0] <= cb < args[0] + args[1]:
+                    continue
+            rows.append({"sequence": sequence, "before_draw": draw, "after_resource_events": writes,
+                         "method": method, "args": args})
+        offset = max(0, offset)
+        return json.dumps({"frame": cap.frame, "matches": len(rows), "dropped": cap.doc["bindings_dropped"],
+                           "calls": rows[offset:offset + max(1, min(limit, 500))]})
+
     return srv

@@ -216,6 +216,9 @@ struct Pending {
 };
 
 struct Capture {
+	std::vector<std::string> bindings;
+	size_t binding_bytes = 0;
+	uint32_t binding_dropped = 0;
 	CaptureRequest rq;
 	uint32_t frame = 0;
 	uint64_t t_start = 0, t_end = 0;
@@ -1704,6 +1707,18 @@ static void cont_release(Capture* c)
 		g_mapped.clear();
 		cont_publish(nullptr);
 	}
+}
+
+// Each row precedes the next draw and follows the indicated number of resource events.
+void cap_binding(const char* name, const JsonW& args)
+{
+ Capture* c = g_rec.get();
+ if (!c || !c->rq.ct_events) return;
+ if (c->binding_bytes >= (16u << 20)) { ++c->binding_dropped; return; }
+ JsonW row;
+ row.begin_arr(); row.u(c->draws.size()); row.u(c->events.size()); row.str(name); row.raw(args.s); row.end_arr();
+ c->binding_bytes += row.s.size() + sizeof(std::string);
+ c->bindings.push_back(std::move(row.s));
 }
 
 // ---- the list of writes
@@ -4642,6 +4657,12 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 	w.s.reserve(c.draws.size() * 320 + c.res.size() * 220 + 4096);
 	w.begin_obj();
 	w.ku("v", PROBE_PROTOCOL);
+ if (c.rq.ct_events) {
+  w.ku("bindings_dropped", c.binding_dropped);
+  w.key("bindings"); w.begin_arr();
+  for (const auto& row : c.bindings) w.raw(row);
+  w.end_arr();
+ }
 	w.ku("frame", c.frame);
 	w.ks("detail", c.rq.detail >= 1 ? "full" : "light");
 	w.key("resolution"); w.begin_arr(); w.i(c.res_w); w.i(c.res_h); w.end_arr();

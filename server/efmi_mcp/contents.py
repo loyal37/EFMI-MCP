@@ -21,7 +21,7 @@ from .mcp_stdio import ToolError
 FEATURE = "contents"
 BUFFERS = ["ib", "vb", "cb", "buf"]
 INPUTS = BUFFERS + ["tex"]
-LEVELS = ("none", "buffers", "inputs", "outputs")
+LEVELS = ("trace", "none", "buffers", "inputs", "outputs")
 BUDGET_MB = 1024
 
 # XXMI's names for the arguments of each call, as its log.txt writes them.
@@ -45,6 +45,8 @@ def request(level: str, matchers: list[dict] | None, first: int, last: int, dept
     """
     if level in (None, "", "none"):
         return None
+    if level == "trace":
+        return {"events": True}
     if level not in LEVELS:
         raise ToolError("contents must be 'none', 'buffers', 'inputs' or 'outputs'")
     out: dict = {"inputs": BUFFERS if level == "buffers" else INPUTS, "events": True, "budget_mb": budget_mb}
@@ -452,7 +454,9 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
     log_lines: list[str] = [f"analyse_options: efmi-mcp capture {cap.frame}",
                             "written by efmi-mcp from a live capture, laid out like XXMI's frame analysis; calls are numbered "
                             "as in the capture (from 0), and XXMI's own command list and variable trace is not in here"]
-    if log == "xxmi":
+    if "bindings" in cap.doc:
+        log_lines.append("Observed API calls and arguments are in binding-calls.jsonl. State differences below are reconstructed.")
+    elif log == "xxmi":
         log_lines.append("the Set* lines are worked out from the bindings of the calls, where a binding differs from the "
                          "call before; the Set* calls themselves were not recorded, and resource addresses are made up "
                          "(one per resource of the capture)")
@@ -653,6 +657,16 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
             break                   # this call is incomplete: it is where to go on
         done = index
 
+    if "bindings" in cap.doc:
+        # Keep the compatibility log for XXMI consumers. The sidecar preserves the original API arguments.
+        with (root / "binding-calls.jsonl").open("w", encoding="utf-8") as trace:
+            for seq, (before, writes, method, args) in enumerate(cap.doc["bindings"]):
+                if first <= before <= done or (done == total - 1 and before == total):
+                    print(json.dumps(dict(sequence=seq, before_draw=before, after_resource_events=writes,
+                                          method=method, args=args)), file=trace)
+        log_lines.append(f"Observed binding calls: binding-calls.jsonl; dropped {cap.doc['bindings_dropped']}")
+    elif (root / "binding-calls.jsonl").is_file():
+        (root / "binding-calls.jsonl").unlink()
     (root / "log.txt").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
     result = {"folder": str(root), "capture": cap.frame, "calls_written": [first, done] if done >= first else [],
               "files": writer.files, "distinct_contents": len(writer.by_key), "megabytes": round(writer.bytes / 1048576, 2),

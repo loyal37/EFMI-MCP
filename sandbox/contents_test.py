@@ -203,6 +203,14 @@ def main() -> int:
         print("== one frame with the contents of every call")
         f = Frame(client, inputs=INPUTS, outputs=["rt", "uav"], all=True, events=True)
         cap, fc = f.cap, f.fc
+        rows = cap.doc["bindings"]
+        b2 = [args[2][0] for _, _, method, args in rows if method == "PSSetConstantBuffers" and args[:2] == [2, 1]]
+        check("PS b2 bind and explicit null unbind were observed", any(b2) and None in b2, str(b2))
+        changes = [(n, a[2][0]) for n, _, m, a in rows if m == "PSSetConstantBuffers" and a[:2] == [2, 1]]
+        check("PS b2 bind, null, rebind between the same two draws", any(
+            x == z and x[1] and y == (x[0], None) for x, y, z in zip(changes, changes[1:], changes[2:])))
+        check("binding calls retain issue order", rows and [r[:2] for r in rows] == sorted(r[:2] for r in rows)
+              and cap.doc["bindings_dropped"] == 0)
         stats = cap.stats
         print(f"capture {f.frame}: {len(cap)} calls, frame counter {fc}, stats "
               f"{ {k: v for k, v in stats.items() if k.startswith('ct_') or k in ('events', 'record_ms')} }")
