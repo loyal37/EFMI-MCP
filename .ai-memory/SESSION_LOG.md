@@ -578,3 +578,8 @@ The user asked for the four mods that called the library's texture binding to go
 ## Binding trace (2026-11-18)
 
 Added capture-time state setter arguments, an ordered slot query and dump sidecar. Sandbox confirmed a PS b2 bind/null/rebind before one draw. No real game reload or capture.
+
+
+## Windows release v0.1.23 (2026-11-18)
+
+Published tag 58c9771 with the persistent slot cache and offline slot table removed from the release build. The packaged server exposes 39 tools including live slot inspection and binding trace. Release probe passed 76 sandbox contents checks. ZIP and SHA256SUMS are on GitHub Releases.

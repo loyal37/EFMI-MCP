@@ -236,3 +236,8 @@ The target workplace and liimo merge.blend were generated with the original Loya
 ## Binding trace (2026-11-18)
 
 Binding call tracing implemented and sandbox-tested. Pending: verify the affected shadow/color PS b2 sequence in the real scene.
+
+
+## Windows release v0.1.23 (2026-11-18)
+
+Published tag 58c9771 with the persistent slot cache and offline slot table removed from the release build. The packaged server exposes 39 tools including live slot inspection and binding trace. Release probe passed 76 sandbox contents checks. ZIP and SHA256SUMS are on GitHub Releases.

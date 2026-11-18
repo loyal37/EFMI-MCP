@@ -558,3 +558,8 @@ Read this file and `TASKS.md` first; implementation details are in `ARCHITECTURE
 ## Binding trace (2026-11-18)
 
 Probe 0.1.14 / server 0.1.23 record ordered immediate-context binding calls. The candidate passed 76 contents and 108 MCP sandbox checks. Installed locally with a 0.1.13 backup. Real-game verification awaits restart.
+
+
+## Windows release v0.1.23 (2026-11-18)
+
+Published tag 58c9771 with the persistent slot cache and offline slot table removed from the release build. The packaged server exposes 39 tools including live slot inspection and binding trace. Release probe passed 76 sandbox contents checks. ZIP and SHA256SUMS are on GitHub Releases.
