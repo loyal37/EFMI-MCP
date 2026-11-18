@@ -42,6 +42,8 @@ Game process                                    Outside the game
 
 The probe normally captures nothing. It starts tracking buffer writes only once an agent connects; when a frame is requested it records the next frame and returns at once; in continuous mode it records a summary of every frame automatically and keeps the most recent ones. Everything stays in memory; nothing is written to disk per frame.
 
+This Windows release omits the persistent slot cache and its offline table tools. Per-capture texture slot inspection is available.
+
 ## Installation
 
 1. Download `EFMI-MCP-v<version>-windows-x64.zip` from [GitHub Releases](https://github.com/loyal37/EFMI-MCP/releases/latest) and unpack it. The complete package contains the Python server, the model helper scripts, `dist/efmi_probe.dll` and the optional `dist/efmi_crc32c.dll`, so nothing has to be compiled; keep the directory structure of the package and use a 64-bit Python (verified with Python 3.12). Replace the example paths below with your own Python, unpack directory and EFMI installation directory; the latter can be given with the server argument `--efmi-root`.
@@ -112,11 +114,9 @@ After updating the probe the game has to be quit and started again; the DLL in t
 
 **MCP server 0.1.14** (2026-10-16; restart the MCP server, probe unchanged): `efmi_get_texture_slots` performs batch slot lookup directly from a capture, with inline shader evidence and texture metadata. Queries and shader paging share a bounded memory cache and create no shader files by default. Use `efmi_get_shader save=true` when a BIN/ASM export is wanted.
 
-**Probe 0.1.7** (2026-10-18; **the game has to be restarted to load the new probe**; verified in the sandbox, not yet in the real game): the slot cache. While the game runs, the probe notes by itself, for every skinned mesh draw it has not seen before, the index buffer hash and range, the shaders and what sits in each vertex and pixel shader resource slot, and keeps it in a folder per game version next to the DLL; switching characters in the game is enough to fill it. It is the material for following texture slots from one game version to the next; nothing reads it yet. See "Slot cache" below.
 
 **Probe 0.1.8** (2026-10-18; **the game has to be restarted to load the new probe**; verified in the sandbox): records are keyed by what is drawn rather than where. The first run of 0.1.7 in the game recognised the version `1.6.3+5e73da7cad5e` and wrote 4881 records in 3.6 minutes: the game keeps meshes in large shared buffers and places the same mesh at other offsets over time, and textures the size of the screen follow the dynamic resolution, so position and size made new records of known passes. Keyed by content, the same data gives 1952 records, and the count grows when new scenes or characters appear, not while the picture stays the same. Records of 0.1.7 are moved to `draws-fmt1.jsonl` when 0.1.8 first opens the folder.
 
-**Probe 0.1.9** (2026-10-18; **the game has to be restarted to load the new probe**; verified in the sandbox): the slot cache records only what LoyalTools takes for a character's draw. In the open world the game draws geometry it builds on the CPU every frame (dynamic batches: skinned layout, bone pool, about 3450 indices, from a `D3D11_USAGE_DYNAMIC` index buffer); each frame gave another region hash, and 39,870 such records arrived within an hour. Now a draw is recorded only when its input layout has `BLENDINDICES`, a buffer (the bone pool) is bound at `vs-t0` and its index buffer is not `DYNAMIC`; the three filters are settings (`skinned_only`, `bones_only`, `static_only`), and records carry `ib_usage`. Records that 0.1.8 wrote from dynamic index data are not removed by the probe.
 
 **Probe 0.1.10 / MCP server 0.1.20** (2026-10-21; **the game has to be restarted to load the new probe**; verified in the sandbox, not yet in the real game): continuous mode over time, for what is on screen only for a moment (a boss's skill, a hit effect). `efmi_live_history` adds up what continuous mode kept over the last seconds, per mesh/shader line, and lists the lines that came and went, grouped by when they appeared, or the lines not drawn during a baseline before. `efmi_trigger_arm` has the probe watch every frame for a mesh, a shader, or any vertex/pixel shader pair it did not see during a baseline, and record the next frame in full by itself, contents included, as soon as it appears; `efmi_trigger_wait` collects it. Continuous mode keeps 1800 frames by default (30 s at 60 fps); the probe keeps each distinct line once and only the counts per frame. With an older probe `efmi_live_history` adds the frames up in the server; the trigger needs 0.1.10. See "Moments that last a few frames" below. The 0.1.9 DLL is kept in `dist\backup-0.1.9\`.
 
@@ -124,7 +124,6 @@ After updating the probe the game has to be quit and started again; the DLL in t
 
 **Probe 0.1.12 / MCP server 0.1.22** (2026-10-21; **the game has to be restarted to load the new probe**; verified in the sandbox and offline, not yet in a game): Zenless Zone Zero with ZZMI. The server works with the installation of the game it is connected to, whatever `--efmi-root` says, and shows hashes the way that installation's mods use them; `efmi_toggle_mods` presses ZZMI's F6; full captures record stream-output targets; `efmi_dump_frame log=xxmi` writes `log.txt` in XXMI's own syntax; the model workflow extracts and exports Zenless Zone Zero characters through LoyalTools' own ZZMI entry points. See "Zenless Zone Zero (ZZMI)" and "Model workflow for Zenless Zone Zero" below. With EFMI nothing changes, except that when `efmi_toggle_mods` compares the draws with the state, XXMI draws count as a mod's only when they use the game's shaders (XXMI's own overlay text no longer does). The 0.1.11 DLL is kept in `dist\backup-0.1.11\`.
 
-**Probe 0.1.13** (2026-10-22; **the game has to be restarted to load the new probe**; verified in the sandbox): the slot cache is off by default where the loaded XXMI is not EFMI (Zenless Zone Zero); `enable` in `efmi_probe.ini` still decides when it is set. A `slot_cache` command that only flushes no longer counts as changing the settings. `efmi_status` has a `slot cache:` line. The 0.1.12 DLL is kept in `dist\backup-0.1.12\`.
 
 Uninstalling: untick "Inject Libraries" in the launcher; the probe leaves nothing elsewhere.
 
@@ -171,65 +170,6 @@ Default results include slots referenced by instructions; `include_unused=true` 
 
 References include conditional paths and do not prove that every pixel executed the instruction. Material roles such as diffuse and normal are not assigned from fixed slot numbers: inspect the instruction evidence and use `efmi_get_shader first_line=<line>` for more context. This distinction follows the separate [resource declaration](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dcl-resource) and [texture sampling instruction](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/sample--sm4---asm-) in the D3D assembly format. A game update or another pass can change the slots.
 
-### Slot cache (probe 0.1.7 to 0.1.9)
-
-Texture slots written as `ps-tN = …` move when a game update changes a shader (all of them by one, or only those from some slot on). To be able to tell, for any mod, which slot a texture belongs in after an update, the probe keeps a record of the slots of every version by itself, like a cache that fills itself while the game is played.
-
-**What it records.** One frame in 30 is looked at. In it, every indexed draw whose input layout has `BLENDINDICES` (skinned meshes; this is how the game draws its characters) and that was not seen before gets one line in `draws.jsonl`: `ib` (the region hash mods use), `ib_resource`, `ib_format`, `ib_offset`, `first_index`, `index_count`, `base_vertex`, `instances`, `vs` / `ps`, the input `layout`, `vs_srv` / `ps_srv` (per slot: kind, size, mips, array size, format and the view's format, plus the texture hash as information), the formats of the render targets `rt` and of the depth buffer `ds`, `origin` (`game` or `xxmi`), `fmt` (2) and `key`. The key is made of the origin, the index buffer region hash and index count (the mesh by its content), the shaders, the shape of the slots (slot, kind, format, stride of a structured buffer) and the output formats; not of where the mesh lies (first index, base vertex, which buffer), not of sizes and not of texture hashes. So a line is written once per mesh, pass and version, also across game sessions; position, range and sizes in the line are those of the draw that was seen first. The bytecode of each shader goes to `shaders\<hash>-vs.bin` / `-ps.bin` once, as the game created it, so that two versions can be compared instruction by instruction.
-
-**Where.** `<folder of efmi_probe.dll>\slot-cache\<version>\` with `version.json`, `draws.jsonl` and `shaders\`. The version is `<label>+<fingerprint>`: the label is the client version Unity keeps in `Endfield_Data\globalgamemanagers` (for example `1.6.3`); the fingerprint covers the contents of the two resource indexes `Endfield_Data\Persistent\index_main.json` and `Endfield_Data\StreamingAssets\index_main.json` and the size and time of `Endfield.exe`, `GameAssembly.dll` and `globalgamemanagers`. The resource indexes are what changes with a resource update that leaves the client files alone, which is how the slots moved on 2026-10-15. `version.json` lists the inputs.
-
-**Mods on or off.** With mods on, a character a mod replaces is drawn by XXMI (`origin: xxmi`) with the mod's buffers, and the game's own draw of it does not happen; the lines then say which slots the mod's draws fill. For the game's own index buffer hashes and slots of a modded character, switch the mods off with F11 (`efmi_toggle_mods state='off'`) while that character is on screen, and back on.
-
-**Settings.** `efmi_probe.ini` next to the DLL, read when the game starts:
-
-```ini
-[SlotCache]
-enable=1          ; 1 on, 0 off; without this line (0.1.13): on with EFMI or without XXMI, off with another XXMI (ZZMI)
-every=30          ; look at one frame in this many
-skinned_only=1    ; 0 records every indexed draw (also XXMI's overlay text, see below)
-bones_only=1      ; 0 also records draws without a buffer (the bone pool) at vs-t0 (0.1.9)
-static_only=1     ; 0 also records index data the CPU rewrites, which hashes differently every frame (0.1.9)
-max_new=256       ; new draws recorded per frame looked at; the rest wait for a later one
-dir=slot-cache    ; folder next to the DLL, a plain name
-```
-
-The probe command `slot_cache` changes the same settings in a running game (`enable`, `every`, `skinned_only`, `bones_only`, `static_only`, `max_new`, `subdir`) and with `flush=true` waits until everything is on disk; its reply and `efmi_status` show the version, the folder and counters (`frames_looked_at`, `new_draws`, `deferred`, `records_written`, `duplicates`, `shaders_written`, `record_ms_last`). There is no MCP tool for it yet.
-
-**Only for Endfield by default (probe 0.1.13).** The records follow LoyalTools' rules for Endfield's characters, and the slot table reads them by EFMI's region hashes, so with another XXMI loaded (Zenless Zone Zero's ZZMI) the slot cache stays off unless `enable` in `efmi_probe.ini`, or the `slot_cache` command, switches it on. The probe decides at the first frame it would look at, when XXMI is known: on when the loaded XXMI's folder has `Core\EFMI`, or when no XXMI is loaded (the sandbox); off otherwise. `enabled_by` in the status (and the `slot cache:` line of `efmi_status`) says why. Probe 0.1.12 recorded Zenless Zone Zero by default; those lines are in `slot-cache\3.3.0+…\` and are not removed by the probe.
-
-**Cost.** A draw that was seen costs a few queries of the bound state and a table lookup in a frame looked at; the stack walk that tells `game` from `xxmi` is done only for new draws. Sandbox, about 3000 draws per frame with XXMI: no measurable difference of the frame time even when every frame is looked at, and 0.13–0.3 ms by the probe's own timing per frame looked at. Index data is read back only for new draws, asynchronously like a capture. Not yet measured in the real game.
-
-**Limits.** The three filters are LoyalTools' notion of a character draw (weight semantics, a bone pool at `vs-t0`) plus static index data; LoyalTools also asks for a 4096-constant per-object window and reads a flag from it, which the probe does not, since reading constants back costs a copy per draw. Characters posed on the CPU, whose index data the game rewrites, are left out, as the user asked. With `skinned_only=0` XXMI's own overlay is recorded too, and keeps adding lines. Slots are recorded as bound: a texture an earlier draw left at a slot this shader does not read is in the line as well, and can give the same pass a second line; the bytecode next to the records tells which slots a shader reads. Only vertex and pixel shader slots are recorded. A draw whose index data could not be read back (staging memory full) is tried again in a later frame. Lines are only ever added; a folder is never cleaned up by the probe.
-
-### Slot table of a version (server 0.1.19)
-
-`efmi_get_slot_table(folder=<probe dir>\slot-cache\<version>, ib_hash=..., character=..., offset=0, limit=40)` reads a version folder of the slot cache, without the game and without writing files. To write `slot-table.json` and `slot-table.md` into the folder, from the `server` directory:
-
-```powershell
-python -m efmi_mcp.slot_table '<version folder>'
-```
-
-One row per mesh, the IB hash and index count mods name it by, with the **diffuse, light map and normal map** slots of its main pass: the forward pass whose pixel shader samples shadows or an environment cube (the lit pass); between equal passes the one whose slots come first, as LoyalTools' texture marking prefers. Depth passes (they read the diffuse at t0 for alpha testing) and G-buffer passes (deferred shading, three targets or more, material at t0/t1: the open world's monsters, NPCs and props) are never the main pass; meshes drawn only by them are listed at the end with the reason. Meshes whose forward passes sample no shadows (effects, glowing and translucent parts, which read small textures at t0 to t4) are listed in a section of their own. The character slots the mods bind (t13 and up in this version) are what remains in the main sections. Every slot is decided from the game's own data, so that the table of a new version does not depend on mods written for the old one; the column "known from" says how:
-
-- **dataflow**: the arithmetic in the saved bytecode (`shader_semantics.py`): signed XY with the hemisphere reconstruction is a normal map, an interpolated RGB sample tinted on its way to the output a diffuse, independent channels feeding the lighting a light map. Only slots the shader reads and that hold a material texture count, so a texture an earlier draw left bound never enters.
-- **dataflow+position** / **dataflow+formats**: the dataflow names several slots for a role (a character's extra sRGB texture next to the diffuse, for instance); the one nearest to the other two, or, when they are equally near, the one the formats name.
-- **sequence (LoyalTools)**: LoyalTools' material sequence next to roles already found: the diffuse is the sRGB material texture right before the light map (or the normal map), the normal map the linear one right after the light map.
-- **formats**: no dataflow; diffuse the first sRGB material texture, normal map the BC5 one, light map the linear one after the diffuse, all side by side.
-- **same texture in another pass**: another pass of the same mesh resolved the role for a texture this pass reads too (the face shader `c89bf654` reads two sRGB textures, the face's other passes say which one is the diffuse). Textures only link the passes of one recording here; nothing across versions rests on them.
-- **same shader**: the pixel shader's slots resolved on other meshes.
-- **order (uncertain)**: only the order of the slots.
-
-A material texture is a block-compressed 2D texture bound together with few other material textures; one bound with the materials of many characters (ramps, noise, lookup textures) is global and never one of the three. Variants of the main shader that read the same slots (XXMI's patched copy, for instance) are folded into the row, "(+n)". A mesh can also be drawn, in the same frame, by a second lit shader that reads the same textures at other slots (on 2026-10-18: `b0896a20` reads t16/t17/t18, `9c316f35` t18/t19/t20 for the same meshes); such a pass gets a row of its own, "other lit pass", since one `ps-tN` binding cannot suit both.
-
-The installed mods (`--efmi-root`, the EFMI folder by default, read only) only label and check: meshes a mod's `TextureOverride` names are grouped under that mod, and the "mod check" column compares the slots its INI binds resources named DiffuseMap, LightMap or NormalMap to; it never changes a slot. Meshes no mod names are grouped, without certainty, by the looked-at frame in which the probe first saw them (characters shown one after another appear frame by frame), or listed as a scene or unassigned. Sizes are the game's textures as first recorded; they stream in, so they can be smaller than up close.
-
-First table of version `1.6.3+5e73da7cad5e` (cache of probe 0.1.9, 2026-10-18 15:51, after the user browsed the characters and played in the open world): 5,312 meshes; 938 with a lit main pass (122 of the 149 a mod names), 246 with a forward pass that is not lit, 3,065 with G-buffer passes only, 1,018 with depth passes only. Of the slots the mods declare, 109 agree with the table, 2 are slots the table leaves open, none contradicts it; 14 agree but are wrong for another lit pass of the same mesh.
-
-LoyalTools' automatic texture marking (`common/efmi_merged_texture.py`, with EFMI-Tools' texture filter) decides by formats and order: per draw call each sRGB texture starts a candidate, followed by two linear textures (light map, normal map) or one (normal map), or a BC5 two slots on; candidates are scored by completeness, a diffuse slot of 10 or more, a BC5 normal map, matching sizes, size and the lower start. Applied to the table's passes (with the table's material textures in place of its file-size filter, since textures stream in and the cache can hold a low mip), it gives the same three slots for 112 of the 122 lit meshes the mods name.
-
-Checked in the game the same day on the character overview of Chen Qianyu (unmodded, frame 216027): her 10 meshes form one object and the table groups them together; every main shader of the table was drawn in that frame with the textures the table names, and the textures read back show what they are: body `f80227f2` (t17 colour atlas, t18 packed light map, t19 BC5 normal map), hair `7682fa9c` (t16/t17/t18 hair colour, light map, BC7 normal map), face `680e6a51` (t18 skin, t20 face shadow map; t13 is a mouth and brow texture, which LoyalTools' rule would have taken for the diffuse). The rest: the dataflow sees a texture feeding the lighting where the rule takes the single linear texture after the diffuse for a normal map; the face shader's extra lighting texture at t21, which the rule does not mark; a choice between two sRGB textures.
-
 ### Moments that last a few frames (probe 0.1.10)
 
 A capture records the next frame, which is too late for an effect that is on screen for a few frames. Two tools cover that.
@@ -240,7 +180,6 @@ A capture records the next frame, which is too late for an effect that is on scr
 
 How fast it fires: shader hashes are known while a draw is issued, and so is an index buffer hash the probe has already read in an earlier frame. An index buffer seen for the first time is hashed when its data has been read back after the frame; the trigger then records the frame starting at that moment (`late`: a few frames later, four in one sandbox run). Index buffers the game rewrites every frame have no hash (`volatile` in the history): watch their shaders instead.
 
-While a trigger watches, every frame is recorded at minimal detail, as in continuous mode; the slot cache waits meanwhile. One trigger at a time; arming again replaces it. Between firing and collecting, explicit captures and a new arming are refused, so that the triggered frame is not lost. A trigger ends when it has been collected, expires (`expire_s`, ten minutes by default), is cancelled (`efmi_trigger_cancel`) or the MCP server disconnects.
 
 Limits: what is recorded is the frame after the one the trigger saw; an effect drawn in a single frame is then gone (the result warns, and the history still has the line with its hashes and counts). Lines are told apart by index buffer hash, range and shaders: the same mesh drawn by two passes is two lines.
 
@@ -364,7 +303,6 @@ The probe works at the D3D11 level and is the same DLL for both games; what diff
 - **Stream output.** Zenless Zone Zero skins a character with a `Draw` that streams the posed vertices into a buffer, which the visible draws then read as `vb0`. Full captures from probe 0.1.12 record each call's stream-output targets (`so` in `efmi_get_draw`).
 - **XXMI's log syntax.** `efmi_dump_frame log=xxmi` writes `log.txt` with the `IASetVertexBuffers` / `IASetIndexBuffer` / `SOSetTargets` / `…SetShader` / `CSSetUnorderedAccessViews` lines and the `CopyResource` Src / Dst lines in XXMI's own form, so tools that read XXMI's frame analysis (LoyalTools' Zenless Zone Zero extractor among them) can read the dump. The Set* lines are worked out from the bindings where they change from the call before, and resource addresses are made up (one per resource of the capture); the header of the log says so.
 - **Model workflow.** Through LoyalTools' own ZZMI entry points, see "Model workflow for Zenless Zone Zero" below.
-- **Not for ZZMI yet.** The slot cache and slot table follow EFMI's region hashes; from probe 0.1.13 the slot cache is off by default with ZZMI (see "Slot cache").
 - **Verification so far** (sandbox copy with the real ZZMI core, `sandbox/zzmi_integration_test.py`): the installation is adopted from the probe although the server was started for another folder; every game draw names its buffers by the whole-buffer hash; a mod written with the region hash leaves the mesh drawn, one written with the hash shown has XXMI skip the game's draw after one F10; the trigger fires on that hash. The F6 steps of the test were stopped by a window that took the foreground during a key press and have not run to the end yet. Offline: `sandbox/zzmi_unit_test.py` (13 tests: installations, hashes, which sections replace a draw, the state from the draws, the log in XXMI's syntax).
 
 ### Seeing what a draw painted
@@ -548,7 +486,6 @@ It copies the runtime from the EFMI directory to `sandbox\run` (the original dir
 probe\      probe sources (C++, MSVC x64)
 server\     MCP server (Python)
 sandbox\    test program and test scripts, not part of what is delivered
-dist\       the built efmi_probe.dll and run-time logs; slot-cache\ is written there by the probe
 captures\   exported meshes, textures, shader disassembly
 ```
 

@@ -52,10 +52,7 @@ For texture slots use efmi_get_texture_slots after a full capture: select draw n
 per-shader sampling evidence and texture bindings in one batch. It filters stale bindings by default and \
 caches shader analysis in memory; do not write helper scripts or export shaders just to look up slots. \
 efmi_get_shader pages through the cached assembly without writing files; save=true explicitly exports it.
-For the probe's saved slot cache of a game version, use efmi_get_slot_table with the version folder and an IB \
-hash or group filter: per mesh the diffuse, light map and normal map slots of its main (lit) pass, decided from \
-the game's shader dataflow and texture formats with the basis of each, other lit passes that read the textures at \
-other slots, and whether the installed mods agree (they never change a slot). Queries write no files.
+
 
 After changing mod INI/BUF files, use efmi_reload_and_capture. It brings the game to the front, has the probe \
 press the configured unmodified F10 inside the game, hands the focus back and retains a fresh frame. (The game \
@@ -500,12 +497,6 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                     lines.append(f"recording: off; the user switches it with {rec.get('hotkey') or 'no key'} in the game")
             elif "record" not in st.get("features", ()):
                 lines.append(f"recording: needs probe 0.1.11 (this is {st['probe']}). Restart the game to load {s.probe_dll}")
-            slots = st.get("slot_cache")
-            if isinstance(slots, dict) and "every" in slots:
-                where = f", {slots.get('records_in_folder', 0)} records in {slots['folder']}" if slots.get("folder") else ""
-                why = f" ({slots['enabled_by']})" if slots.get("enabled_by") else ""
-                lines.append(f"slot cache: {'on' if slots.get('enabled') else 'off'}{why}{where}; "
-                             "[SlotCache] enable = 1 / 0 in efmi_probe.ini next to the DLL decides it")
             if "reload_key" in st.get("features", ()):
                 level = "elevated" if st.get("process", {}).get("elevated") else "not elevated"
                 lines.append(f"reload: the probe presses F10 inside the game (game process is {level})")
@@ -1554,8 +1545,6 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         return "\n".join([f"capture {cap.frame} vs {p.name}: {verdict} ({res.checks} comparisons, {res.mismatches} mismatches)"] + res.messages)
 
     texture_slots.register(srv, s, CAPTURE_PROP)
-    from . import slot_table
-    slot_table.register(srv, s)
     live_tools.register(srv, s, capture_report)
     record_tools.register(srv, s, capture_report)
     model_tools.register(srv, s)

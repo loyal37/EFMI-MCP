@@ -10,7 +10,6 @@
 #include "hash.h"
 #include "json.h"
 #include "reload.h"
-#include "slotcache.h"
 #include "record.h"
 #include <sddl.h>
 #include <string.h>
@@ -80,7 +79,7 @@ static void status_json(JsonW& w)
 	// Optional abilities, so the server need not compare version strings.
 	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
 	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("binding_trace"); w.str("rt_snapshots"); w.str("contents");
-	w.str("slot_cache"); w.str("live_summary"); w.str("trigger"); w.str("record"); w.str("mods_key_install");
+	w.str("live_summary"); w.str("trigger"); w.str("record"); w.str("mods_key_install");
 	w.str("stream_output"); w.end_arr();
 	bool elevated = false;
 	uint32_t integrity = 0;
@@ -143,9 +142,7 @@ static void status_json(JsonW& w)
 	std::string extra;
 	cap_status_json(&extra);
 	w.key("capture"); w.raw("{" + extra + "}");
-	std::string slots;
-	slot_status_object(&slots);
-	w.key("slot_cache"); w.raw(slots);
+
 }
 
 // Which draws a request is about; see DrawMatch.
@@ -386,40 +383,6 @@ static bool handle(HANDLE pipe, const JVal& rq)
 		w.kd("id", id);
 		w.kb("ok", true);
 		w.kb("live", lc.enable);
-		w.ku("frame", (uint32_t)g_frame_no);
-		w.end_obj();
-		return send_msg(pipe, w.s, nullptr, 0);
-	}
-
-	if (cmd == "slot_cache") {
-		// Settings of the slot cache, changed for as long as the game runs; `flush` waits until
-		// everything recorded so far is written.
-		SlotCacheConfig sc;
-		slot_get_config(&sc);
-		sc.enable = rq.bool_or("enable", sc.enable);
-		sc.every = (uint32_t)rq.num_or("every", sc.every);
-		sc.skinned_only = rq.bool_or("skinned_only", sc.skinned_only);
-		sc.bones_only = rq.bool_or("bones_only", sc.bones_only);
-		sc.static_only = rq.bool_or("static_only", sc.static_only);
-		sc.max_new = (uint32_t)rq.num_or("max_new", sc.max_new);
-		sc.subdir = rq.str_or("subdir", sc.subdir.c_str());
-		// Only a request that sets something replaces the settings (and the default for this installation).
-		bool sets = false;
-		for (const char* k : { "enable", "every", "skinned_only", "bones_only", "static_only", "max_new", "subdir" })
-			sets = sets || rq.get(k) != nullptr;
-		if (sets && !slot_set_config(sc))
-			return send_error(pipe, id, "subdir must be a plain folder name (letters, digits, '.', '-', '_')");
-		bool flushed = true;
-		if (rq.bool_or("flush", false))
-			flushed = slot_flush((uint32_t)rq.num_or("timeout_ms", 5000));
-		std::string status;
-		slot_status_object(&status);
-		JsonW w;
-		w.begin_obj();
-		w.kd("id", id);
-		w.kb("ok", true);
-		w.kb("flushed", flushed);
-		w.key("slot_cache"); w.raw(status);
 		w.ku("frame", (uint32_t)g_frame_no);
 		w.end_obj();
 		return send_msg(pipe, w.s, nullptr, 0);
