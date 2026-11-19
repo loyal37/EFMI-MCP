@@ -45,7 +45,7 @@ def find_probes() -> list[ProbeEndpoint]:
 
 
 class ProbeClient:
-    """One connection to one probe. The probe serves a single client at a time."""
+    """One connection to one probe. Probe 0.1.15 supports multiple clients with capture workspace ownership."""
 
     def __init__(self, endpoint: ProbeEndpoint):
         self.endpoint = endpoint

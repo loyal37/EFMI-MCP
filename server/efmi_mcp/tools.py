@@ -48,6 +48,8 @@ off) or with efmi_record. The probe writes it into a folder of its own, also wit
 drew and keyframes (full frames) when something new appears. efmi_record_history shows what came and went and how \
 often (e.g. an effect seen three times), efmi_record_keyframe loads a keyframe as a capture.
 
+Probe 0.1.15 allows multiple server sessions. Use efmi_session to inspect ownership. Capture, GPU reads, trigger control and game keys share one workspace, acquired automatically for 180 seconds of inactivity. Release it with efmi_session(action='release') when analysis is finished so another session can capture. A busy error means the requested operation did not run. Status, shader lookup and live history remain readable from other sessions. Release or ownership transfer clears the live ring, cancels triggers and releases GPU resources. Renew with efmi_session(action='acquire') when waiting more than three minutes for an effect. Recording files survive workspace transfer.
+
 For texture slots use efmi_get_texture_slots after a full capture: select draw numbers or an IB hash to get \
 per-shader sampling evidence and texture bindings in one batch. It filters stale bindings by default and \
 caches shader analysis in memory; do not write helper scripts or export shaders just to look up slots. \
@@ -265,7 +267,7 @@ class Session:
             raise ToolError(NO_PROBE.format(dll=self.probe_dll))
         except ProbeError as e:
             raise ToolError(f"The probe is loaded but its pipe could not be opened ({e}). "
-                            "It serves one client at a time: is another tool connected to it?")
+                            "Check the process, pipe permissions and probe version.")
         if self._adopt(self.client) is False:
             # With two games running, the one using the configured installation is preferred.
             for ep in reversed(find_probes()):
@@ -484,6 +486,10 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                              f"swap chain {target['swap_chain']}; {c.get('tracked_draw_calls', 0)} draws on the selected context")
             lines.append(f"seen so far: {c['draw_calls']} draw calls, {c['presents']} frames; known: {r['resources']} resources, "
                          f"{r['shaders']} shaders ({r['bytecode_bytes'] // 1024} KB of bytecode kept), {r['layouts']} input layouts")
+            connection = st.get("session")
+            if connection:
+                lines.append(f"session {connection['id']}, {connection['connections']} connections; "
+                             f"capture workspace owner {connection['owner']} (0 means available)")
             cap = st["capture"]
             lines.append(f"continuous mode: {'on' if cap['live'] else 'off'}"
                          + (f" ({cap['live_frames']} frames kept)" if cap.get("live_frames") else "")
@@ -1586,5 +1592,22 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         offset = max(0, offset)
         return json.dumps({"frame": cap.frame, "matches": len(rows), "dropped": cap.doc["bindings_dropped"],
                            "calls": rows[offset:offset + max(1, min(limit, 500))]})
+
+    @srv.tool("efmi_session", "Inspect, acquire or release this connection's capture workspace. "
+              "Several sessions may connect. Mutating commands and resource reads acquire ownership automatically. "
+              "Release after analysis so another session can capture. Release cancels the trigger, clears the live "
+              "ring and releases GPU resources. Saved recording files and Python capture metadata remain. "
+              "Ownership expires after 180 seconds without a workspace command.",
+              {"action": {"type": "string", "enum": ["status", "acquire", "release"], "default": "status"}},
+              read_only=False)
+    def efmi_session(action="status"):
+        if action not in ("status", "acquire", "release"):
+            raise ToolError("action must be status, acquire or release")
+        status = s.call(lambda c: c.status())
+        if "multi_session" not in status.get("features", []):
+            raise ToolError("Multiple sessions require probe 0.1.15. Restart the game after installing it.")
+        if action == "status":
+            return json.dumps(status["session"])
+        return json.dumps(s.call(lambda c: c.request("session", action=action)[0]))
 
     return srv

@@ -563,3 +563,8 @@ Probe 0.1.14 / server 0.1.23 record ordered immediate-context binding calls. The
 ## Windows release v0.1.23 (2026-11-18)
 
 Published tag 58c9771 with the persistent slot cache and offline slot table removed from the release build. The packaged server exposes 39 tools including live slot inspection and binding trace. Release probe passed 76 sandbox contents checks. ZIP and SHA256SUMS are on GitHub Releases.
+
+
+## Multiple sessions (2026-11-19)
+
+Probe 0.1.15 / server 0.1.24 allow up to 16 pipe connections. One leased workspace protects captures, GPU reads, triggers, recording controls and keys; read-only observations remain concurrent. efmi_session exposes status/acquire/release. Installed DLL SHA256 06f6b1bb15779f713d17003d5221410270d552264efa89061344596e942d2403; old 0.1.14 is in dist/backup-0.1.14. Restart the game and each MCP server to use it. Final candidate passed self-test 143, MCP 108, continuous 62 and the isolated multi-client/real 180-second expiry regression. Recording regression passed 46 before the final cache-generation reset. No real-game verification or keys in this round. Public v0.1.23 release was not changed.

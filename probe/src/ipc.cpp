@@ -1,8 +1,8 @@
 // Named pipe server: \\.\pipe\efmi-probe-<pid>
 //
 // Framing in both directions: [u32 header_len][u32 payload_len][header JSON][payload]
-// One client at a time. All D3D work is done on the game's render thread; this
-// thread only queues requests and waits.
+// Multiple pipe connections share a capture workspace through an expiring lease.
+// D3D work remains on the render thread.
 #include "common.h"
 #include "capture.h"
 #include "registry.h"
@@ -18,6 +18,28 @@
 extern const char* g_attach_how;
 extern bool g_attach_wrapped;
 extern wchar_t g_runtime_path[MAX_PATH];
+
+// Commands that touch the capture workspace are serialized. Observational requests can run
+// while another client waits for a capture or trigger.
+static SRWLOCK g_commands = SRWLOCK_INIT;
+static SRWLOCK g_connections = SRWLOCK_INIT;
+static volatile LONG g_clients = 0, g_next_client = 0, g_owner = 0;
+static ULONGLONG g_owner_until = 0; // g_commands
+static const ULONGLONG k_lease_ms = 180000;
+static thread_local LONG client_id = 0;
+
+static void release_workspace()
+{
+ cap_trigger_cancel();
+ LiveConfig live;
+ live.enable = false;
+ cap_live_configure(live);
+ cap_release(1000);
+ // A workspace handover also invalidates region hashes and resynchronizes GPU writers.
+ cap_target_selected();
+ InterlockedExchange(&g_owner, 0);
+ g_owner_until = 0;
+}
 
 static bool read_exact(HANDLE h, void* buf, DWORD n)
 {
@@ -79,7 +101,7 @@ static void status_json(JsonW& w)
 	w.ku("protocol", PROBE_PROTOCOL);
 	// Optional abilities, so the server need not compare version strings.
 	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
-	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("binding_trace"); w.str("rt_snapshots"); w.str("contents");
+	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("multi_session"); w.str("binding_trace"); w.str("rt_snapshots"); w.str("contents");
 	w.str("slot_cache"); w.str("live_summary"); w.str("trigger"); w.str("record"); w.str("mods_key_install");
 	w.str("stream_output"); w.end_arr();
 	bool elevated = false;
@@ -89,7 +111,10 @@ static void status_json(JsonW& w)
 	w.kb("elevated", elevated);
 	w.ku("integrity_rid", integrity);
 	w.end_obj();
-	w.ku("pid", GetCurrentProcessId());
+	w.key("session"); w.begin_obj();
+ w.ku("id", client_id); w.ku("connections", g_clients); w.ku("owner", g_owner);
+ w.ku("idle_timeout_ms", k_lease_ms); w.end_obj();
+ w.ku("pid", GetCurrentProcessId());
 	w.ks("exe", narrow(exe));
 	w.kb("attached", g_dev && g_ctx);
 	w.ks("attached_via", g_attach_how ? g_attach_how : "");
@@ -603,6 +628,87 @@ static bool handle(HANDLE pipe, const JVal& rq)
 	return send_error(pipe, id, "unknown command: " + cmd);
 }
 
+static bool dispatch(HANDLE pipe, const JVal& rq)
+{
+ const std::string cmd = rq.str_or("cmd", "");
+ const double id = rq.num_or("id", 0);
+ const bool observe = cmd == "hello" || cmd == "status" || cmd == "ping" || cmd == "shader"
+     || cmd == "live_get" || cmd == "live_summary"
+     || (cmd == "record" && rq.str_or("action", "status") == "status");
+ if (observe) return handle(pipe, rq);
+ // Allow a disconnect's short GPU cleanup or a just-completed request to drain.
+ // Longer operations return a busy response without enqueuing side effects.
+ const ULONGLONG deadline = GetTickCount64() + 2000;
+ while (!TryAcquireSRWLockExclusive(&g_commands)) {
+  if (GetTickCount64() >= deadline)
+   return send_error(pipe, id, "another session is executing a probe command; retry later (no command was sent)");
+  Sleep(1);
+ }
+ bool ok;
+ const ULONGLONG now = GetTickCount64();
+ if (g_owner && g_owner_until <= now) release_workspace();
+ if (g_owner && g_owner != client_id) {
+  ok = send_error(pipe, id, "capture workspace belongs to session " + std::to_string(g_owner)
+       + "; it must call efmi_session(action='release') or remain idle for "
+       + std::to_string((g_owner_until - now + 999) / 1000) + " seconds");
+ } else if (cmd == "session" && rq.str_or("action", "") == "release") {
+  if (g_owner == client_id) release_workspace();
+  JsonW w; w.begin_obj(); w.kd("id", id); w.kb("ok", true); w.ku("session", client_id);
+  w.ku("owner", g_owner); w.end_obj();
+  ok = send_msg(pipe, w.s, nullptr, 0);
+ } else if (cmd == "session" && rq.str_or("action", "") != "acquire") {
+  ok = send_error(pipe, id, "session.action must be acquire or release");
+ } else {
+  InterlockedExchange(&g_owner, client_id);
+  g_owner_until = now + k_lease_ms;
+  if (cmd == "session") {
+   JsonW w; w.begin_obj(); w.kd("id", id); w.kb("ok", true); w.ku("session", client_id);
+   w.ku("owner", g_owner); w.end_obj();
+   ok = send_msg(pipe, w.s, nullptr, 0);
+  } else {
+   ok = handle(pipe, rq);
+  }
+  // Time spent waiting for GPU work or the trigger does not consume the lease.
+  g_owner_until = GetTickCount64() + k_lease_ms;
+ }
+ ReleaseSRWLockExclusive(&g_commands);
+ return ok;
+}
+
+static DWORD WINAPI serve_client(LPVOID param)
+{
+ HANDLE pipe = (HANDLE)param;
+ client_id = InterlockedIncrement(&g_next_client);
+ AcquireSRWLockExclusive(&g_connections);
+ if (InterlockedIncrement(&g_clients) == 1) cap_client_connected();
+ ReleaseSRWLockExclusive(&g_connections);
+ plog("ipc: session %ld connected", client_id);
+ for (;;) {
+  uint32_t lens[2];
+  if (!read_exact(pipe, lens, sizeof(lens))) break;
+  if (lens[0] > (1u << 20) || lens[1] > (1u << 20)) break;
+  std::string header(lens[0], '\0'), skip(lens[1], '\0');
+  if (lens[0] && !read_exact(pipe, &header[0], lens[0])) break;
+  if (lens[1] && !read_exact(pipe, &skip[0], lens[1])) break;
+  JVal rq;
+  if (!JsonR::parse(header.data(), header.size(), &rq) || rq.type != JVal::Obj) {
+   if (!send_error(pipe, 0, "malformed request")) break;
+   continue;
+  }
+  if (!dispatch(pipe, rq)) break;
+ }
+ AcquireSRWLockExclusive(&g_commands);
+ if (g_owner == client_id) release_workspace();
+ AcquireSRWLockExclusive(&g_connections);
+ if (InterlockedDecrement(&g_clients) == 0) cap_client_disconnected();
+ ReleaseSRWLockExclusive(&g_connections);
+ ReleaseSRWLockExclusive(&g_commands);
+ plog("ipc: session %ld disconnected", client_id);
+ DisconnectNamedPipe(pipe);
+ CloseHandle(pipe);
+ return 0;
+}
+
 // The game usually runs elevated while the MCP server does not: grant the
 // account that owns this process explicit access.
 static bool make_security(SECURITY_ATTRIBUTES* sa)
@@ -643,7 +749,7 @@ static DWORD WINAPI pipe_thread(LPVOID)
 	for (;;) {
 		HANDLE pipe = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX,
 		                               PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-		                               1, 1 << 20, 1 << 20, 0, have_sa ? &sa : nullptr);
+		                               16, 1 << 20, 1 << 20, 0, have_sa ? &sa : nullptr);
 		if (pipe == INVALID_HANDLE_VALUE) {
 			plog("ipc: CreateNamedPipe failed %lu", GetLastError());
 			Sleep(2000);
@@ -653,36 +759,10 @@ static DWORD WINAPI pipe_thread(LPVOID)
 			CloseHandle(pipe);
 			continue;
 		}
-		plog("ipc: client connected");
-		cap_client_connected();
+        HANDLE worker = CreateThread(nullptr, 0, serve_client, pipe, 0, nullptr);
+        if (worker) CloseHandle(worker);
+        else { DisconnectNamedPipe(pipe); CloseHandle(pipe); }
 
-		for (;;) {
-			uint32_t lens[2];
-			if (!read_exact(pipe, lens, sizeof(lens)))
-				break;
-			if (lens[0] > (1u << 20) || lens[1] > (1u << 20))
-				break;
-			std::string header(lens[0], '\0');
-			if (lens[0] && !read_exact(pipe, &header[0], lens[0]))
-				break;
-			std::string skip(lens[1], '\0');
-			if (lens[1] && !read_exact(pipe, &skip[0], lens[1]))
-				break;
-			JVal rq;
-			if (!JsonR::parse(header.data(), header.size(), &rq) || rq.type != JVal::Obj) {
-				if (!send_error(pipe, 0, "malformed request"))
-					break;
-				continue;
-			}
-			if (!handle(pipe, rq))
-				break;
-		}
-
-		cap_client_disconnected();
-		plog("ipc: client disconnected");
-		FlushFileBuffers(pipe);
-		DisconnectNamedPipe(pipe);
-		CloseHandle(pipe);
 	}
 }
 

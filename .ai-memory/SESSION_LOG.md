@@ -583,3 +583,8 @@ Added capture-time state setter arguments, an ordered slot query and dump sideca
 ## Windows release v0.1.23 (2026-11-18)
 
 Published tag 58c9771 with the persistent slot cache and offline slot table removed from the release build. The packaged server exposes 39 tools including live slot inspection and binding trace. Release probe passed 76 sandbox contents checks. ZIP and SHA256SUMS are on GitHub Releases.
+
+
+## Multiple sessions (2026-11-19)
+
+Implemented per-connection pipe workers and a serialized workspace lease. Other sessions cannot replace a held capture, read its GPU contents or send game keys while it is owned. Disconnect cleanup resets live/trigger state and resource-hash generation. A short command-lock grace period handles reconnect cleanup. Final build passed 143 self-test, 108 MCP and 62 continuous checks; separate multi-session test passed concurrent observations, denied mutations, preserved contents, tool release, trigger waiting, owner disconnect and a real 180-second expiry. An earlier parallel expiry run lost its sandbox pipe before its last capture; no application crash event was found, and the isolated rerun passed. Evidence: dist/candidate/multi-*-verified.log, multi-test-isolated.log, multi-record-final.log. Installed new DLL with a 0.1.14 backup. No changes to original game files, no real game restart, no input sent.

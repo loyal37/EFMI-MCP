@@ -269,3 +269,8 @@
 
 - Date: 2026-10-22 (user: ZZMI should not use the slot cache by default).
 - Its filters are LoyalTools' notion of an Endfield character and the slot table reads its records by EFMI's region hashes, so the default is on only when the loaded XXMI is EFMI (its folder has `Core\EFMI`) or no XXMI is loaded (the sandbox, whose tests rely on it); any other installation, ZZMI included, starts with it off. The decision is taken at the first frame the cache would look at, when XXMI's module is known; `enable` in `efmi_probe.ini` or a client's setting overrides it.
+
+
+## Multiple sessions (2026-11-19)
+
+Use an automatically acquired workspace lease instead of independent GPU capture stores per connection. Up to 16 connections can inspect metadata, shader bytecode and history concurrently. Workspace ownership expires on the next guarded request after 180 seconds of inactivity; commands in progress retain it. Status/history do not renew it. Explicit release, owner disconnect or expiry cancels triggers, clears the live ring, releases GPU refs and invalidates region caches. Recording files and local Python metadata survive. Long-lived triggers must poll or renew. Game keys and recording controls remain process-wide.

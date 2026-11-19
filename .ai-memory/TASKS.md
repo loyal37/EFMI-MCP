@@ -241,3 +241,8 @@ Binding call tracing implemented and sandbox-tested. Pending: verify the affecte
 ## Windows release v0.1.23 (2026-11-18)
 
 Published tag 58c9771 with the persistent slot cache and offline slot table removed from the release build. The packaged server exposes 39 tools including live slot inspection and binding trace. Release probe passed 76 sandbox contents checks. ZIP and SHA256SUMS are on GitHub Releases.
+
+
+## Multiple sessions (2026-11-19)
+
+Implemented multiple simultaneous connections, guarded workspace handover, efmi_session and regression coverage. Sandbox verification complete. Pending real-game verification after the user restarts the game and MCP servers; no automatic game termination.

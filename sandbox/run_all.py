@@ -46,6 +46,7 @@ def main() -> int:
         ("parity with XXMI (XXMI loaded first)", ["sandbox/parity_test.py"]),
         ("parity with XXMI (probe loaded first)", ["sandbox/parity_test.py", "--probe-first"]),
         ("parity with XXMI (system d3d11.dll already loaded)", ["sandbox/parity_test.py", "--preload-runtime"]),
+        ("multiple simultaneous sessions and workspace ownership", ["sandbox/multi_session_test.py"]),
         ("probe self-test", ["sandbox/selftest.py"]),
         ("contents: what each call saw", ["sandbox/contents_test.py"]),
         ("contents: byte for byte against XXMI's frame analysis", ["sandbox/contents_parity_test.py"]),
