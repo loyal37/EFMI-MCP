@@ -39,11 +39,16 @@ extern "C" __declspec(dllexport) HRESULT __cdecl EfmiDHash(
  bool bc=(format>=70 && format<=84)||(format>=94 && format<=99);
  uint64_t rows=bc ? (height+3ull)/4 : height;
  if(rows*pitch>size) return E_INVALIDARG;
- D3D11_TEXTURE2D_DESC td={}; td.Width=width;td.Height=height;td.MipLevels=1;td.ArraySize=1;
- td.Format=(DXGI_FORMAT)format;td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_IMMUTABLE;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
- D3D11_SUBRESOURCE_DATA data={bytes,pitch,0}; ComPtr<ID3D11Texture2D> tex;
- CHECK(dev->CreateTexture2D(&td,&data,&tex));
- ComPtr<ID3D11ShaderResourceView> srv; CHECK(dev->CreateShaderResourceView(tex.Get(),nullptr,&srv));
+ // A small BC mip cannot be the top level of a standalone texture. Place it
+ // at mip 2 of a block-aligned allocation without resampling its bytes.
+ UINT mip = bc && ((width % 4) || (height % 4)) ? 2 : 0;
+ D3D11_TEXTURE2D_DESC td={}; td.Width=width<<mip;td.Height=height<<mip;td.MipLevels=mip+1;td.ArraySize=1;
+ td.Format=(DXGI_FORMAT)format;td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_DEFAULT;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+ ComPtr<ID3D11Texture2D> tex; CHECK(dev->CreateTexture2D(&td,nullptr,&tex));
+ ctx->UpdateSubresource(tex.Get(),mip,nullptr,bytes,pitch,0);
+ D3D11_SHADER_RESOURCE_VIEW_DESC vd={};vd.Format=(DXGI_FORMAT)format;vd.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;
+ vd.Texture2D.MostDetailedMip=mip;vd.Texture2D.MipLevels=1;
+ ComPtr<ID3D11ShaderResourceView> srv; CHECK(dev->CreateShaderResourceView(tex.Get(),&vd,&srv));
  ComPtr<ID3DBlob> code,errors; CHECK(D3DCompile(shader,sizeof(shader),nullptr,nullptr,nullptr,"main","cs_5_0",D3DCOMPILE_ENABLE_STRICTNESS,0,&code,&errors));
  ComPtr<ID3D11ComputeShader> cs; CHECK(dev->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&cs));
  D3D11_SAMPLER_DESC sd={};sd.Filter=D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;

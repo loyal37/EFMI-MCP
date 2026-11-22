@@ -125,7 +125,12 @@ def parse_frame_dump(path: str | os.PathLike, keep_log: bool = False) -> FrameDu
                 setter = re.match(r"^\d{6} ([VHDGPC]S)SetShaderResources\(", line)
                 if setter:
                     binding_stage = setter[1].lower()
-                    # Setters emitted by XXMI list each slot they update, including nulls.
+                    # XXMI omits null view lines: the setter range still clears those slots.
+                    span = re.search(r"StartSlot:(\d+), NumViews:(\d+)", line)
+                    if span:
+                        start, count = map(int, span.groups())
+                        for index in range(start, start + min(count, 128)):
+                            srv_state.pop(f"{binding_stage}-t{index}", None)
                 elif line[:6].isdigit():
                     binding_stage = None
                 if binding_stage and line.startswith(" "):

@@ -15,17 +15,19 @@ def run():
     meta = dict(width=9,height=8,format=28)
     assert dhash.compute(meta, bytes([0,0,0,255])*72) == "000000000000ffff"
     assert dhash.compute(meta, bytes([255,0,0,255])*72) == "ffff00000000ffff"
+    assert dhash.compute(dict(width=1,height=1,format=71), struct.pack("<HHI",65535,65535,0)) == "ffffffffffffffff"
     stripes = b"".join(bytes([255 if x%2==0 else 0]*3+[255]) for y in range(8) for x in range(9))
     assert dhash.compute(meta, stripes) == "5555555555555555"
     print("PASS flat-color fallback, channel order, directional comparisons and bit order")
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(dir=root/"captures") as folder:
         p = Path(folder)
-        (p/"log.txt").write_text("000001 PSSetShaderResources(StartSlot:0, NumViews:1)\n       0: view=0x1 resource=0x2 hash=12345678 orig_hash=deadbeef dhash=0000000000000000\n000001 Draw(VertexCount:3)\n000002 ClearState()\n000002 Draw(VertexCount:3)\n")
+        (p/"log.txt").write_text("000001 PSSetShaderResources(StartSlot:0, NumViews:1)\n       0: view=0x1 resource=0x2 hash=12345678 orig_hash=deadbeef dhash=0000000000000000\n000001 Draw(VertexCount:3)\n000002 PSSetShaderResources(StartSlot:0, NumViews:1)\n000002 Draw(VertexCount:3)\n000003 ClearState()\n000003 Draw(VertexCount:3)\n")
         parsed = parse_frame_dump(p)
         assert parsed.draws[1].slots["ps-t0"].dhash == "0000000000000000"
         assert parsed.draws[1].slots["ps-t0"].hash == "12345678"
         assert not parsed.draws[2].slots
+        assert not parsed.draws[3].slots
     print("PASS zero dHash retained and ClearState ends binding lifetime")
     sb = Sandbox(["--content-pass", "--state-pass"], xxmi=False)
     client = None

@@ -251,3 +251,5 @@ Implemented multiple simultaneous connections, guarded workspace handover, efmi_
 ## dHash and mip compatibility (2026-11-22)
 
 Completed EFMI Tools 0.7.1 dHash/mip compatibility implementation and sandbox verification. Pending: new-probe live capture after game restart, end-to-end extraction using the installed LoyalTools version, and investigation of one nonmatching sampled original texture. Arrays/cubes/volume/output export retains single-subresource behavior.
+
+Final review: original XXMI setters omit null-view rows; parsing now clears the declared range before applying logged bindings. Corrected count: 1043 dHash bindings in the saved dump. Native sampling supports 1x1/2x2 BC mips by placing their bytes at a valid mip of a block-aligned allocation. Dedicated regression and real-dump comparison rerun passed (11/12 match; one remains unmatched).
