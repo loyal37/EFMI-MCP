@@ -274,3 +274,8 @@
 ## Multiple sessions (2026-11-19)
 
 Use an automatically acquired workspace lease instead of independent GPU capture stores per connection. Up to 16 connections can inspect metadata, shader bytecode and history concurrently. Workspace ownership expires on the next guarded request after 180 seconds of inactivity; commands in progress retain it. Status/history do not renew it. Explicit release, owner disconnect or expiry cancels triggers, clears the live ring, releases GPU refs and invalidates region caches. Recording files and local Python metadata survive. Long-lived triggers must poll or renew. Game keys and recording controls remain process-wide.
+
+
+## dHash and mip compatibility (2026-11-22)
+
+Keep original XXMI dHash metadata separate from fresh fingerprints. XXMI has private upload-generation/mip-selection caches that the probe cannot read; do not label a new hash as that cached value. Compute on demand outside the game with D3D11 WARP sampling, preserve the SRV format, and expose an explicit mip. Ordinary Texture2D input snapshots retain all mip versions under the existing capture budget. Dump export writes captured mips without synthesis. Diagnostic export defaults to all bindings; declared_only opts into newer XXMI PS declaration filtering.

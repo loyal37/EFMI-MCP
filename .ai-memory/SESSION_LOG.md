@@ -588,3 +588,8 @@ Published tag 58c9771 with the persistent slot cache and offline slot table remo
 ## Multiple sessions (2026-11-19)
 
 Implemented per-connection pipe workers and a serialized workspace lease. Other sessions cannot replace a held capture, read its GPU contents or send game keys while it is owned. Disconnect cleanup resets live/trigger state and resource-hash generation. A short command-lock grace period handles reconnect cleanup. Final build passed 143 self-test, 108 MCP and 62 continuous checks; separate multi-session test passed concurrent observations, denied mutations, preserved contents, tool release, trigger waiting, owner disconnect and a real 180-second expiry. An earlier parallel expiry run lost its sandbox pipe before its last capture; no application crash event was found, and the isolated rerun passed. Evidence: dist/candidate/multi-*-verified.log, multi-test-isolated.log, multi-record-final.log. Installed new DLL with a 0.1.14 backup. No changes to original game files, no real game restart, no input sent.
+
+
+## dHash and mip compatibility (2026-11-22)
+
+Reviewed EFMI Tools v0.7.1 and XXMI DHash64Gpu/ResourceHash/FrameAnalysis sources. Added dHash import (including zero and binding lifetimes), fresh captured-pixel fingerprint query, DDS mip-chain export and optional declared-only PS filtering. Recomputed hashes are explicitly not XXMI cached hashes. Kept source installations and original dumps read-only. Evidence in captures/dhash-20261122: final build, selftest143, contents76, MCP108, unit33, dedicated native sampling/mip-version/DDS roundtrip/filter tests and real-dump-check.json. Original dump comparison matched 11 of 12 textures at some mip. Installed candidate and kept 0.1.15 backup; user game not stopped, no key sent.

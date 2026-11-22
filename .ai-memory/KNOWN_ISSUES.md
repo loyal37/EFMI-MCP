@@ -217,3 +217,8 @@ The above comes from the README/sources of the time and should not be widened in
 ## Multiple sessions (2026-11-19)
 
 Multiple sessions do not provide independent simultaneously retained GPU captures. Reads after workspace transfer require a fresh capture or saved recording contents. The new DLL requires a game restart; replacing the disk file cannot update an already loaded probe. One parallel long-wait sandbox run lost its pipe; the subsequent isolated multi-session/expiry test passed, but the cause of that earlier process exit was not established. Live-game multi-session behavior remains unverified.
+
+
+## dHash and mip compatibility (2026-11-22)
+
+dHash recomputation is not guaranteed identical to XXMI cached values. One of 12 saved game textures did not match at any dumped mip; cause unestablished. WARP precision and cached upload/mip selection are relevant boundaries, not confirmed diagnoses. No end-to-end Blender extraction verification this round. Native dHash helper is required for fresh fingerprints; missing/unsupported formats produce query errors or dump warnings. Full mip-chain export is limited to ordinary non-array, non-MSAA Texture2D inputs; other kinds retain prior subresource behavior.

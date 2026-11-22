@@ -568,3 +568,8 @@ Published tag 58c9771 with the persistent slot cache and offline slot table remo
 ## Multiple sessions (2026-11-19)
 
 Probe 0.1.15 / server 0.1.24 allow up to 16 pipe connections. One leased workspace protects captures, GPU reads, triggers, recording controls and keys; read-only observations remain concurrent. efmi_session exposes status/acquire/release. Installed DLL SHA256 06f6b1bb15779f713d17003d5221410270d552264efa89061344596e942d2403; old 0.1.14 is in dist/backup-0.1.14. Restart the game and each MCP server to use it. Final candidate passed self-test 143, MCP 108, continuous 62 and the isolated multi-client/real 180-second expiry regression. Recording regression passed 46 before the final cache-generation reset. No real-game verification or keys in this round. Public v0.1.23 release was not changed.
+
+
+## dHash and mip compatibility (2026-11-22)
+
+Probe 0.1.16 / server 0.1.25 add versioned mip chains for ordinary non-array Texture2D inputs, mip-preserving DDS export, original dHash log parsing and efmi_texture_dhash. The game-external dist/efmi_dhash.dll samples captured pixels on WARP. Installed probe SHA256 38beb251c1014cf6ab85ecbfdbc06ae6757bdca8fd68bb43f120889e6dff0141, helper 7080fa8e5f83d4edccef68635f6ccf1a2878a33c96597c87a9b2f51de1df9900; probe backup in dist/backup-0.1.15. Game restart required; running probe was 0.1.15. Sandbox selftest 143, contents 76, MCP 108, offline contents 33 and dedicated dHash/mip tests passed. Original saved 2026-11-22 game dump parsed 4608 dHash bindings; 11/12 sampled texture fingerprints matched some DDS mip, one did not. No live verification with 0.1.16 or completed Blender extraction. Public release unchanged.

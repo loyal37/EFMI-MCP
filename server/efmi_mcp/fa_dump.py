@@ -48,6 +48,7 @@ class DumpSlot:
     full_hash: str | None = None  # resource hash in parentheses (region-hashed buffers only)
     files: list[str] = field(default_factory=list)
     deduped: dict[str, str] = field(default_factory=dict)  # extension -> deduped file name
+    dhash: str | None = None
     marks: str | None = None    # "S", "MU", ...: see MARKS; the hash then names what the resource held at creation
 
 
@@ -104,8 +105,13 @@ def parse_frame_dump(path: str | os.PathLike, keep_log: bool = False) -> FrameDu
         slot = draw(n).slots.get(fm["slot"])
         if slot is None:
             slot = draw(n).slots[fm["slot"]] = DumpSlot(fm["slot"], fm["hash"], fm["full"], marks=fm["marks"])
+        slot.hash = fm["hash"]
+        slot.full_hash = fm["full"]
+        slot.marks = fm["marks"]
         return slot
 
+    srv_state = {}
+    binding_stage = None
     analyse_options = None
     log_path = root / "log.txt"
     has_log = log_path.exists()
@@ -116,6 +122,19 @@ def parse_frame_dump(path: str | os.PathLike, keep_log: bool = False) -> FrameDu
                 if analyse_options is None and line.startswith("analyse_options:"):
                     analyse_options = line.split(":", 1)[1].strip()
                     continue
+                setter = re.match(r"^\d{6} ([VHDGPC]S)SetShaderResources\(", line)
+                if setter:
+                    binding_stage = setter[1].lower()
+                    # Setters emitted by XXMI list each slot they update, including nulls.
+                elif line[:6].isdigit():
+                    binding_stage = None
+                if binding_stage and line.startswith(" "):
+                    binding = re.match(r"\s+(\d+):.*?resource=(0x[0-9a-fA-F]+)(.*)", line)
+                    if binding:
+                        slot = f"{binding_stage}-t{binding[1]}"
+                        fields = dict(re.findall(r"\b(hash|dhash)=([0-9a-fA-F]+)", binding[3]))
+                        if int(binding[2], 16): srv_state[slot] = fields
+                        else: srv_state.pop(slot, None)
                 m = _RE_DUMP.match(line)
                 if m:
                     n = int(m.group(1))
@@ -130,9 +149,13 @@ def parse_frame_dump(path: str | os.PathLike, keep_log: bool = False) -> FrameDu
                     n = int(m.group(1))
                     name = m.group(2)
                     d = draw(n)
+                    if name == "ClearState": srv_state.clear()
                     if name in DRAW_CALLS and d.call is None:
                         d.call = name
                         d.args = _parse_args(m.group(3))
+                        for slot, fields in srv_state.items():
+                            if (slot.startswith("cs-") == name.startswith("Dispatch")) and "dhash" in fields:
+                                d.slots.setdefault(slot, DumpSlot(slot, fields.get("hash"))).dhash = fields["dhash"].lower()
                     if keep_log:
                         d.log.append(line[7:])
                 elif keep_log and line[:6].isdigit():

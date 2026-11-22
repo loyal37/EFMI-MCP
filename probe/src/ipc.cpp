@@ -101,7 +101,7 @@ static void status_json(JsonW& w)
 	w.ku("protocol", PROBE_PROTOCOL);
 	// Optional abilities, so the server need not compare version strings.
 	w.key("features"); w.begin_arr(); w.str("reload_key"); w.str("create_frames"); w.str("mods_key");
-	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("multi_session"); w.str("binding_trace"); w.str("rt_snapshots"); w.str("contents");
+	w.str("region_hash_per_object"); w.str("pipeline_state"); w.str("multi_session"); w.str("mip_contents"); w.str("binding_trace"); w.str("rt_snapshots"); w.str("contents");
 	w.str("slot_cache"); w.str("live_summary"); w.str("trigger"); w.str("record"); w.str("mods_key_install");
 	w.str("stream_output"); w.end_arr();
 	bool elevated = false;

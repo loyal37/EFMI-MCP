@@ -13,7 +13,7 @@ import struct
 import time
 from pathlib import Path
 
-from . import decode, pipeline, slot_data
+from . import decode, pipeline, slot_data, dhash
 from .capture_model import STAGES, Capture
 from .hashes import crc32c, hex32
 from .mcp_stdio import ToolError
@@ -422,7 +422,7 @@ LOG_STYLES = ("readable", "xxmi")
 def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: list[str] | None = None,
                txt: bool = True, only_exact: bool = True, max_mb: int = 2048, max_seconds: float = 120.0,
                folder: str = "", log: str = "readable", files_for: set[int] | None = None,
-               leave_out: set[int] | None = None) -> dict:
+               leave_out: set[int] | None = None, declared_only: bool = False) -> dict:
     """Writes the calls [first, last] of a capture as a folder laid out like an XXMI frame analysis dump.
 
     Buffers go out whole as .buf (with the .txt XXMI writes for index, vertex and constant
@@ -454,6 +454,7 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
     log_lines: list[str] = [f"analyse_options: efmi-mcp capture {cap.frame}",
                             "written by efmi-mcp from a live capture, laid out like XXMI's frame analysis; calls are numbered "
                             "as in the capture (from 0), and XXMI's own command list and variable trace is not in here"]
+    log_lines.append("dhash fields are recomputed from exported pixels, not XXMI cached hashes; see texture-fingerprints.json")
     if "bindings" in cap.doc:
         log_lines.append("Observed API calls and arguments are in binding-calls.jsonl. State differences below are reconstructed.")
     elif log == "xxmi":
@@ -471,6 +472,10 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
         by_call.setdefault(event["before_call"], []).append(event)
     buffers: dict[tuple, tuple[bytes, dict]] = {}     # (resource, content) -> whole buffer and where it came from
     index_cache: dict[tuple, list[int]] = {}
+    previous_ps_count = 0
+    fingerprints = {}
+    texture_notes = []
+    declarations = {}
     done = first - 1
 
     def whole_buffer(binding: dict):
@@ -523,6 +528,8 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
             now = bindings_of(cap, d)
             log_lines += [f"{prefix} {line}" for line in binding_changes(bound[d["type"] >= 8], now)]
             bound[d["type"] >= 8] = now
+        call_log_index = len(log_lines)
+        texture_hashes = {}
         log_lines.append(f"{prefix} {call_line(cap, d)}")
         if files_for is not None and index not in files_for:
             done = index
@@ -608,6 +615,14 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
         for group, entries in groups:
             for name, entry in entries.items():
                 resource = cap.resource(entry["res"]) or {}
+                if declared_only and group == "tex" and name.startswith("ps-t") and resource.get("kind") != "buffer":
+                    shader = d["shaders"].get("ps")
+                    if shader and hasattr(session, "shader_listing"):
+                        if shader not in declarations:
+                            try: declarations[shader] = session.shader_listing(shader).usage["resources"]
+                            except (ToolError, OSError, ValueError): declarations[shader] = None
+                        if declarations[shader] is not None and int(name[4:]) not in declarations[shader]:
+                            continue
                 what = f"call {index} {name}"
                 stem = named(name, entry["hash"])
                 if resource.get("kind") == "buffer":
@@ -627,6 +642,7 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
                     skipped["outputs_not_kept" if group == "out" else "not_exact"] += 1
                     continue
                 key = ("tex", entry["res"], content) if content is not None else ("texlate", entry["res"])
+                key += ((entry.get("view") or {}).get("format", ""), tuple(entry.get("mip_contents", [])))
                 if key not in writer.by_key:
                     try:
                         if content is not None:
@@ -648,11 +664,47 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
                             and not view_format.endswith("_TYPELESS"):
                         # As the shader reads it, and as XXMI writes a typeless texture: in a typed format.
                         fmt, fmt_name = decode.FORMAT_NAMES.index(view_format), view_format
-                    dds = decode.make_dds(meta["width"], meta["height"], fmt, data, depth=meta.get("depth", 0))
+                    chain = [(meta, data)]
+                    ids = entry.get("mip_contents", [])
+                    if ids:
+                        try:
+                            chain = [session.call(lambda c, cid=cid: c.read_content(cap.frame, cid)) for cid in ids]
+                            if not all(m.get("exact", False) for m, _ in chain):
+                                raise ToolError("mip chain contains uncertain contents")
+                        except ToolError as exc:
+                            chain = [(meta, data)]
+                            texture_notes.append(f"{what}: incomplete mip chain: {exc}")
+                    top, top_data = chain[0]
+                    dds = decode.make_dds(top["width"], top["height"], fmt, b"".join(b for _, b in chain),
+                                          mips=len(chain), depth=top.get("depth", 0))
+                    # DDS linear-size describes the top level, not the whole mip chain.
+                    dds = dds[:20] + struct.pack("<I", len(top_data)//max(top.get("depth", 0), 1)) + dds[24:]
+                    if resource.get("kind") == "tex2d" and resource.get("array", 1) == 1:
+                        try:
+                            fingerprints[key] = dhash.compute(top, top_data, fmt_name)
+                        except (ValueError, OSError) as exc:
+                            texture_notes.append(f"{what}: dHash unavailable: {exc}")
                     target = writer.store(key, "{crc}-" + fmt_name + ".dds", lambda: dds)
                 else:
                     target = writer.by_key[key]
                 writer.link(target, stem + ".dds")
+                if name.startswith("ps-t") and key in fingerprints:
+                    texture_hashes[name] = fingerprints[key]
+        if d["type"] < 8:
+            ps = {int(name[4:]): (name, entry) for name, entry in d.get("tex", {}).items() if name.startswith("ps-t")}
+            count = max(previous_ps_count, max(ps, default=-1)+1)
+            texture_log = []
+            if count:
+                texture_log.append(f"{prefix} PSSetShaderResources(StartSlot:0, NumViews:{count}, ppShaderResourceViews:{_NULL})")
+                for slot in range(count):
+                    name, entry = ps.get(slot, ("", {}))
+                    rid = entry.get("res")
+                    line = f"       {slot}: view={_address(rid)} resource={_address(rid)}"
+                    if entry.get("hash"): line += f" hash={entry['hash']}"
+                    if name in texture_hashes: line += f" dhash={texture_hashes[name]}"
+                    texture_log.append(line)
+            previous_ps_count = max(ps, default=-1)+1
+            log_lines[call_log_index:call_log_index] = texture_log
         if writer.over_limit:
             break                   # this call is incomplete: it is where to go on
         done = index
@@ -668,9 +720,13 @@ def dump_frame(session, cap: Capture, *, first: int = 0, last: int = -1, kinds: 
     elif (root / "binding-calls.jsonl").is_file():
         (root / "binding-calls.jsonl").unlink()
     (root / "log.txt").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+    (root / "texture-fingerprints.json").write_text(json.dumps({
+        "source": "captured_pixels", "xxmi_cached": False,
+        "note": "Fresh dHash of the exported top mip; XXMI may cache a different mip/upload. No mip is synthesized.",
+        "warnings": texture_notes[:50]}, indent=2), encoding="utf-8")
     result = {"folder": str(root), "capture": cap.frame, "calls_written": [first, done] if done >= first else [],
               "files": writer.files, "distinct_contents": len(writer.by_key), "megabytes": round(writer.bytes / 1048576, 2),
-              "log": str(root / "log.txt")}
+              "log": str(root / "log.txt"), "texture_warnings": texture_notes[:12]}
     if any(skipped.values()):
         result["skipped"] = {k: v for k, v in skipped.items() if v}
     if done < last:

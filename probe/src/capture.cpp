@@ -50,7 +50,7 @@ struct CapSnap   { int32_t res; uint32_t off, size; uint64_t blob_off; uint8_t s
 
 struct VbBind   { uint8_t slot; int32_t res; uint32_t stride, off; int32_t region; int32_t cont = -1; };
 struct CbBind   { uint8_t stage, slot; int32_t res; uint32_t first, num; int32_t snap; int32_t cont = -1; };
-struct ViewBind { uint8_t stage, slot; int32_t res; int32_t view = -1; int32_t cont = -1; };
+struct ViewBind { uint8_t stage, slot; int32_t res; int32_t view = -1; int32_t cont = -1; std::vector<int32_t> mips; };
 
 // Fixed-function state objects and view parameters, recorded for full captures.
 enum { SK_BLEND = 0, SK_DEPTH = 1, SK_RASTER = 2, SK_SAMPLER = 3 };
@@ -1854,6 +1854,14 @@ static void record_stage(Capture* c, DrawRec* d, int stage, bool full)
 		v.view = view_desc_id(c, (ID3D11View*)srvs[i], VK_SRV, v.res);
 		if (c->rq.ct_kinds & (CK_BUF | CK_TEX))
 			v.cont = cont_of_view(c, v.res, v.view, (c->rq.ct_kinds & CK_BUF) != 0, (c->rq.ct_kinds & CK_TEX) != 0);
+		if ((c->rq.ct_kinds & CK_TEX) && v.res >= 0 && v.view >= 0 &&
+		    c->res[v.res].dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D &&
+		    c->res[v.res].live.t2.ArraySize == 1 && c->res[v.res].live.t2.SampleDesc.Count == 1) {
+			const auto& cr = c->res[v.res];
+			for (uint32_t mip = 0; mip < cr.live.t2.MipLevels; ++mip)
+				v.mips.push_back(cont_texture(c, (ID3D11Resource*)cr.ptr, v.res, mip, 0,
+				                             (DXGI_FORMAT)c->view_descs[v.view].format));
+		}
 		c->views.push_back(v);
 		d->srv_count++;
 		ID3D11ShaderResourceView_Release(srvs[i]);
@@ -5049,6 +5057,11 @@ void cap_serialize(const Capture& c, std::string* json, std::vector<uint8_t>* bl
 			any = false;
 			for (uint32_t k = 0; k < d.srv_count; k++) any = any || c.views[d.srv_begin + k].cont >= 0;
 			if (any) {
+                w.key("csrv_mips"); w.begin_arr();
+                for (uint32_t k = 0; k < d.srv_count; k++) {
+                    w.begin_arr(); for (int32_t id : c.views[d.srv_begin + k].mips) w.i(id); w.end_arr();
+                }
+                w.end_arr();
 				w.key("csrv"); w.begin_arr();
 				for (uint32_t k = 0; k < d.srv_count; k++) w.i(c.views[d.srv_begin + k].cont);
 				w.end_arr();

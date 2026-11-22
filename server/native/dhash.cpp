@@ -1,0 +1,63 @@
+// Game-external D3D11 sampling of captured bytes. No game context is touched.
+// Sampling contract: SpectrumQT/XXMI-Libs-Package DirectX11/DHash64Gpu.cpp.
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <wrl/client.h>
+#include <cstdint>
+#include <cstring>
+using Microsoft::WRL::ComPtr;
+static const char shader[] = R"(
+Texture2D<float4> tex : register(t0);
+SamplerState samp : register(s0);
+RWStructuredBuffer<uint> result : register(u0);
+[numthreads(1,1,1)] void main() {
+ uint lo=0, hi=0;
+ for(uint y=0;y<8;y++) for(uint x=0;x<8;x++) {
+  float a=dot(tex.SampleLevel(samp,float2((x+.5)/9.,(y+.5)/8.),0),float4(.25,.25,.25,.25));
+  float b=dot(tex.SampleLevel(samp,float2((x+1.5)/9.,(y+.5)/8.),0),float4(.25,.25,.25,.25));
+  uint i=y*8+x;
+  if(a>b) { if(i<32) lo|=1u<<i; else hi|=1u<<(i-32); }
+ }
+ if((lo|hi)==0) {
+  uint4 q=(uint4)floor(saturate(tex.SampleLevel(samp,float2(.5,.5),0))*16.+.5);
+  uint4 t=(1u<<q)-1u;
+  lo=(t.b<<16)|t.a; hi=(t.r<<16)|t.g;
+ }
+ result[0]=lo; result[1]=hi;
+})";
+#define CHECK(x) do { HRESULT hr=(x); if(FAILED(hr)) return hr; } while(0)
+extern "C" __declspec(dllexport) HRESULT __cdecl EfmiDHash(
+ UINT width, UINT height, UINT format, UINT pitch, const void* bytes, UINT size, uint64_t* hash) {
+ if(!width || !height || !bytes || !hash || !pitch || !size) return E_INVALIDARG;
+ ComPtr<ID3D11Device> dev; ComPtr<ID3D11DeviceContext> ctx;
+ D3D_FEATURE_LEVEL level;
+ CHECK(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&dev,&level,&ctx));
+ UINT support=0; CHECK(dev->CheckFormatSupport((DXGI_FORMAT)format,&support));
+ if(!(support&D3D11_FORMAT_SUPPORT_SHADER_SAMPLE)) return E_INVALIDARG;
+ // Restrict to normalized/float formats, since the shader samples float4.
+ if(format==30 || format==32 || format==3 || format==4) return E_INVALIDARG;
+ bool bc=(format>=70 && format<=84)||(format>=94 && format<=99);
+ uint64_t rows=bc ? (height+3ull)/4 : height;
+ if(rows*pitch>size) return E_INVALIDARG;
+ D3D11_TEXTURE2D_DESC td={}; td.Width=width;td.Height=height;td.MipLevels=1;td.ArraySize=1;
+ td.Format=(DXGI_FORMAT)format;td.SampleDesc.Count=1;td.Usage=D3D11_USAGE_IMMUTABLE;td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+ D3D11_SUBRESOURCE_DATA data={bytes,pitch,0}; ComPtr<ID3D11Texture2D> tex;
+ CHECK(dev->CreateTexture2D(&td,&data,&tex));
+ ComPtr<ID3D11ShaderResourceView> srv; CHECK(dev->CreateShaderResourceView(tex.Get(),nullptr,&srv));
+ ComPtr<ID3DBlob> code,errors; CHECK(D3DCompile(shader,sizeof(shader),nullptr,nullptr,nullptr,"main","cs_5_0",D3DCOMPILE_ENABLE_STRICTNESS,0,&code,&errors));
+ ComPtr<ID3D11ComputeShader> cs; CHECK(dev->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&cs));
+ D3D11_SAMPLER_DESC sd={};sd.Filter=D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+ sd.AddressU=sd.AddressV=sd.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;sd.ComparisonFunc=D3D11_COMPARISON_ALWAYS;
+ ComPtr<ID3D11SamplerState> sampler;CHECK(dev->CreateSamplerState(&sd,&sampler));
+ D3D11_BUFFER_DESC bd={};bd.ByteWidth=8;bd.BindFlags=D3D11_BIND_UNORDERED_ACCESS;bd.MiscFlags=D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;bd.StructureByteStride=4;
+ ComPtr<ID3D11Buffer> out,staging;CHECK(dev->CreateBuffer(&bd,nullptr,&out));
+ D3D11_UNORDERED_ACCESS_VIEW_DESC ud={};ud.ViewDimension=D3D11_UAV_DIMENSION_BUFFER;ud.Buffer.NumElements=2;
+ ComPtr<ID3D11UnorderedAccessView> uav;CHECK(dev->CreateUnorderedAccessView(out.Get(),&ud,&uav));
+ bd.BindFlags=bd.MiscFlags=bd.StructureByteStride=0;bd.Usage=D3D11_USAGE_STAGING;bd.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+ CHECK(dev->CreateBuffer(&bd,nullptr,&staging));
+ ctx->CSSetShader(cs.Get(),nullptr,0);ctx->CSSetShaderResources(0,1,srv.GetAddressOf());
+ ctx->CSSetSamplers(0,1,sampler.GetAddressOf());ctx->CSSetUnorderedAccessViews(0,1,uav.GetAddressOf(),nullptr);
+ ctx->Dispatch(1,1,1);ctx->CopyResource(staging.Get(),out.Get());
+ D3D11_MAPPED_SUBRESOURCE mapped={};CHECK(ctx->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped));
+ memcpy(hash,mapped.pData,8);ctx->Unmap(staging.Get(),0);return S_OK;
+}

@@ -190,6 +190,8 @@ class Capture:
 
         def kept(entry: dict, key: str, n: int) -> dict:
             """Adds where the probe keeps what binding n of a list held (its position in "cont"), if it does."""
+            if key == "csrv" and n < len(d.get("csrv_mips", [])):
+                entry["mip_contents"] = d["csrv_mips"][n]
             ids = d.get(key)
             if ids and n < len(ids) and ids[n] >= 0:
                 entry["content"] = ids[n]

@@ -480,7 +480,7 @@ class Dump(ContentsCase):
         self.capture(contents="outputs")
         text, error = call(self.server, "efmi_dump_frame", first=1, last=1, kinds=["cb", "out"], txt=False)
         answer = json.loads(text)
-        names = sorted(p.name.split("=")[0] for p in Path(answer["folder"]).iterdir() if p.is_file() and p.name != "log.txt")
+        names = sorted(p.name.split("=")[0] for p in Path(answer["folder"]).iterdir() if p.is_file() and p.name not in ("log.txt", "texture-fingerprints.json"))
         self.assertEqual(names, ["000001-o0-vs", "000001-ps-cb2"])
 
     def test_the_size_limit_stops_and_says_where_to_continue(self):

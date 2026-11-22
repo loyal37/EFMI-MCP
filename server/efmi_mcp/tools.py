@@ -1132,6 +1132,11 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             view.get("most_detailed_mip", view.get("mip_slice", 0)), 0 if volume else view.get("first_slice", view.get("first_face", 0)))
         want_mip = shown[0] if mip < 0 else mip
         want_slice = (0 if volume else shown[1]) if slice < 0 else (0 if volume else slice)
+        for cid in entry.get("mip_contents", []):
+            candidate = cap.content(cid)
+            if candidate and (candidate["mip"], candidate["slice"]) == (want_mip, want_slice):
+                kept = candidate
+                break
         meta = data = None
         when, from_capture = "", False
         if kept and kept["kind"] == "texture" and (kept["mip"], kept["slice"]) == (want_mip, want_slice):
@@ -1272,6 +1277,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                "kinds": {"type": "array", "items": {"type": "string", "enum": ["ib", "vb", "cb", "buf", "tex", "out"]}, "default": [],
                          "description": "empty: all. buf: buffers bound as shader resources, tex: textures, out: what calls wrote."},
                "txt": {"type": "boolean", "default": True},
+               "declared_only": {"type": "boolean", "default": False, "description": "Exclude PS texture slots absent from shader declarations, like XXMI 1.3.2."},
                "only_exact": {"type": "boolean", "default": True},
                "max_mb": {"type": "integer", "minimum": 1, "maximum": 65536, "default": 2048},
                "max_seconds": {"type": "integer", "minimum": 5, "maximum": 1800, "default": 120},
@@ -1280,11 +1286,11 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
               read_only=False)
     def efmi_dump_frame(capture="latest", first: int = 0, last: int = -1, kinds=None, txt: bool = True,
                         only_exact: bool = True, max_mb: int = 2048, max_seconds: int = 120, folder: str = "",
-                        log: str = "readable"):
+                        log: str = "readable", declared_only: bool = False):
         cap = s.capture(capture)
         return contents.dump_frame(s, cap, first=int(first), last=int(last), kinds=list(kinds or []), txt=bool(txt),
                                    only_exact=bool(only_exact), max_mb=int(max_mb), max_seconds=float(max_seconds),
-                                   folder=folder, log=str(log))
+                                   folder=folder, log=str(log), declared_only=declared_only)
 
     # ================================================================ what a draw paints
     @srv.tool("efmi_capture_draw_outputs",
@@ -1523,6 +1529,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
         nums = [n for n in dump.draw_numbers() if dump.draws[n].call]
         lines = [f"{p}: analyse_options {dump.analyse_options}, {len(nums)} draws, {dump.file_count} dumped files"]
         slots = [slot for d in dump.draws.values() for slot in d.slots.values()]
+        lines.append(f"  bindings with dHash: {sum(slot.dhash is not None for slot in slots)}")
         marked = Counter(slot.marks for slot in slots if slot.marks)
         if marked:
             # XXMI's own note that a resource was written to after its hash was taken.
@@ -1536,6 +1543,7 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             ib = d.slots.get("ib")
             ibs = f" ib={ib.hash or '-'}" + (f"({ib.full_hash})" if ib and ib.full_hash else "") if ib else ""
             sh = " ".join(f"{k}={v}" for k, v in d.shaders.items())
+            sh += " " + " ".join(f"{k} dhash={v.dhash}" for k, v in d.slots.items() if v.dhash is not None)
             ic = d.args.get("IndexCount", d.args.get("IndexCountPerInstance"))
             lines.append(f"  {n:06d} {d.call}{ibs}{' ic=%d' % ic if ic else ''} {sh}" + s.mod_note(ib.hash if ib else None))
         if len(nums) > limit:
@@ -1610,4 +1618,6 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
             return json.dumps(status["session"])
         return json.dumps(s.call(lambda c: c.request("session", action=action)[0]))
 
+    from . import dhash
+    dhash.register(srv, s, CAPTURE_PROP)
     return srv
