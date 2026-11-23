@@ -19,14 +19,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 CATALOG_B85 = ""
-MARKER = "; EFMI texture repair 1.0.0"
+MARKER = "; EFMI texture repair"
 BACKUP = ".efmi-texture-repair.bak"
 RECEIPT = ".efmi-texture-repair.json"
 ROLES = {"diffuse": "Diffuse", "lightmap": "Light", "normal": "Normal"}
-RESET = "CommandList_EFMIRepair_ResetMatches"
-POOL = "Pool_EFMIRepair_SavedTextures"
 INTERFACE_ROLES = {"diffuse": "diffuse", "lightmap": "lightmap", "normalmap": "normal"}
 HEADER = re.compile(r"^\s*\[([^\]]+)\]\s*(?:;.*)?$")
 BASIC = re.compile(r"Resource\\(RabbitFX|EFMITTL)\\(Diffuse|LightMap|NormalMap)\b", re.I)
@@ -251,7 +249,7 @@ def semantic_role(value):
     return None
 
 
-def pending_interface(sec, interface, index, pending=None, active=None):
+def pending_interface(sec, interface, index, pending=None, active=None, direct_errors=None):
     """Conservative branch merge: can this helper leave basic inputs unconsumed?"""
     state, active, stack = set(pending or ()), set(active or ()), []
     if sec in active:
@@ -278,6 +276,8 @@ def pending_interface(sec, interface, index, pending=None, active=None):
         key, value = item
         m = BASIC.fullmatch(key)
         if m and m[1].lower() == interface:
+            if direct_errors is not None and m[2].lower() in state:
+                direct_errors.add("Interface input is overwritten before SetTextures; direct binding would change its meaning")
             if value.lower() == "null":
                 state.discard(m[2].lower())
             else:
@@ -289,16 +289,20 @@ def pending_interface(sec, interface, index, pending=None, active=None):
             else:
                 target = resolve(sec, value, index)
                 if target:
-                    state = pending_interface(target, interface, index, state, active)
+                    state = pending_interface(target, interface, index, state, active, direct_errors)
+                elif state and direct_errors is not None:
+                    direct_errors.add("External command runs before SetTextures consumes its inputs")
+        elif state and direct_errors is not None and (key.startswith("draw") or "ps-t" in code):
+            direct_errors.add("A draw or slot operation occurs before SetTextures consumes its inputs")
     return state | (set(INTERFACE_ROLES) if stack else set())
 
 
 def plan(documents, catalog):
     """Follow real run/ref edges; specialize only unambiguous material contexts.
 
-    Control flow and draw commands are never rewritten. Interface inputs become
-    local staging resources and are consumed at the original SetTextures call.
-    This preserves independent materials for each draw within the same IB.
+    Only binding destinations and basic-only SetTextures calls are edited.
+    Conditions, resources, draw commands and existing snapshot logic stay intact.
+    No staging resources, guards, command lists or run calls are generated.
     """
     index = defaultdict(list)
     for doc in documents:
@@ -382,9 +386,8 @@ def plan(documents, catalog):
         for sec in reached:
             owners[sec].add(context)
 
-    edits, inserts, tails = defaultdict(dict), defaultdict(lambda: defaultdict(list)), defaultdict(list)
+    edits, tails = defaultdict(dict), defaultdict(list)
     definitions = defaultdict(dict)
-    reset_defined = set()
     reports = []
     used_ids = defaultdict(set)
     for doc in documents:
@@ -445,6 +448,14 @@ def plan(documents, catalog):
             reason = "No unique confident native fingerprint for: " + ", ".join(sorted(needed - roles.keys()))
         if any(not RESOURCE.fullmatch(v) for _, _, _, _, v in todo):
             reason = "Material source is not a Resource reference or null"
+        if any(kind == "slot" and value.lower() == "null" for _, _, kind, _, value in todo):
+            reason = "Fixed-slot null writes cannot be expressed by a direct Filter"
+        for sec in reached:
+            for line in sec.doc.lines[sec.start + 1:sec.end]:
+                code = line.split(";", 1)[0]
+                item = assignment(line)
+                if BASIC.search(code) and (not item or not BASIC.fullmatch(item[0]) or BASIC.search(item[1])):
+                    reason = "Interface resource is read outside an input assignment; keep original conditions unchanged"
         for interface in inputs:
             if not any(it == interface for _, _, it in set_calls):
                 reason = "Interface inputs have no reachable SetTextures consumer"
@@ -453,8 +464,12 @@ def plan(documents, catalog):
                 reason = "SetTextures consumes inputs outside the known call graph"
         for interface in inputs:
             entries = set(context_roots) | {callback(r) for r in context_roots if callback(r)}
-            if any(pending_interface(s, interface, index) for s in entries):
+            direct_errors = set()
+            pending = [pending_interface(s, interface, index, direct_errors=direct_errors) for s in entries]
+            if any(pending):
                 reason = "Interface inputs can escape this IB without a SetTextures consumer"
+            if direct_errors:
+                reason = sorted(direct_errors)[0]
         # Unconsumed interface inputs in unrelated entry points cannot be remapped safely.
         for interface in inputs:
             other_roots = [r for r in roots if r not in reached and r.doc.scope == scope]
@@ -489,117 +504,53 @@ def plan(documents, catalog):
             old = definitions[scope].get(name)
             if old and old != definition:
                 reason = "Component identifier collides with another IB"
-        for interface in inputs:
-            for role in ROLES:
-                name = f"Resource_EFMIRepair_Component{component}_{interface}_{ROLES[role]}"
-                if index.get((scope, name.lower())):
-                    reason = "Reserved staging resource already exists: " + name
-        if any(index.get((scope, name.lower())) for name in (RESET, POOL, RESET + "_Save", RESET + "_Load")):
-            reason = "Reserved texture-repair helper already exists"
-        if any(re.search(r"\$efmi_repair_slot\b", d.text, re.I) for d in documents if d.scope == scope):
-            reason = "Reserved texture-repair variable already exists"
-
-        managed = {}
-        for root in context_roots:
-            branch, _ = closure(root)
-            managed[root] = bool(callback(root)) and any(
-                k == "run" and v.lower() == r"commandlist\efmiv1\component_drawinstances"
-                for s in branch for _, k, v in s.commands())
-            snapshots = [(s, k, v.lower()) for s in branch for _, k, v in s.commands()
-                         if v.lower() in {"snapshotinitialtextures", "restoreinitialtextures"}]
-            if snapshots and not managed[root]:
-                reason = "Manual texture snapshot order requires review"
         report = dict(ib=mesh, file=str(home.path), component=component)
         if reason:
             reports.append(dict(report, status="skipped", reason=reason))
             continue
 
         used_ids[scope].add(component)
-        def stage(interface, role):
-            return f"Resource_EFMIRepair_Component{component}_{interface}_{ROLES[role]}"
-
-        def put(sec, i, lines):
+        def put(sec, i, replacement):
             old = sec.doc.lines[i]
             indent = re.match(r"\s*", old.rstrip("\r\n"))[0]
             comment = ";" + old.split(";", 1)[1].rstrip("\r\n") if ";" in old else ""
-            if comment:
-                lines = [comment] + lines
-            edits[sec.doc][i] = "".join(indent + line + sec.doc.nl for line in lines)
+            content = replacement + (" " if replacement and comment else "") + comment
+            ending = old[len(old.rstrip("\r\n")):]
+            edits[sec.doc][i] = indent + content + ending if content else ""
 
         for sec, i, kind, role, value in todo:
-            if kind == "slot":
+            if kind == "interface" and value.lower() == "null":
+                # A null API input means no replacement, not clearing a PS slot.
+                put(sec, i, "")
+            else:
                 value = value if value.lower().startswith("ref ") or value.lower() == "null" else "ref " + value
-                put(sec, i, ["run = " + RESET, f"ps-t[{filter_names[role]}] = {value}"])
-        # Substitute staging references in conditions and copies as well as assignments.
-        for sec in reached:
-            for i in range(sec.start + 1, sec.end):
-                original = edits[sec.doc].get(i, sec.doc.lines[i])
-                code, delimiter, comment = original.partition(";")
-                if BASIC.search(code):
-                    edits[sec.doc][i] = BASIC.sub(lambda m: stage(m[1].lower(), INTERFACE_ROLES[m[2].lower()])
-                                                  if m[1].lower() in inputs else m[0], code) + delimiter + comment
+                put(sec, i, f"ps-t[{filter_names[role]}] = {value}")
         for sec, i, interface in set_calls:
-            generated = ["run = " + RESET]
-            for role in sorted(inputs[interface]):
-                name = stage(interface, role)
-                generated += [f"if @{name}", f"    ps-t[{filter_names[role]}] = ref {name}", "endif"]
-            for role in ROLES:
-                generated.append(stage(interface, role) + " = null")
-            # RabbitFX still owns discard/rain bindings and their cleanup flag.
+            # Keep the original call verbatim when RabbitFX consumes auxiliary maps.
             auxiliary = interface == "rabbitfx" and any(re.search(r"Resource\\RabbitFX\\(?:DiscardMap|Rainmap)\b", s.doc.lines[j], re.I)
                            for s in reached for j in range(s.start + 1, s.end))
-            if auxiliary:
-                generated += [f"Resource\\RabbitFX\\{r} = null" for r in ("Diffuse", "LightMap", "NormalMap")]
-                generated.append(r"run = CommandList\RabbitFX\SetTextures")
-            put(sec, i, generated)
-        for root, already_managed in managed.items():
-            if not already_managed:
-                inserts[root.doc][root.start + 1].append("run = SnapshotInitialTextures" + root.doc.nl)
-                inserts[root.doc][root.end].append("post run = RestoreInitialTextures" + root.doc.nl + root.doc.nl)
+            if not auxiliary:
+                put(sec, i, "")
         for role in sorted(needed):
             name = filter_names[role]
             if name not in definitions[scope] and not index.get((scope, name.lower())):
                 v = roles[role]
                 tails[home] += [f"[{name}]", "match_format = " + v["format"], "match_dhash = " + v["dhash"], ""]
             definitions[scope][name] = roles[role]
-        for interface in inputs:
-            for role in ROLES:
-                tails[home] += ["[" + stage(interface, role) + "]", ""]
-        if scope not in reset_defined:
-            # XXMI accepts only strictly closer matches within one original draw.
-            # Restore resets that ranking, but would erase other per-draw bindings.
-            # Preserve the current declared SRVs around the reset, including nulls.
-            var = "$efmi_repair_slot"
-            tails[home] += ["[Constants]", "global " + var + " = 0", "",
-                "[" + POOL + "]", "pool_size = 128", "",
-                "[" + RESET + "]", var + " = 0", "run = " + RESET + "_Save",
-                "run = RestoreInitialTextures", var + " = 0", "run = " + RESET + "_Load", "",
-                "[" + RESET + "_Save]", f"if ps->srv_type({var}) > 0",
-                f"    {POOL}[{var}] = ref ps-t[{var}]", "endif",
-                var + " = " + var + " + 1", "if " + var + " < 128", "    run = " + RESET + "_Save", "endif", "",
-                "[" + RESET + "_Load]", f"if ps->srv_type({var}) > 0",
-                f"    ps-t[{var}] = ref {POOL}[{var}]", f"    {POOL}[{var}] = null", "endif",
-                var + " = " + var + " + 1", "if " + var + " < 128", "    run = " + RESET + "_Load", "endif", ""]
-            reset_defined.add(scope)
-        reports.append(dict(report, status="converted", bindings=len(todo), set_texture_calls=len(set_calls)))
+        repeated = [role for role in sorted(needed) if sum(r == role and v.lower() != "null" for _, _, _, r, v in todo) > 1]
+        warnings = (["Repeated " + ", ".join(repeated) + " assignments: if several execute in one original draw, "
+                     "XXMI 1.3.3 can retain the first equal-distance Filter match. No reset code is added."] if repeated else [])
+        reports.append(dict(report, status="converted", bindings=len(todo), set_texture_calls=len(set_calls), warnings=warnings))
 
     result = {}
     for doc in documents:
-        if not edits[doc] and not inserts[doc] and not tails[doc]:
+        if not edits[doc] and not tails[doc]:
             continue
-        out = [MARKER + "; game " + str(catalog.get("game_version")) + doc.nl]
-        for i in range(len(doc.lines) + 1):
-            if inserts[doc].get(i) and out and not out[-1].endswith(("\n", "\r")):
-                out.append(doc.nl)
-            out.extend(inserts[doc].get(i, []))
-            if i < len(doc.lines):
-                out.append(edits[doc].get(i, doc.lines[i]))
+        out = [MARKER + " " + VERSION + "; game " + str(catalog.get("game_version")) + doc.nl]
+        out.extend(edits[doc].get(i, line) for i, line in enumerate(doc.lines))
         text = "".join(out)
         if tails[doc]:
             text = text.rstrip("\r\n") + doc.nl * 2 + doc.nl.join(tails[doc]) + doc.nl
-        # An EOF without newline must not concatenate an inserted post command.
-        if any(not line.endswith(("\r", "\n")) for line in doc.lines[:-1]):
-            raise ValueError("Unexpected line boundary")
         result[doc.path] = (doc.raw, doc.encode(text))
     return result, reports
 
@@ -719,6 +670,9 @@ def print_result(result):
         print(("WOULD CHANGE " if result["mode"] == "preview" else "CONVERTED ") + path)
     for item in skipped:
         print("SKIPPED " + item["file"] + " [" + item["ib"] + "]: " + item["reason"])
+    for item in converted:
+        for warning in item.get("warnings", []):
+            print("NOTE " + item["file"] + " [" + item["ib"] + "]: " + warning)
 
 
 def main(argv=None):

@@ -3,6 +3,7 @@ import codecs
 import contextlib
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -51,23 +52,33 @@ class RepairTests(unittest.TestCase):
         doc = document(body)
         changes, reports = repair.plan([doc], catalog())
         self.assertIn(doc.path, changes, reports)
-        return changes[doc.path][1].decode(), reports
+        text = changes[doc.path][1].decode()
+        controls = lambda value: [line for line in value.splitlines() if re.match(r"\s*(?:if\s|elif\s|else\b|endif\b)", line)]
+        self.assertEqual(controls(text), controls(body))
+        original_runs = [line.strip() for line in body.splitlines() if re.match(r"\s*(?:post\s+)?run\s*=", line)]
+        result_runs = [line.strip() for line in text.splitlines() if re.match(r"\s*(?:post\s+)?run\s*=", line)]
+        remaining = iter(original_runs)
+        self.assertTrue(all(any(old == line for old in remaining) for line in result_runs))
+        old_names = {s.name for s in doc.sections}
+        self.assertTrue(all(s.name in old_names or s.name.startswith("Filter_") for s in document(text).sections))
+        self.assertNotIn("Resource_EFMIRepair_", text)
+        self.assertNotIn("CommandList_EFMIRepair_", text)
+        return text, reports
 
     def test_fixed_multidraw_preserves_resources_and_draw_order(self):
-        text, _ = self.convert(ENTRY + "handling = skip\nps-t14 = ResourceRedDiffuse\ndrawindexed = 30,0,0\n"
+        text, reports = self.convert(ENTRY + "handling = skip\nps-t14 = ResourceRedDiffuse\ndrawindexed = 30,0,0\n"
                                "if $variant == 1\nps-t14 = ResourceBlueDiffuse\ndrawindexed = 60,30,0\nendif\n")
         self.assertIn("ps-t[Filter_Component0_Diffuse] = ref ResourceRedDiffuse", text)
         self.assertIn("ps-t[Filter_Component0_Diffuse] = ref ResourceBlueDiffuse", text)
         self.assertLess(text.index("ResourceRedDiffuse"), text.index("drawindexed = 30"))
         self.assertLess(text.index("ResourceBlueDiffuse"), text.index("drawindexed = 60"))
-        self.assertEqual(text.count("run = SnapshotInitialTextures"), 1)
-        self.assertIn("post run = RestoreInitialTextures", text)
+        self.assertNotIn("run =", text)
+        self.assertIn("equal-distance", reports[0]["warnings"][0])
 
-    def test_texture_only_restore_is_post_and_eof_safe(self):
+    def test_texture_only_does_not_add_snapshot_or_restore(self):
         text, _ = self.convert(ENTRY + "ps-t14 = ResourceDiffuse")
-        self.assertIn("ResourceDiffuse\npost run = RestoreInitialTextures", text)
-        root_body = text.split("[Filter_", 1)[0]
-        self.assertNotIn("\nrun = RestoreInitialTextures", root_body)
+        self.assertIn("ps-t[Filter_Component0_Diffuse] = ref ResourceDiffuse\n\n[Filter_", text)
+        self.assertNotIn("run =", text)
 
     def test_efmittl_multiple_consumers_preserve_branch_and_draw_api(self):
         body = ENTRY + r"""Resource\EFMITTL\Diffuse = ref ResourceRed
@@ -85,11 +96,12 @@ run = CommandList\EFMITTL\Draw
 """
         text, _ = self.convert(body)
         self.assertEqual(text.count("ps-t[Filter_Component0_Diffuse]"), 2)
-        self.assertEqual(text.count("Resource_EFMIRepair_Component0_efmittl_Diffuse = null"), 3)
+        self.assertIn("    ps-t[Filter_Component0_Diffuse] = ref ResourceBlue", text)
         self.assertIn(r"Resource\EFMITTL\Mask = ref ResourceMask", text)
         self.assertIn(r"run = CommandList\EFMITTL\Draw", text)
         self.assertNotIn(r"run = CommandList\EFMITTL\SetTextures", text)
-        self.assertIn("if @Resource_EFMIRepair", text)
+        self.assertNotIn("if @", text)
+        self.assertNotIn(" = null", text)
 
     def test_rabbitfx_auxiliary_and_effect_run_survive(self):
         body = ENTRY + r"""Resource\RabbitFx\Diffuse = ref ResourceRed
@@ -101,10 +113,10 @@ run = CommandList\RabbitFx\Run
 drawindexed = 300,0,0
 """
         text, _ = self.convert(body)
-        self.assertIn(r"run = CommandList\RabbitFX\SetTextures", text)
+        self.assertIn(r"run = CommandList\RabbitFx\SetTextures", text)
         self.assertIn(r"run = CommandList\RabbitFx\Run", text)
         self.assertIn(r"Resource\RabbitFx\DiscardMap = ref ResourceCutout", text)
-        self.assertIn(r"Resource\RabbitFX\Diffuse = null", text)
+        self.assertNotIn(r"Resource\RabbitFX\Diffuse = null", text)
         self.assertIn("ps-t[Filter_Component0_Diffuse]", text)
 
     def test_rabbitfx_basic_only_removes_set_not_run(self):
@@ -180,10 +192,28 @@ ps-t14 = ResourceDiffuse
         body += "[CommandListCheck]\nif @Resource\\EFMITTL\\Diffuse\n$seen = 1\nendif\n"
         self.assertFalse(repair.plan([document(body)], catalog())[0])
 
-    def test_manual_snapshot_and_reserved_variable_need_review(self):
-        for extra in ("run = SnapshotInitialTextures\nrun = RestoreInitialTextures\n",
-                      "[Constants]\nglobal $efmi_repair_slot = 1\n"):
-            self.assertFalse(repair.plan([document(ENTRY + "ps-t14 = ResourceDiffuse\n" + extra)], catalog())[0])
+    def test_existing_snapshot_lifecycle_is_preserved(self):
+        text, _ = self.convert(ENTRY + "run = SnapshotInitialTextures\nps-t14 = ResourceDiffuse\npost run = RestoreInitialTextures\n")
+        self.assertEqual(text.count("run = SnapshotInitialTextures"), 1)
+        self.assertEqual(text.count("post run = RestoreInitialTextures"), 1)
+
+    def test_direct_input_cancellation_and_delayed_draw_are_skipped(self):
+        assign = "Resource\\EFMITTL\\Diffuse = ref ResourceRed\n"
+        consume = "run = CommandList\\EFMITTL\\SetTextures\n"
+        for middle in ("Resource\\EFMITTL\\Diffuse = null\n", "drawindexed = 30,0,0\n",
+                       "Resource\\EFMITTL\\Diffuse = ref ResourceBlue\n"):
+            self.assertFalse(repair.plan([document(ENTRY + assign + middle + consume)], catalog())[0])
+
+    def test_interface_condition_is_not_rewritten_even_with_single_owner(self):
+        body = ENTRY + "Resource\\EFMITTL\\Diffuse = ref ResourceRed\nif @Resource\\EFMITTL\\Diffuse\n$seen = 1\nendif\n"
+        body += "run = CommandList\\EFMITTL\\SetTextures\n"
+        self.assertFalse(repair.plan([document(body)], catalog())[0])
+
+    def test_old_version_marker_requires_restore(self):
+        body = "; EFMI texture repair 1.0.0; game fixture\n" + ENTRY + "ps-t14 = ResourceDiffuse\n"
+        changes, report = repair.plan([document(body)], catalog())
+        self.assertFalse(changes)
+        self.assertIn("restore", report[0]["reason"])
 
     def test_recursive_or_unresolved_run_skipped(self):
         for tail in ("run = CommandListMissing\n", "run = CommandListLoop\n[CommandListLoop]\nrun = CommandListLoop\n"):

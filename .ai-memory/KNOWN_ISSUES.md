@@ -1,4 +1,10 @@
-## Texture repair limits and resolved runtime issue (2026-11-23)
+## Direct-output runtime limitation re-exposed by user requirement (2026-11-23)
+
+Version1.1 removes all generated helper code at the user's explicit request. Consequently, the1.0 same-draw matching workaround below no longer applies. Actual XXMI1.3.3 test confirms red/red for sequential red/blue direct Filter assignments without reset. A first match and existing restoration lifecycle still pass; repeated assignment reports warn about the limitation. Do not describe this as verified successful per-draw switching. Original snapshot/restore is preserved and not supplied when missing. Multiple conditional branches are only potential repetition, not proof both execute.
+
+Installed-INI copies now produce81converted/26skipped contexts across23files; two additional contexts need delayed/overwritten interface semantics unsupported by direct binding. Existing1.0 output is not automatically rewritten: Restore then convert with1.1. Real-game visual verification remains unperformed; no installed files were changed.
+
+## Texture repair limits and resolved runtime issue (2026-11-23, version1.0 history)
 
 Resolved in the new converter: two Filter assignments with equal match distance within one original draw produced red/red instead of red/blue in actual XXMI 1.3.3. Upstream DirectX11/CommandList.cpp shows strict ranking and one snapshot per draw. Preserve-current-SRVs / RestoreInitialTextures / rebind-current-SRVs resets ranking safely; private runtime test now passes red/blue and keeps auxiliary/null resources. Two 128-slot recursive scans per batch add work; real-game performance and every real-game material hit remain unverified. Synthetic runtime success is not a claim of live character verification.
 

@@ -1,10 +1,10 @@
-"""Exercise generated Filters against private XXMI in the D3D11 sandbox.
+"""Verify direct Filters and expose XXMI 1.3.3's repeated-match limitation.
 
-The first original call becomes two differently textured custom draws. A second
-call gets a texture-only override. A later call and the sandbox's own pipeline
-guard prove restoration. No running game, installed mod or installed DLL changes.
+The fixture already owns snapshot/restore, like EFMI core callbacks. Conversion
+must preserve that lifecycle without adding helpers. First matches work; a second
+equal-distance match in the same original draw is deliberately checked as a known
+runtime limitation, not reported as successful per-draw texture switching.
 """
-import json
 import re
 import shutil
 import struct
@@ -73,6 +73,7 @@ CheckTextureOverride = ib
 hash = {keys[0][0]}
 match_index_count = {keys[0][1]}
 handling = skip
+run = SnapshotInitialTextures
 ps-t2 = ref ResourceGreen
 Resource\\EFMITTL\\Diffuse = ref ResourceRed
 run = CommandList\\EFMITTL\\SetTextures
@@ -81,10 +82,13 @@ ps-t2 = null
 Resource\\EFMITTL\\Diffuse = ref ResourceBlue
 run = CommandList\\EFMITTL\\SetTextures
 drawindexed = {keys[0][1]},0,0
+post run = RestoreInitialTextures
 [TextureOverride_Component1]
 hash = {keys[1][0]}
 match_index_count = {keys[1][1]}
+run = SnapshotInitialTextures
 ps-t1 = ResourceGreen
+post run = RestoreInitialTextures
 [ResourceRed]
 filename = Red.dds
 [ResourceBlue]
@@ -95,8 +99,11 @@ filename = Green.dds
             catalog = dict(game_version="sandbox", meshes={f"{h}:{n}": dict(diffuse=dict(slot=1, format=fmt, dhash=fingerprint)) for h, n in keys})
             path = mod / "mod.ini"
             path.write_text(source)
-            changes, report = repair.plan([repair.Document(path, path.read_bytes())], catalog)
+            original = path.read_bytes()
+            changes, report = repair.plan([repair.Document(path, original)], catalog)
             assert len(changes) == 1, report
+            assert any(entry.get("warnings") for entry in report), "Repeated Filter calls must be disclosed"
+            assert b"EFMIRepair_" not in changes[path][1], "No generated runtime helpers"
             repair.apply_changes(changes, "sandbox")
             sb = selftest.Sandbox(["--slot-textures", "--warp"], xxmi=True, xxmi_dll=folder / "d3d11.dll")
             assert sb.ready.wait(30), "Converted sandbox did not become ready"
@@ -112,17 +119,18 @@ filename = Green.dds
                     ids = binding.get("mip_contents") or [binding["content"]]
                     info, pixels = client.read_content(cap.frame, ids[0])
                     actual.append((d["origin"], list(pixels[:4])))
-            assert actual[:3] == [("xxmi", [255, 0, 0, 255]), ("xxmi", [0, 0, 255, 255]), ("game", [0, 255, 0, 255])], actual
+            assert actual[:3] == [("xxmi", [255, 0, 0, 255]), ("xxmi", [255, 0, 0, 255]), ("game", [0, 255, 0, 255])], actual
             custom = [d for d in selected if d["origin"] == "xxmi"]
             aux = cap.resource(custom[0]["tex"]["ps-t2"]["res"])
             assert aux["w"] == aux["h"] == 1
-            assert "ps-t2" not in custom[1]["tex"], "Reset must preserve a deliberate null binding"
+            assert "ps-t2" not in custom[1]["tex"], "Unrelated deliberate null binding must remain"
             later = [d for d in selected if d.get("ib", {}).get("hash") == third["ib"]["hash"]]
             assert later and all(d["tex"]["ps-t1"]["hash"] == baseline for d in later)
             assert sb.proc.poll() is None, "Sandbox pipeline state guard failed"
-            print("PASS actual XXMI Filters: per-draw red/blue, texture-only green, auxiliary/null bindings preserved, originals restored")
+            print("PASS direct first-match red, texture-only green, auxiliary/null bindings, existing restoration lifecycle")
+            print("CONFIRMED LIMIT: XXMI 1.3.3 keeps red on the second draw despite a direct blue Filter assignment; report warns about repeated matching")
             restored, errors = repair.restore(folder)
-            assert not errors and path.read_text() == source
+            assert not errors and path.read_bytes() == original
             print("PASS byte-exact restore after live sandbox conversion")
         finally:
             if client:

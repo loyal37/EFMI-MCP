@@ -1,3 +1,11 @@
+## Remove generated INI helpers per user instruction (2026-11-23)
+
+Git connectivity recovered: the earlier pending packaging commits3c11357/d8053e1 were pushed normally to origin/main before committing this direct-output change.
+
+User showed1.0 output and objected to changed-looking texture conditions, extra run and indirect resources, then explicitly prohibited those extras. Compared installed Zhuangfangyi INI with its verified original backup read-only. Explained original outfit predicates versus generated non-null guards and the real XXMI equal-distance issue. Implemented1.1 direct assignments, removed staging/guards/reset helpers and automatic snapshots, retained original conditions and external draw/effect calls, and added report notices for repeated-role limitations. Cases needing changed input semantics are skipped. Old marker/backup restore remains compatible.
+
+Verified28offline tests, actual private-XXMI direct matching and documented red/red limitation, rebuilt8,415,314-byte EXE, and passed standalone EXE backup/restore checks with no Python on child PATH. Private audit:67INIs,23files,81converted/26skipped contexts;2067exact condition lines,449unchanged draw statements,434direct bindings,no added runs/resources/conditions,all byte-exact restoration. Zhuangfangyi130conditions unchanged and56direct bindings;1049->1075lines. Evidence captures/texture-repair-direct-review. Installed current files and backups unchanged; no game input/cache/config changes. README and memory updated; normal source commit/push includes previously pending packaging commits if connectivity permits.
+
 ## Texture repair EXE packaging (2026-11-23)
 
 Delivery outcome: local source commit3c11357 created. Normal git push failed with connection reset; a second attempt using HTTP/1.1 failed to connect to github.com:443. Remote sync remains pending, recorded separately from successful local EXE build/tests. No force push or remote history rewrite attempted.

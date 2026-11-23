@@ -1,5 +1,11 @@
 # EFMI MCP — Technical decisions
 
+## User requires direct texture bindings without extra INI code (2026-11-23)
+
+The explicit instruction "do not add these extras" supersedes 1.0's staging and matching-reset design. Version1.1 emits direct ps-t[Filter...] = ref OriginalResource assignments and Filter definitions only, removing basic-only SetTextures consumers. Do not generate resource staging, non-null guards, helper command lists, pools or run/snapshot/restore calls. Preserve original conditions and original external Draw/effect/auxiliary APIs. Skip cases requiring rewritten conditions or changed delayed-input semantics.
+
+The strict equal-distance ranking in XXMI1.3.3 is still real. Surface repeated-assignment limitations in the tool report and documentation; do not reintroduce a hidden workaround or claim the simplified multi-draw conversion renders all later textures successfully. Original lifecycle remains the mod/core's responsibility. Keep backup/restore compatibility with1.0; require restoration before conversion with1.1. Installed files remain read only in this turn.
+
 ## Portable EXE packaging (2026-11-23)
 
 Use a console, single-file Windows x64 PyInstaller executable containing the existing Python converter and embedded catalog. Frozen default scan paths must derive from sys.executable, because __file__ points into the temporary extraction directory. Preserve the script's direct conversion behavior and CLI; optional adjacent Preview.cmd/Restore.cmd launchers invoke the same executable. Build work/cache and distribution files stay local under ignored dist; source builder and hidden EXE regression are committed. No installed Python is required to run the packaged executable.

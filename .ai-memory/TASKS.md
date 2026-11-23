@@ -1,6 +1,13 @@
+## Direct-only output requested and completed (2026-11-23)
+
+- Done: version1.1 directly references original texture resources, preserves original conditions, and adds no runtime helpers, guards, run calls or snapshot lifecycle. Original API Draw/effect/auxiliary behavior remains where supported.
+- Done: rebuilt Python/EXE; 28 offline tests, real packaged-EXE backup/restore checks, and private-XXMI direct-match/known-limit test pass. Full INI-copy audit verifies unchanged conditions/draws and exact restoration.
+- Disclosed limitation: a second equal-distance Filter assignment in one original draw still keeps the first texture in XXMI1.3.3. No reset workaround is inserted under the user's explicit instruction. Notes are emitted in reports, not new INI code.
+- Migration: replace the old EXE, Restore old converted INIs from existing backups, then convert; no installed file was modified by this repair turn. Prior pending packaging commits were synchronized normally after connectivity recovered.
+
 ## Standalone EXE packaging completed (2026-11-23)
 
-- Pending external connectivity: push source commit3c11357 and its delivery-memory follow-up to origin/main. Two HTTPS attempts failed on reset/connection timeout; local EXE delivery is complete.
+- Done during the direct-only repair turn: pushed source commit3c11357 and memory commitd8053e1 to origin/main after connectivity recovered. The earlier failures did not prevent local EXE delivery.
 
 - Done: reproducible --exe build, frozen executable-directory scan root and optional Preview.cmd/Restore.cmd launchers; output under dist/texture-repair.
 - Done: 25 offline tests and actual packaged-EXE scan/convert/backup/restore tests with no Python on child PATH, Unicode paths and a different CWD. No installed files changed.
