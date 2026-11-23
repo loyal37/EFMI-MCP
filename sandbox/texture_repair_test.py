@@ -74,9 +74,9 @@ class RepairTests(unittest.TestCase):
         self.assertLess(text.index("ResourceRedDiffuse"), text.index("drawindexed = 30"))
         self.assertLess(text.index("ResourceBlueDiffuse"), text.index("drawindexed = 60"))
         self.assertEqual(text.count("run = SnapshotInitialTextures"), 1)
-        self.assertEqual(text.count("post run = RestoreInitialTextures"), 1)
-        self.assertEqual(reports[0]["material_restores"], 1)
-        self.assertIn("if $variant == 1\nrun = RestoreInitialTextures\nps-t[Filter_Component0_Diffuse] = ref ResourceBlueDiffuse", text)
+        self.assertNotIn("post run = RestoreInitialTextures", text)
+        self.assertEqual(reports[0]["material_restores"], 2)
+        self.assertIn("drawindexed = 60,30,0\nrun = RestoreInitialTextures\nendif", text)
 
     def test_texture_only_restores_in_post_phase_and_handles_eof(self):
         text, _ = self.convert(ENTRY + "ps-t14 = ResourceDiffuse")

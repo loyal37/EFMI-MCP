@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 CATALOG_B85 = ""
 MARKER = "; EFMI texture repair"
 BACKUP = ".efmi-texture-repair.bak"
@@ -340,10 +340,39 @@ def lifecycle_insertions(sec, post_restore):
     return insertions
 
 
+def covers_color_cycle(sec, arms):
+    """Check that the color alternatives cover the configured selector values."""
+    conditions = [sec.doc.lines[i].split(";", 1)[0].strip().lower() for i in arms]
+    has_else = conditions[-1] == "else"
+    matches = [re.fullmatch(r"(?:if|elif)\s+(\$\w+)\s*==\s*(-?\d+)", code)
+               for code in (conditions[:-1] if has_else else conditions)]
+    if not all(matches) or len({m[1] for m in matches}) != 1:
+        return False
+    if not has_else:
+        selector = matches[0][1]
+        covered = {int(m[2]) for m in matches}
+        has_cycle = False
+        for section in sec.doc.sections:
+            for _, key, value in section.commands():
+                if key not in {selector, "global " + selector, "global persist " + selector}:
+                    continue
+                if key == selector and section.name.lower().startswith("key") and section.values().get("type", "").lower() == "cycle":
+                    values = value.rstrip(", ").split(",")
+                    has_cycle = True
+                else:
+                    values = [value]
+                if any(not re.fullmatch(r"-?\d+", v.strip()) or int(v) not in covered for v in values):
+                    return False
+        if not has_cycle:
+            return False
+    return True
+
+
 def material_restore_insertions(entries, todo, index, filter_names):
     """Reset matching when a later material changes, retaining known bindings."""
     bindings = {(s, i): (f"ps-t[{filter_names[r]}]", v) for s, i, _, r, v in todo}
-    additions, spellings, visited = {}, {}, set()
+    additions, spellings, visited, closed_entries = {}, {}, set(), set()
+    destinations = {slot for slot, _ in bindings.values()}
 
     def value_id(value):
         value = value if value.lower().startswith("ref ") or value.lower() == "null" else "ref " + value
@@ -356,16 +385,66 @@ def material_restore_insertions(entries, todo, index, filter_names):
 
     def walk(sec, initial):
         state, branches = dict(initial), []
-        ends, nesting = {}, []
+        ends, arms_at, nesting = {}, {}, []
+        code_lines = {}
         for i in range(sec.start + 1, sec.end):
             code = sec.doc.lines[i].split(";", 1)[0].strip().lower()
+            if code:
+                code_lines[i] = code
             if code.startswith("if "):
                 nesting.append([i])
             elif code.startswith("elif ") or code == "else":
                 nesting[-1].append(i)
             elif code == "endif":
-                for start in nesting.pop():
+                arms = nesting.pop()
+                arms_at[arms[0]] = arms
+                for start in arms:
                     ends[start] = i
+
+        def block_roles(start, end):
+            roles, i = set(), start
+            while i < end:
+                code = code_lines.get(i, "")
+                if code.startswith("if "):
+                    arms = arms_at[i]
+                    stop = ends[i]
+                    if covers_color_cycle(sec, arms):
+                        roles.update(set.intersection(*(block_roles(a + 1, b)
+                                                        for a, b in zip(arms, arms[1:] + [stop]))))
+                    i = stop + 1
+                    continue
+                binding = bindings.get((sec, i))
+                if binding and binding[1].lower() != "null":
+                    roles.add(binding[0])
+                i += 1
+            return roles
+
+        # A tail of self-contained draw blocks can restore right after each draw.
+        # Stop at the shared material group, where draws do not bind their own maps.
+        block_ends = {}
+        first = None
+        if sec in entries and (not sec.name.lower().startswith("textureoverride")
+                               or sec.values().get("handling", "").lower() == "skip"):
+            remaining = list(code_lines)
+            simple_blocks = {ends[start]: start for start, arms in arms_at.items() if len(arms) == 1}
+            while len(remaining) > 2 and remaining[-1] in simple_blocks:
+                stop, draw = remaining[-1], remaining[-2]
+                outer = simple_blocks[stop]
+                command = assignment(code_lines[draw])
+                if not command or not (command[0].startswith("draw")
+                                       or command == ("run", r"commandlist\efmittl\draw")):
+                    break
+                commands = [(i, k, v.lower()) for i, k, v in sec.commands() if outer < i < draw]
+                if any((k.startswith("draw") or k == "post run"
+                        or (k == "run" and v != r"commandlist\efmittl\settextures")
+                        or (k.startswith("ps-t") and (sec, i) not in bindings))
+                       for i, k, v in commands):
+                    break
+                if block_roles(outer + 1, draw) != destinations:
+                    break
+                first = outer
+                block_ends[stop] = draw
+                remaining = [i for i in remaining if i < outer]
 
         def overwritten_before_draw(start):
             overwritten, i = set(), start + 1
@@ -393,6 +472,16 @@ def material_restore_insertions(entries, todo, index, filter_names):
 
         for i in range(sec.start + 1, sec.end):
             code = sec.doc.lines[i].split(";", 1)[0].strip().lower()
+            if i == first:
+                if set(state) - destinations:
+                    block_ends.clear()
+                elif state:
+                    additions[sec, i] = "run = RestoreInitialTextures" + sec.doc.nl
+                    state.clear()
+            if i in block_ends:
+                indent = re.match(r"[ \t]*", sec.doc.lines[block_ends[i]])[0]
+                additions[sec, i] = indent + "run = RestoreInitialTextures" + sec.doc.nl
+                state.clear()
             if code.startswith("if "):
                 branches.append([dict(state), [], False])
             elif code.startswith("elif ") or code == "else":
@@ -447,13 +536,15 @@ def material_restore_insertions(entries, todo, index, filter_names):
                 reference_id = "ref " + key
                 state = {slot: frozenset("unknown" if v == reference_id else v for v in values)
                          for slot, values in state.items()}
+        if block_ends:
+            closed_entries.add(sec)
         return state
 
     for entry in entries:
         walk(entry, {})
     if bindings.keys() - visited:
         raise ValueError("Material assignment is outside the known draw lifecycle")
-    return {site: text for site, text in additions.items() if text}
+    return {site: text for site, text in additions.items() if text}, closed_entries
 
 
 def plan(documents, catalog):
@@ -687,10 +778,10 @@ def plan(documents, catalog):
             except ValueError as exc:
                 reason = str(exc)
         report = dict(ib=mesh, file=str(home.path), component=component)
-        material_restores = {}
+        material_restores, closed_entries = {}, set()
         if not reason:
             try:
-                material_restores = material_restore_insertions(lifecycle, todo, index, filter_names)
+                material_restores, closed_entries = material_restore_insertions(lifecycle, todo, index, filter_names)
             except ValueError as exc:
                 reason = str(exc)
         if reason:
@@ -703,7 +794,8 @@ def plan(documents, catalog):
         for sec, additions in lifecycle.items():
             if sec not in wrapped:
                 for position, text in additions:
-                    inserts[sec.doc][position].append(text)
+                    if sec not in closed_entries or "RestoreInitialTextures" not in text:
+                        inserts[sec.doc][position].append(text)
                 wrapped.add(sec)
         def put(sec, i, replacement):
             old = sec.doc.lines[i]

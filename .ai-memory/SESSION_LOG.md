@@ -1,3 +1,7 @@
+## Restore after each independent conditional draw in 1.3.1 (2026-11-23)
+
+Read the Zhuangfangyi INI and confirmed the configured 0-5 underwear cycle, six exclusive branches and a single draw. Applied the user's correction to place RestoreInitialTextures after the draw and before the outer endif for self-contained conditional draw blocks. Preserved the shared material group, predicates and direct resources. Updated the existing fixture expectation without executing it. Rebuilt the EXE for user verification.
+
 ## Correct restoration between per-draw materials (2026-11-23)
 
 Source commit386b752 is local. Two normal push attempts failed (connection reset, then GitHub port443 timeout); remote synchronization remains pending. Local Python/EXE delivery is complete. No force push was attempted.

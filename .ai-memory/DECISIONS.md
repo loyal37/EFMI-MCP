@@ -1,3 +1,7 @@
+## Restore after each independent conditional draw in 1.3.1 (2026-11-23)
+
+For self-contained draw blocks with their own complete material bindings, write the standard restoration once after the draw before its outer endif. A color selection chain is part of the same material group. Restore after the last possible draw in a preceding shared group.
+
 ## Standard restores between material groups; no tests this turn (2026-11-23)
 
 User explicitly requires correct restoration for separately textured draws and rejects unnecessary testing. Insert the standard RestoreInitialTextures at a material-change boundary, before binding the next different texture under the existing predicate. Do not restore prematurely between draws sharing one material. Preserve inherited known bindings with direct references; skip ambiguous replay instead of generating new predicates/resources/helpers. Keep the component exit cleanup. This supersedes the1.2 component-only limitation. User will test; package and review the code without running test suites, sandbox, smoke tests or copy audits in this turn.

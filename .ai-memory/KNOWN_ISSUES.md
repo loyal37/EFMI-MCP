@@ -1,3 +1,7 @@
+## Restore after each independent conditional draw in 1.3.1 (2026-11-23)
+
+Version 1.3.1 uses the configured color-cycle values to recognize complete material coverage. Out-of-range persisted or externally written selector values are outside that assumption. Unsupported draw layouts retain the previous restore placement. No tests were run at the user's request.
+
 ## Version1.3 per-material restoration awaits user verification (2026-11-23)
 
 Component-only cleanup in1.2 could not reset matching between different materials within a component. Version1.3 now inserts built-in restores before changes and directly replays known inherited bindings. Conditional/dynamic inherited bindings that cannot be replayed without extra logic, or shared helpers needing different restores, are skipped. The new path has not been executed in tests or the real game: the user explicitly requested no tests and will verify personally. Older runtime results apply only to their recorded versions. Packaging success does not prove rendering behavior.

@@ -1,3 +1,7 @@
+## Restore after each independent conditional draw in 1.3.1 (2026-11-23)
+
+End-of-draw placement implemented and packaged. Runtime verification remains with the user. The 1.3.0 output should be restored before converting again.
+
 ## Per-material restoration delivered for user testing (2026-11-23)
 
 Source commit386b752 is local. Two normal push attempts failed (connection reset, then GitHub port443 timeout); remote synchronization remains pending. Local Python/EXE delivery is complete. No force push was attempted.

@@ -1,3 +1,7 @@
+## Restore after each independent conditional draw in 1.3.1 (2026-11-23)
+
+The user pointed out that six mutually exclusive underwear color branches feed one draw, then specified that restoration belongs after the draw, immediately before its outer endif. Version 1.3.1 places one standard restore there when successive draw blocks bind a complete material set. The preceding shared material group is restored at its end. Original color conditions and direct resource references remain. Other layouts retain the existing restoration rules. Portable EXE rebuilt with no tests at the user's request. Installed mods and automatic collection settings remain unchanged.
+
 ## Per-material standard restoration in 1.3.0 (2026-11-23)
 
 Source commit386b752 is local. Two normal push attempts failed (connection reset, then GitHub port443 timeout); remote synchronization remains pending. Local Python/EXE delivery is complete. No force push was attempted.
