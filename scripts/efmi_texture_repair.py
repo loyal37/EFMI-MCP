@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 CATALOG_B85 = ""
 MARKER = "; EFMI texture repair"
 BACKUP = ".efmi-texture-repair.bak"
@@ -340,6 +340,122 @@ def lifecycle_insertions(sec, post_restore):
     return insertions
 
 
+def material_restore_insertions(entries, todo, index, filter_names):
+    """Reset matching when a later material changes, retaining known bindings."""
+    bindings = {(s, i): (f"ps-t[{filter_names[r]}]", v) for s, i, _, r, v in todo}
+    additions, spellings, visited = {}, {}, set()
+
+    def value_id(value):
+        value = value if value.lower().startswith("ref ") or value.lower() == "null" else "ref " + value
+        spellings[value.lower()] = value
+        return value.lower()
+
+    def merge(states):
+        keys = set().union(*(s.keys() for s in states))
+        return {k: frozenset().union(*(s.get(k, {None}) for s in states)) for k in keys}
+
+    def walk(sec, initial):
+        state, branches = dict(initial), []
+        ends, nesting = {}, []
+        for i in range(sec.start + 1, sec.end):
+            code = sec.doc.lines[i].split(";", 1)[0].strip().lower()
+            if code.startswith("if "):
+                nesting.append([i])
+            elif code.startswith("elif ") or code == "else":
+                nesting[-1].append(i)
+            elif code == "endif":
+                for start in nesting.pop():
+                    ends[start] = i
+
+        def overwritten_before_draw(start):
+            overwritten, i = set(), start + 1
+            while i < sec.end:
+                code = sec.doc.lines[i].split(";", 1)[0].strip().lower()
+                if code.startswith("elif ") or code == "else":
+                    i = ends[i] + 1
+                    continue
+                if code.startswith("if "):
+                    break
+                item = assignment(sec.doc.lines[i])
+                binding = bindings.get((sec, i))
+                if binding and binding[1].lower() != "null":
+                    overwritten.add(binding[0])
+                elif item:
+                    key, value = item
+                    if key == "run" and SET.fullmatch(value):
+                        pass
+                    elif key.startswith("draw") or key in {"run", "post run"} or "ps-t" in value.lower():
+                        break
+                    elif SLOT.fullmatch(key):
+                        overwritten.add(key)
+                i += 1
+            return overwritten
+
+        for i in range(sec.start + 1, sec.end):
+            code = sec.doc.lines[i].split(";", 1)[0].strip().lower()
+            if code.startswith("if "):
+                branches.append([dict(state), [], False])
+            elif code.startswith("elif ") or code == "else":
+                branches[-1][1].append(state)
+                branches[-1][2] |= code == "else"
+                state = dict(branches[-1][0])
+            elif code == "endif":
+                entry, exits, has_else = branches.pop()
+                state = merge(exits + [state] + ([] if has_else else [entry]))
+            item = assignment(sec.doc.lines[i])
+            if not item:
+                continue
+            key, value = item
+            binding = bindings.get((sec, i))
+            if binding:
+                visited.add((sec, i))
+                if value.lower() == "null":
+                    continue
+                destination, _ = binding
+                wanted = value_id(value)
+                reset = any(v is not None and v != wanted for v in state.get(destination, ()))
+                commands = []
+                if reset:
+                    commands.append("run = RestoreInitialTextures")
+                    overwritten = overwritten_before_draw(i) | {destination}
+                    retained = {}
+                    for slot, values in state.items():
+                        if slot in overwritten or values == {None}:
+                            continue
+                        if len(values) != 1 or None in values or "unknown" in values:
+                            raise ValueError("Material switch would lose a conditional or dynamic texture binding")
+                        commands.append(f"{slot} = {spellings[next(iter(values))]}")
+                        retained[slot] = values
+                    state = retained
+                indent = re.match(r"\s*", sec.doc.lines[i].rstrip("\r\n"))[0]
+                text = "".join(indent + command + sec.doc.nl for command in commands)
+                if (sec, i) in additions and additions[sec, i] != text:
+                    raise ValueError("Shared material helper needs different restoration for its callers")
+                additions[sec, i] = text
+                state[destination] = frozenset({wanted})
+            elif SLOT.fullmatch(key):
+                state[key] = frozenset({value_id(value) if RESOURCE.fullmatch(value) else "unknown"})
+            elif key == "run":
+                if value.lower() == "restoreinitialtextures":
+                    state.clear()
+                else:
+                    target = resolve(sec, value, index)
+                    if target and not SET.fullmatch(value):
+                        state = walk(target, state)
+            elif key.startswith("resource"):
+                # A later replay must not read a resource alias that has changed.
+                reference_id = "ref " + key
+                state = {slot: frozenset("unknown" if v == reference_id else v for v in values)
+                         for slot, values in state.items()}
+        return state
+
+    for entry in entries:
+        walk(entry, {})
+    if bindings.keys() - visited:
+        raise ValueError("Material assignment is outside the known draw lifecycle")
+    return {site: text for site, text in additions.items() if text}
+
+
 def plan(documents, catalog):
     """Follow real run/ref edges; specialize only unambiguous material contexts.
 
@@ -571,11 +687,19 @@ def plan(documents, catalog):
             except ValueError as exc:
                 reason = str(exc)
         report = dict(ib=mesh, file=str(home.path), component=component)
+        material_restores = {}
+        if not reason:
+            try:
+                material_restores = material_restore_insertions(lifecycle, todo, index, filter_names)
+            except ValueError as exc:
+                reason = str(exc)
         if reason:
             reports.append(dict(report, status="skipped", reason=reason))
             continue
 
         used_ids[scope].add(component)
+        for (sec, position), text in material_restores.items():
+            inserts[sec.doc][position].append(text)
         for sec, additions in lifecycle.items():
             if sec not in wrapped:
                 for position, text in additions:
@@ -608,10 +732,8 @@ def plan(documents, catalog):
                 v = roles[role]
                 tails[home] += [f"[{name}]", "match_format = " + v["format"], "match_dhash = " + v["dhash"], ""]
             definitions[scope][name] = roles[role]
-        repeated = [role for role in sorted(needed) if sum(r == role and v.lower() != "null" for _, _, _, r, v in todo) > 1]
-        warnings = (["Repeated " + ", ".join(repeated) + " assignments: if several execute in one original draw, "
-                     "XXMI 1.3.3 can retain the first equal-distance Filter match. No per-binding reset is added."] if repeated else [])
-        reports.append(dict(report, status="converted", bindings=len(todo), set_texture_calls=len(set_calls), warnings=warnings))
+        reports.append(dict(report, status="converted", bindings=len(todo), set_texture_calls=len(set_calls),
+                            material_restores=len(material_restores), warnings=[]))
 
     result = {}
     for doc in documents:

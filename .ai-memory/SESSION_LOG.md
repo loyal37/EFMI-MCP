@@ -1,3 +1,9 @@
+## Correct restoration between per-draw materials (2026-11-23)
+
+User challenged a single component-exit Restore and then explicitly said to stop testing and leave verification to them. Acknowledged overcomplication. Implemented1.3 standard RestoreInitialTextures before later different material assignments, keeping original conditions and direct resources. Retain known inherited bindings with direct replay; omit replay for roles overwritten before the next draw; skip ambiguous state or caller-dependent insertion. Shared-material draw groups and component entry/exit behavior remain. No custom command lists, staging resources or guard predicates added.
+
+Updated the two existing fixture expectations without executing them. No tests, sandbox, smoke checks, live-game actions or installed-mod audit performed. Rebuilt portable Python/EXE, reviewed source diff and synchronized memory for the standing Git commit/push. Installed files and cache OFF unchanged. Runtime result is explicitly pending user testing; old converted output must be restored before reconversion.
+
 ## Correct standard snapshot/restore omission (2026-11-23)
 
 User showed converter Component1 versus a LoyalTools component containing the standard two run calls. Acknowledged overbroad interpretation of the no-extra-code request. Read installed EFMI outer lifecycle and LoyalTools explicit template read-only. Implemented1.2: complete draw callback gets Snapshot before OverrideTextures and Restore at exit; root texture-only gets post Restore; existing/partial calls handled without duplicates; ambiguous manual nesting/placement skipped. No custom helpers, staging, guards or predicate changes. Standard component boundaries do not fix repeated equal-distance subdraw matching.

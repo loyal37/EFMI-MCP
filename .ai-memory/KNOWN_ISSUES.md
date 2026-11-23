@@ -1,3 +1,7 @@
+## Version1.3 per-material restoration awaits user verification (2026-11-23)
+
+Component-only cleanup in1.2 could not reset matching between different materials within a component. Version1.3 now inserts built-in restores before changes and directly replays known inherited bindings. Conditional/dynamic inherited bindings that cannot be replayed without extra logic, or shared helpers needing different restores, are skipped. The new path has not been executed in tests or the real game: the user explicitly requested no tests and will verify personally. Older runtime results apply only to their recorded versions. Packaging success does not prove rendering behavior.
+
 ## Standard lifecycle omission corrected in1.2 (2026-11-23)
 
 Version1.1 omitted explicit built-in SnapshotInitialTextures/RestoreInitialTextures because the no-extra-code instruction was interpreted too broadly. Version1.2 fills the component entry/exit pair, matching LoyalTools; installed EFMI core already has an outer pair, so missing local lines alone did not prove a real-game failure. Private actual-XXMI tests now exercise the generated pair alongside a minimal external API's outer pair and verify texture-only post restore. No real-game deployment occurred. Equal-distance repeated matching within the component remains unchanged: its final Restore happens after those subdraws. Conditional/nested/misplaced manual lifecycles are reported rather than rearranged.

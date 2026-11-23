@@ -1,10 +1,9 @@
-"""Verify generated standard lifecycle calls and XXMI's repeated-match limit.
+"""Verify generated standard lifecycle calls and per-material restoration.
 
 A minimal API fixture hosts a draw callback with an outer lifecycle, like EFMI.
 The converter adds the explicit callback pair and a texture-only post restore.
-No installed core files are modified. First matches work; a second
-equal-distance match in the same original draw is deliberately checked as a known
-runtime limitation, not reported as successful per-draw texture switching.
+No installed core files are modified. A standard restore between materials
+allows the second equal-distance match while preserving explicit auxiliary nulls.
 """
 import re
 import shutil
@@ -110,7 +109,7 @@ filename = Green.dds
             original = path.read_bytes()
             changes, report = repair.plan([repair.Document(path, original)], catalog)
             assert len(changes) == 1, report
-            assert any(entry.get("warnings") for entry in report), "Repeated Filter calls must be disclosed"
+            assert sum(entry.get("material_restores", 0) for entry in report) == 1
             assert b"EFMIRepair_" not in changes[path][1], "No generated runtime helpers"
             generated = changes[path][1].decode()
             assert generated.count("run = SnapshotInitialTextures") == 2
@@ -134,7 +133,7 @@ filename = Green.dds
                     ids = binding.get("mip_contents") or [binding["content"]]
                     info, pixels = client.read_content(cap.frame, ids[0])
                     actual.append((d["origin"], list(pixels[:4])))
-            assert actual[:3] == [("xxmi", [255, 0, 0, 255]), ("xxmi", [255, 0, 0, 255]), ("game", [0, 255, 0, 255])], actual
+            assert actual[:3] == [("xxmi", [255, 0, 0, 255]), ("xxmi", [0, 0, 255, 255]), ("game", [0, 255, 0, 255])], actual
             custom = [d for d in selected if d["origin"] == "xxmi"]
             aux = cap.resource(custom[0]["tex"]["ps-t2"]["res"])
             assert aux["w"] == aux["h"] == 1
@@ -142,8 +141,7 @@ filename = Green.dds
             later = [d for d in selected if d.get("ib", {}).get("hash") == third["ib"]["hash"]]
             assert later and all(d["tex"]["ps-t1"]["hash"] == baseline for d in later)
             assert sb.proc.poll() is None, "Sandbox pipeline state guard failed"
-            print("PASS generated callback Snapshot/Restore pair with outer API lifecycle, texture-only post restore, first-match red/green, auxiliary/null bindings")
-            print("CONFIRMED LIMIT: XXMI 1.3.3 keeps red on the second draw despite a direct blue Filter assignment; report warns about repeated matching")
+            print("PASS generated callback lifecycle, per-material red/blue switching, texture-only green, auxiliary/null bindings")
             restored, errors = repair.restore(folder)
             assert not errors and path.read_bytes() == original
             print("PASS byte-exact restore after live sandbox conversion")

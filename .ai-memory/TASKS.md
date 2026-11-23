@@ -1,3 +1,10 @@
+## Per-material restoration delivered for user testing (2026-11-23)
+
+- Implemented: standard RestoreInitialTextures between different material assignments within a component; preserve original predicates, direct references and shared-material draw groups.
+- Implemented: replay only known inherited bindings and skip ambiguous cases; no custom runtime helpers or added guards.
+- Packaged: version1.3 Python/EXE. Existing test expectations updated, none executed at the user's explicit request. User will test the converted output.
+- Pending: user runtime feedback. Earlier1.2 test results do not validate1.3. Installed mods and automatic-cache state unchanged.
+
 ## Standard lifecycle correction completed (2026-11-23)
 
 - Done: version1.2 restores the two standard XXMI calls in the complete component draw callback, matching LoyalTools; no custom reset/staging/guard machinery returns.
