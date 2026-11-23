@@ -1,7 +1,8 @@
-"""Verify direct Filters and expose XXMI 1.3.3's repeated-match limitation.
+"""Verify generated standard lifecycle calls and XXMI's repeated-match limit.
 
-The fixture already owns snapshot/restore, like EFMI core callbacks. Conversion
-must preserve that lifecycle without adding helpers. First matches work; a second
+A minimal API fixture hosts a draw callback with an outer lifecycle, like EFMI.
+The converter adds the explicit callback pair and a texture-only post restore.
+No installed core files are modified. First matches work; a second
 equal-distance match in the same original draw is deliberately checked as a known
 runtime limitation, not reported as successful per-draw texture switching.
 """
@@ -64,6 +65,14 @@ def run():
 
             mod = folder / "Mods/Fixture"
             mod.mkdir(parents=True)
+            api = folder / "Mods/FixtureAPI"
+            api.mkdir()
+            (api / "api.ini").write_text("namespace = EFMIv1\n"
+                "[CommandListCallback_Component_DrawCustom]\n"
+                "[CommandListComponent_DrawInstances]\n"
+                "run = SnapshotInitialTextures\n"
+                "run = CommandListCallback_Component_DrawCustom\n"
+                "run = RestoreInitialTextures\n")
             for name, color in [("Red", (255, 0, 0, 255)), ("Blue", (0, 0, 255, 255)), ("Green", (0, 255, 0, 255))]:
                 (mod / (name + ".dds")).write_bytes(dds(color))
             source = f"""[ShaderOverrideFixture]
@@ -73,7 +82,9 @@ CheckTextureOverride = ib
 hash = {keys[0][0]}
 match_index_count = {keys[0][1]}
 handling = skip
-run = SnapshotInitialTextures
+CommandList\\EFMIv1\\Callback_Component_DrawCustom = ref CommandList_Draw_Component0
+run = CommandList\\EFMIv1\\Component_DrawInstances
+[CommandList_Draw_Component0]
 ps-t2 = ref ResourceGreen
 Resource\\EFMITTL\\Diffuse = ref ResourceRed
 run = CommandList\\EFMITTL\\SetTextures
@@ -82,13 +93,10 @@ ps-t2 = null
 Resource\\EFMITTL\\Diffuse = ref ResourceBlue
 run = CommandList\\EFMITTL\\SetTextures
 drawindexed = {keys[0][1]},0,0
-post run = RestoreInitialTextures
 [TextureOverride_Component1]
 hash = {keys[1][0]}
 match_index_count = {keys[1][1]}
-run = SnapshotInitialTextures
 ps-t1 = ResourceGreen
-post run = RestoreInitialTextures
 [ResourceRed]
 filename = Red.dds
 [ResourceBlue]
@@ -104,6 +112,13 @@ filename = Green.dds
             assert len(changes) == 1, report
             assert any(entry.get("warnings") for entry in report), "Repeated Filter calls must be disclosed"
             assert b"EFMIRepair_" not in changes[path][1], "No generated runtime helpers"
+            generated = changes[path][1].decode()
+            assert generated.count("run = SnapshotInitialTextures") == 2
+            assert generated.count("post run = RestoreInitialTextures") == 1
+            callback = next(s for s in repair.Document(path, changes[path][1]).sections if s.name == "CommandList_Draw_Component0")
+            calls = [(k, v) for _, k, v in callback.commands()]
+            assert calls[0] == ("run", "SnapshotInitialTextures")
+            assert calls[-1] == ("run", "RestoreInitialTextures")
             repair.apply_changes(changes, "sandbox")
             sb = selftest.Sandbox(["--slot-textures", "--warp"], xxmi=True, xxmi_dll=folder / "d3d11.dll")
             assert sb.ready.wait(30), "Converted sandbox did not become ready"
@@ -127,7 +142,7 @@ filename = Green.dds
             later = [d for d in selected if d.get("ib", {}).get("hash") == third["ib"]["hash"]]
             assert later and all(d["tex"]["ps-t1"]["hash"] == baseline for d in later)
             assert sb.proc.poll() is None, "Sandbox pipeline state guard failed"
-            print("PASS direct first-match red, texture-only green, auxiliary/null bindings, existing restoration lifecycle")
+            print("PASS generated callback Snapshot/Restore pair with outer API lifecycle, texture-only post restore, first-match red/green, auxiliary/null bindings")
             print("CONFIRMED LIMIT: XXMI 1.3.3 keeps red on the second draw despite a direct blue Filter assignment; report warns about repeated matching")
             restored, errors = repair.restore(folder)
             assert not errors and path.read_bytes() == original

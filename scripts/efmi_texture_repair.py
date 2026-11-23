@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 CATALOG_B85 = ""
 MARKER = "; EFMI texture repair"
 BACKUP = ".efmi-texture-repair.bak"
@@ -297,12 +297,56 @@ def pending_interface(sec, interface, index, pending=None, active=None, direct_e
     return state | (set(INTERFACE_ROLES) if stack else set())
 
 
+def lifecycle_insertions(sec, post_restore):
+    """Complete only an unambiguous standard entry/exit texture lifecycle."""
+    commands, code_lines, depth = [], [], 0
+    for i in range(sec.start + 1, sec.end):
+        code = sec.doc.lines[i].split(";", 1)[0].strip()
+        if not code:
+            continue
+        code_lines.append(i)
+        item = assignment(code)
+        if item:
+            commands.append((i, *item, depth))
+        if re.match(r"if\s", code, re.I):
+            depth += 1
+        elif code.lower() == "endif":
+            depth -= 1
+    snapshots = [c for c in commands if c[2].lower() == "snapshotinitialtextures"]
+    restores = [c for c in commands if c[2].lower() == "restoreinitialtextures"]
+    if len(snapshots) > 1 or len(restores) > 1:
+        raise ValueError("Multiple manual texture lifecycle calls require review")
+    if snapshots:
+        i, key, _, nesting = snapshots[0]
+        prior = [assignment(sec.doc.lines[j]) for j in code_lines if j < i]
+        if key != "run" or nesting or any(not item or not (
+                item[0] in {"hash", "handling", "filter_index"} or item[0].startswith("match_")) for item in prior):
+            raise ValueError("Manual snapshot is conditional or follows executable commands")
+    if restores:
+        i, key, _, nesting = restores[0]
+        expected = "post run" if post_restore else "run"
+        # Explicitly skipped original draws can restore before the game call.
+        allowed = {expected}
+        if post_restore and sec.values().get("handling", "").lower() == "skip":
+            allowed.add("run")
+        if key not in allowed or nesting or i != code_lines[-1]:
+            raise ValueError("Manual restore phase or placement requires review")
+    insertions = []
+    if not snapshots:
+        insertions.append((sec.start + 1, "run = SnapshotInitialTextures" + sec.doc.nl))
+    if not restores:
+        restore = ("post run" if post_restore else "run") + " = RestoreInitialTextures"
+        insertions.append((code_lines[-1] + 1, sec.doc.nl + restore + sec.doc.nl))
+    return insertions
+
+
 def plan(documents, catalog):
     """Follow real run/ref edges; specialize only unambiguous material contexts.
 
     Only binding destinations and basic-only SetTextures calls are edited.
     Conditions, resources, draw commands and existing snapshot logic stay intact.
-    No staging resources, guards, command lists or run calls are generated.
+    Standard SnapshotInitialTextures/RestoreInitialTextures bracket the draw.
+    No staging resources, guards or custom command lists are generated.
     """
     index = defaultdict(list)
     for doc in documents:
@@ -387,6 +431,8 @@ def plan(documents, catalog):
             owners[sec].add(context)
 
     edits, tails = defaultdict(dict), defaultdict(list)
+    inserts = defaultdict(lambda: defaultdict(list))
+    wrapped = set()
     definitions = defaultdict(dict)
     reports = []
     used_ids = defaultdict(set)
@@ -504,12 +550,37 @@ def plan(documents, catalog):
             old = definitions[scope].get(name)
             if old and old != definition:
                 reason = "Component identifier collides with another IB"
+        lifecycle = {}
+        for root in context_roots:
+            branch = closure(root)[0]
+            if not affected.intersection(branch):
+                continue
+            target = callback(root)
+            # Restore a complete draw callback, never a texture-only helper that
+            # returns before its caller draws with the new bindings.
+            if not target or not affected.intersection(branch).issubset(closure(target)[0]):
+                target = root
+            target_branch = closure(target)[0]
+            if owners[target] != {context}:
+                reason = "Texture lifecycle entry has callers with different or unknown IBs"
+            if any(v.lower() in {"snapshotinitialtextures", "restoreinitialtextures"}
+                   for s in target_branch if s is not target for _, _, v in s.commands()):
+                reason = "Nested manual texture lifecycle requires review"
+            try:
+                lifecycle[target] = lifecycle_insertions(target, post_restore=target is root)
+            except ValueError as exc:
+                reason = str(exc)
         report = dict(ib=mesh, file=str(home.path), component=component)
         if reason:
             reports.append(dict(report, status="skipped", reason=reason))
             continue
 
         used_ids[scope].add(component)
+        for sec, additions in lifecycle.items():
+            if sec not in wrapped:
+                for position, text in additions:
+                    inserts[sec.doc][position].append(text)
+                wrapped.add(sec)
         def put(sec, i, replacement):
             old = sec.doc.lines[i]
             indent = re.match(r"\s*", old.rstrip("\r\n"))[0]
@@ -539,15 +610,21 @@ def plan(documents, catalog):
             definitions[scope][name] = roles[role]
         repeated = [role for role in sorted(needed) if sum(r == role and v.lower() != "null" for _, _, _, r, v in todo) > 1]
         warnings = (["Repeated " + ", ".join(repeated) + " assignments: if several execute in one original draw, "
-                     "XXMI 1.3.3 can retain the first equal-distance Filter match. No reset code is added."] if repeated else [])
+                     "XXMI 1.3.3 can retain the first equal-distance Filter match. No per-binding reset is added."] if repeated else [])
         reports.append(dict(report, status="converted", bindings=len(todo), set_texture_calls=len(set_calls), warnings=warnings))
 
     result = {}
     for doc in documents:
-        if not edits[doc] and not tails[doc]:
+        if not edits[doc] and not tails[doc] and not inserts[doc]:
             continue
         out = [MARKER + " " + VERSION + "; game " + str(catalog.get("game_version")) + doc.nl]
-        out.extend(edits[doc].get(i, line) for i, line in enumerate(doc.lines))
+        for i in range(len(doc.lines) + 1):
+            if inserts[doc].get(i):
+                if out and not out[-1].endswith(("\r", "\n")):
+                    out.append(doc.nl)
+                out.extend(inserts[doc][i])
+            if i < len(doc.lines):
+                out.append(edits[doc].get(i, doc.lines[i]))
         text = "".join(out)
         if tails[doc]:
             text = text.rstrip("\r\n") + doc.nl * 2 + doc.nl.join(tails[doc]) + doc.nl

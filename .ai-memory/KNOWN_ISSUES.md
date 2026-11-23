@@ -1,3 +1,7 @@
+## Standard lifecycle omission corrected in1.2 (2026-11-23)
+
+Version1.1 omitted explicit built-in SnapshotInitialTextures/RestoreInitialTextures because the no-extra-code instruction was interpreted too broadly. Version1.2 fills the component entry/exit pair, matching LoyalTools; installed EFMI core already has an outer pair, so missing local lines alone did not prove a real-game failure. Private actual-XXMI tests now exercise the generated pair alongside a minimal external API's outer pair and verify texture-only post restore. No real-game deployment occurred. Equal-distance repeated matching within the component remains unchanged: its final Restore happens after those subdraws. Conditional/nested/misplaced manual lifecycles are reported rather than rearranged.
+
 ## Direct-output runtime limitation re-exposed by user requirement (2026-11-23)
 
 Version1.1 removes all generated helper code at the user's explicit request. Consequently, the1.0 same-draw matching workaround below no longer applies. Actual XXMI1.3.3 test confirms red/red for sequential red/blue direct Filter assignments without reset. A first match and existing restoration lifecycle still pass; repeated assignment reports warn about the limitation. Do not describe this as verified successful per-draw switching. Original snapshot/restore is preserved and not supplied when missing. Multiple conditional branches are only potential repetition, not proof both execute.

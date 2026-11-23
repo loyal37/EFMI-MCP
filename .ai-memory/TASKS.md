@@ -1,3 +1,10 @@
+## Standard lifecycle correction completed (2026-11-23)
+
+- Done: version1.2 restores the two standard XXMI calls in the complete component draw callback, matching LoyalTools; no custom reset/staging/guard machinery returns.
+- Done: existing/partial lifecycle checks, main/LOD deduplication, no premature helper restore and post-phase texture-only restoration;31offline tests plus actual XXMI and EXE tests pass.
+- Done: private audit verifies the photographed Zhuangfangyi Component1 pair and unchanged original predicates/resources/draws. Built new EXE and synchronized documentation/memory for normal source commit/push.
+- Remaining disclosed limit: intra-component repeated equal-distance Filter matches still need runtime support; the component-boundary pair does not reset between its subdraws. Installed files remain untouched; Restore then reconvert old output.
+
 ## Direct-only output requested and completed (2026-11-23)
 
 - Done: version1.1 directly references original texture resources, preserves original conditions, and adds no runtime helpers, guards, run calls or snapshot lifecycle. Original API Draw/effect/auxiliary behavior remains where supported.

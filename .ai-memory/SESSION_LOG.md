@@ -1,3 +1,9 @@
+## Correct standard snapshot/restore omission (2026-11-23)
+
+User showed converter Component1 versus a LoyalTools component containing the standard two run calls. Acknowledged overbroad interpretation of the no-extra-code request. Read installed EFMI outer lifecycle and LoyalTools explicit template read-only. Implemented1.2: complete draw callback gets Snapshot before OverrideTextures and Restore at exit; root texture-only gets post Restore; existing/partial calls handled without duplicates; ambiguous manual nesting/placement skipped. No custom helpers, staging, guards or predicate changes. Standard component boundaries do not fix repeated equal-distance subdraw matching.
+
+31offline tests pass. Actual XXMI1.3.3 sandbox verifies generated custom-callback pair alongside an outer minimal API pair, texture-only post restore, auxiliary/null preservation, exact restore and the still-present red/red repeated-match limitation. Packaged EXE tests pass. Private67INI audit:23changed files,81converted/26skipped contexts,2067unchanged condition lines,449unchanged draws,434direct bindings,only built-in lifecycle calls added. Zhuangfangyi Component1 verified against the screenshot structure;130conditions unchanged. Rebuilt EXE8415415bytes. Evidence captures/texture-repair-standard-lifecycle-review. No installed mod/backup, game input, DLL or cache/config modifications. Source diff/README/memory prepared for normal commit/push.
+
 ## Remove generated INI helpers per user instruction (2026-11-23)
 
 Git connectivity recovered: the earlier pending packaging commits3c11357/d8053e1 were pushed normally to origin/main before committing this direct-output change.

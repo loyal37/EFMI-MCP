@@ -58,6 +58,9 @@ def main():
         assert converted["changed_files"] == [str(mod)]
         data = mod.read_bytes()
         assert b"ps-t[Filter_Component0_Diffuse]" in data and data.startswith(codecs.BOM_UTF8)
+        assert data.count(b"run = SnapshotInitialTextures") == 1
+        assert data.count(b"post run = RestoreInitialTextures") == 1
+        assert b"EFMIRepair_" not in data
         assert repair.receipt_paths(mod)[0].read_bytes() == source
         assert run("repeat")["changed_files"] == [] and mod.read_bytes() == data
         restored = run("restore", "--restore")

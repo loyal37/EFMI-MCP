@@ -1,5 +1,9 @@
 # EFMI MCP — Technical decisions
 
+## Standard XXMI calls are part of the required dHash template (2026-11-23)
+
+The user's screenshot clarification distinguishes built-in SnapshotInitialTextures/RestoreInitialTextures from unwanted custom ResetMatches and staging logic. Version1.2 explicitly brackets complete custom draw callbacks exactly as LoyalTools does, even when current EFMI core also brackets them externally. Do not insert restoration in a material-only helper before its caller draws. Shared main/LOD callbacks get one pair. Root texture-only overrides restore in the post phase. Preserve valid original calls, fill a missing half and skip ambiguous manual lifecycle placement. Original conditions/direct resource references stay intact; no custom per-binding workaround is reintroduced. The earlier1.1 ban on all added run calls is superseded only for this standard pair.
+
 ## User requires direct texture bindings without extra INI code (2026-11-23)
 
 The explicit instruction "do not add these extras" supersedes 1.0's staging and matching-reset design. Version1.1 emits direct ps-t[Filter...] = ref OriginalResource assignments and Filter definitions only, removing basic-only SetTextures consumers. Do not generate resource staging, non-null guards, helper command lists, pools or run/snapshot/restore calls. Preserve original conditions and original external Draw/effect/auxiliary APIs. Skip cases requiring rewritten conditions or changed delayed-input semantics.

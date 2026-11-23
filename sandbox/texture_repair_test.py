@@ -57,8 +57,9 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(controls(text), controls(body))
         original_runs = [line.strip() for line in body.splitlines() if re.match(r"\s*(?:post\s+)?run\s*=", line)]
         result_runs = [line.strip() for line in text.splitlines() if re.match(r"\s*(?:post\s+)?run\s*=", line)]
+        standard = {"run = SnapshotInitialTextures", "run = RestoreInitialTextures", "post run = RestoreInitialTextures"}
         remaining = iter(original_runs)
-        self.assertTrue(all(any(old == line for old in remaining) for line in result_runs))
+        self.assertTrue(all(any(old == line for old in remaining) for line in result_runs if line not in standard))
         old_names = {s.name for s in doc.sections}
         self.assertTrue(all(s.name in old_names or s.name.startswith("Filter_") for s in document(text).sections))
         self.assertNotIn("Resource_EFMIRepair_", text)
@@ -72,13 +73,14 @@ class RepairTests(unittest.TestCase):
         self.assertIn("ps-t[Filter_Component0_Diffuse] = ref ResourceBlueDiffuse", text)
         self.assertLess(text.index("ResourceRedDiffuse"), text.index("drawindexed = 30"))
         self.assertLess(text.index("ResourceBlueDiffuse"), text.index("drawindexed = 60"))
-        self.assertNotIn("run =", text)
+        self.assertEqual(text.count("run = SnapshotInitialTextures"), 1)
+        self.assertEqual(text.count("post run = RestoreInitialTextures"), 1)
         self.assertIn("equal-distance", reports[0]["warnings"][0])
 
-    def test_texture_only_does_not_add_snapshot_or_restore(self):
+    def test_texture_only_restores_in_post_phase_and_handles_eof(self):
         text, _ = self.convert(ENTRY + "ps-t14 = ResourceDiffuse")
-        self.assertIn("ps-t[Filter_Component0_Diffuse] = ref ResourceDiffuse\n\n[Filter_", text)
-        self.assertNotIn("run =", text)
+        self.assertIn("ps-t[Filter_Component0_Diffuse] = ref ResourceDiffuse\n\npost run = RestoreInitialTextures", text)
+        self.assertEqual(text.count("run = SnapshotInitialTextures"), 1)
 
     def test_efmittl_multiple_consumers_preserve_branch_and_draw_api(self):
         body = ENTRY + r"""Resource\EFMITTL\Diffuse = ref ResourceRed
@@ -149,7 +151,13 @@ ps-t14 = ResourceDiffuse
 """
         text, reports = self.convert(body)
         self.assertIn("Filter_Component7_Diffuse", text)
-        self.assertNotIn("run = SnapshotInitialTextures", text)
+        self.assertEqual(text.count("run = SnapshotInitialTextures"), 1)
+        self.assertEqual(text.count("run = RestoreInitialTextures"), 1)
+        self.assertIn("[CommandListDraw]\nrun = SnapshotInitialTextures\nrun = CommandList\\EFMIv1\\OverrideTextures", text)
+        self.assertIn("drawindexed = 300,0,0\n\nrun = RestoreInitialTextures", text)
+        self.assertNotIn("post run = RestoreInitialTextures", text)
+        material = next(s for s in document(text).sections if s.name == "CommandListMaterial")
+        self.assertFalse(any(v == "RestoreInitialTextures" for _, _, v in material.commands()))
         self.assertEqual(len([r for r in reports if r["status"] == "converted"]), 1)
         self.assertIn(r"run = CommandList\EFMIv1\OverrideTextures", text)
 
@@ -196,6 +204,23 @@ ps-t14 = ResourceDiffuse
         text, _ = self.convert(ENTRY + "run = SnapshotInitialTextures\nps-t14 = ResourceDiffuse\npost run = RestoreInitialTextures\n")
         self.assertEqual(text.count("run = SnapshotInitialTextures"), 1)
         self.assertEqual(text.count("post run = RestoreInitialTextures"), 1)
+
+    def test_incomplete_standard_lifecycle_adds_only_missing_half(self):
+        for before, after in (("run = SnapshotInitialTextures\n", ""), ("", "post run = RestoreInitialTextures\n")):
+            text, _ = self.convert(ENTRY + before + "ps-t14 = ResourceDiffuse\n" + after)
+            self.assertEqual(text.count("run = SnapshotInitialTextures"), 1)
+            self.assertEqual(text.count("post run = RestoreInitialTextures"), 1)
+
+    def test_conditional_or_misplaced_existing_lifecycle_is_skipped(self):
+        for body in (ENTRY + "ps-t14 = ResourceDiffuse\nrun = SnapshotInitialTextures\n",
+                     ENTRY + "ps-t14 = ResourceDiffuse\nrun = RestoreInitialTextures\n",
+                     ENTRY + "if $enabled\nrun = SnapshotInitialTextures\nps-t14 = ResourceDiffuse\nendif\n"):
+            self.assertFalse(repair.plan([document(body)], catalog())[0])
+
+    def test_marker_only_root_does_not_get_lifecycle_calls(self):
+        text, _ = self.convert(ENTRY + "ps-t14 = ResourceDiffuse\n[TextureOverrideMarker]\nhash = 12345678\nfilter_index = 1\n")
+        marker = next(s for s in document(text).sections if s.name == "TextureOverrideMarker")
+        self.assertFalse(any(k == "run" or k == "post run" for _, k, _ in marker.commands()))
 
     def test_direct_input_cancellation_and_delayed_draw_are_skipped(self):
         assign = "Resource\\EFMITTL\\Diffuse = ref ResourceRed\n"
