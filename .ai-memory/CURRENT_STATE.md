@@ -1,5 +1,7 @@
 ## Per-material standard restoration in 1.3.0 (2026-11-23)
 
+Source commit386b752 is local. Two normal push attempts failed (connection reset, then GitHub port443 timeout); remote synchronization remains pending. Local Python/EXE delivery is complete. No force push was attempted.
+
 User corrected the component-only restore placement: distinct materials within one IB need matching reset between draw groups. Version1.3 inserts built-in RestoreInitialTextures before a later different material assignment, preserving the original branch and direct resource reference. Shared-material draws stay together. Known inherited bindings are directly replayed only when not overwritten before the next draw; explicit auxiliary null bindings are retained. Ambiguous inherited state or caller-dependent helper restoration is skipped instead of generating guards/staging/custom helpers. Standard component entry/exit and texture-only post restoration remain.
 
 User explicitly stopped all testing and will verify personally. No offline, sandbox, EXE smoke or installed-INI audit was run this turn. Existing fixture expectations were updated but not executed. Python/EXE rebuilt under dist/texture-repair; packaging and source review are not runtime verification. Installed mods, backups, game, DLLs and cache settings remain untouched. Cache stays OFF. Restore old converted files before reconverting. Source/documentation prepared for the standing commit/push workflow.

@@ -1,5 +1,7 @@
 ## Correct restoration between per-draw materials (2026-11-23)
 
+Source commit386b752 is local. Two normal push attempts failed (connection reset, then GitHub port443 timeout); remote synchronization remains pending. Local Python/EXE delivery is complete. No force push was attempted.
+
 User challenged a single component-exit Restore and then explicitly said to stop testing and leave verification to them. Acknowledged overcomplication. Implemented1.3 standard RestoreInitialTextures before later different material assignments, keeping original conditions and direct resources. Retain known inherited bindings with direct replay; omit replay for roles overwritten before the next draw; skip ambiguous state or caller-dependent insertion. Shared-material draw groups and component entry/exit behavior remain. No custom command lists, staging resources or guard predicates added.
 
 Updated the two existing fixture expectations without executing them. No tests, sandbox, smoke checks, live-game actions or installed-mod audit performed. Rebuilt portable Python/EXE, reviewed source diff and synchronized memory for the standing Git commit/push. Installed files and cache OFF unchanged. Runtime result is explicitly pending user testing; old converted output must be restored before reconversion.

@@ -1,5 +1,7 @@
 ## Per-material restoration delivered for user testing (2026-11-23)
 
+Source commit386b752 is local. Two normal push attempts failed (connection reset, then GitHub port443 timeout); remote synchronization remains pending. Local Python/EXE delivery is complete. No force push was attempted.
+
 - Implemented: standard RestoreInitialTextures between different material assignments within a component; preserve original predicates, direct references and shared-material draw groups.
 - Implemented: replay only known inherited bindings and skip ambiguous cases; no custom runtime helpers or added guards.
 - Packaged: version1.3 Python/EXE. Existing test expectations updated, none executed at the user's explicit request. User will test the converted output.
