@@ -1,5 +1,9 @@
 # EFMI MCP — Technical decisions
 
+## Read executable resource declarations, not reflection metadata (2026-11-23)
+
+Live Yvonne DXBC omits RDEF; D3DReflect/GetDesc can both succeed while returning zero BoundResources. Therefore success of reflection is not evidence of absent texture declarations. Probe0.1.18 uses D3DDisassemble and a shared, strict dcl_resource_texture2d parser for the cached per-PS slot mask. Filter BC views before disassembling; retain fail-closed handling for missing/invalid bytecode and exclude non-plain-2D declarations. Sandbox regression must remove RDEF from compiled shaders and prove its absence in the saved bytecode. Do not backfill manually when validating whether automatic collection worked.
+
 ## Automatic fingerprints beside slot metadata (2026-11-23; supersedes explicit-only collection)
 
 The user explicitly requested unattended character browsing and enabling the completed cache. Add bounded on-device asynchronous dHash work to native sampled draws; no connected MCP or frame dump dependency. Share the helper's shader source rather than duplicate its sampling contract. Reflect PS declarations, accept native single-slice BC1/2/3/4/5/7 views, preserve pipeline state with ExecuteCommandList(TRUE), and poll only eight bytes with DO_NOT_WAIT. Track resource lifetimes and writes so texture switches/uploads cannot reuse stale runtime results. On unknown command-list writes invalidate observed textures conservatively.

@@ -1,5 +1,11 @@
 # EFMI MCP — Known issues
 
+## Probe0.1.17 silently skips shipped shaders without RDEF (2026-11-23)
+
+Confirmed in running Endfield PID2080: flags enabled, zero submitted/completed/failed dHashes, no automatic records before any capture. Native Yvonne PS e920a50832b33ac1 has no RDEF; reflection succeeds with zero bound resources. This invalidates any inference from the earlier unstripped sandbox success to real-game operation. Probe0.1.18 replaces reflection with executable declaration parsing and passes native-bytecode inspection plus stripped GPU regressions. Installed new DLL, but PID2080 still loads0.1.17 until the user restarts. Actual fixed-game collection is pending.
+
+The connected MCP process also remains old: its status omits dHash diagnostics and its slot-table response has schema4. Direct official ProbeClient status and fresh local cache reader were used for the audit. Restart MCP for schema5 automatic evidence. No manual collector was used and no game keys were sent. Evidence: captures/auto-slot-live-20261123/verification.json, stripped-reflection.json and regression logs.
+
 ## Automatic dHash limitations and existing parity failures (2026-11-23)
 
 Automatic browsing now computes hashes with probe 0.1.17, superseding the explicit-only limitation below. No real character or game performance was verified this round: no game/probe was loaded. Default filters exclude CPU-posed/dynamic-index components, and native draws hidden by mods or unseen LODs/passes cannot be collected. Only declared native BC Texture2D views are fingerprinted; failed reflection/readback remains missing with diagnostics. Unknown command-list writes conservatively invalidate observed textures and may cause extra work in engines that execute many lists; real-game coverage/performance still needs observation.

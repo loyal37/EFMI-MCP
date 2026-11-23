@@ -6,9 +6,9 @@
 #include "hooks.h"
 #include "registry.h"
 #include "json.h"
+#include "texture_declarations.h"
 #include "../../shared/dhash_shader.h"
 #include <d3dcompiler.h>
-#include <d3d11shader.h>
 #include <map>
 #include <array>
 #include <tuple>
@@ -43,8 +43,7 @@ static uint64_t revision = 0;
 static volatile LONG64 submitted = 0, completed = 0, failed = 0, deferred_count = 0;
 static volatile LONG pending_count = 0;
 static pD3DCompile compile_shader = nullptr;
-typedef HRESULT (WINAPI* ReflectFn)(LPCVOID, SIZE_T, REFIID, void**);
-static ReflectFn reflect_shader = nullptr;
+static pD3DDisassemble disassemble_shader = nullptr;
 
 static bool compiler()
 {
@@ -54,10 +53,10 @@ static bool compiler()
         HMODULE dll = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (dll) {
             compile_shader = (pD3DCompile)GetProcAddress(dll, "D3DCompile");
-            reflect_shader = (ReflectFn)GetProcAddress(dll, "D3DReflect");
+            disassemble_shader = (pD3DDisassemble)GetProcAddress(dll, "D3DDisassemble");
         }
     }
-    return compile_shader && reflect_shader;
+    return compile_shader && disassemble_shader;
 }
 
 static bool declared(uint64_t ps, unsigned slot)
@@ -68,21 +67,18 @@ static bool declared(uint64_t ps, unsigned slot)
         std::array<bool, 128> mask = {};
         std::vector<uint8_t> bytes;
         std::string type;
-        ID3D11ShaderReflection* reflection = nullptr;
+        ID3DBlob* assembly = nullptr;
         if (compiler() && reg_get_bytecode(ps, &bytes, &type) &&
-            SUCCEEDED(reflect_shader(bytes.data(), bytes.size(), __uuidof(ID3D11ShaderReflection), (void**)&reflection))) {
-            D3D11_SHADER_DESC desc = {};
-            if (SUCCEEDED(reflection->lpVtbl->GetDesc(reflection, &desc))) {
-                for (UINT i = 0; i < desc.BoundResources; ++i) {
-                    D3D11_SHADER_INPUT_BIND_DESC d = {};
-                    if (SUCCEEDED(reflection->lpVtbl->GetResourceBindingDesc(reflection, i, &d)) &&
-                        d.Type == D3D_SIT_TEXTURE && d.Dimension == D3D_SRV_DIMENSION_TEXTURE2D)
-                        for (UINT j = d.BindPoint; j < 128 && j - d.BindPoint < d.BindCount; ++j) mask[j] = true;
-                }
-            }
-            reflection->lpVtbl->Release(reflection);
+            SUCCEEDED(disassemble_shader(bytes.data(), bytes.size(), 0, nullptr, &assembly))) {
+            // Unity's shipped DXBC omits RDEF. D3DReflect can succeed with zero BoundResources;
+            // executable dcl_resource instructions still contain the actual slot declarations.
+            const char* text = (const char*)ID3D10Blob_GetBufferPointer(assembly);
+            size_t size = ID3D10Blob_GetBufferSize(assembly);
+            if (size && text[size - 1] == '\0') --size;
+            mask = texture2d_declarations(std::string(text, size));
+            ID3D10Blob_Release(assembly);
         } else {
-            InterlockedIncrement64(&failed); // missing bytecode/reflection: never guess a declared slot
+            InterlockedIncrement64(&failed); // missing bytecode/disassembly: never guess a declared slot
         }
         if (declarations.size() >= 8192) declarations.clear();
         found = declarations.emplace(ps, mask).first;
@@ -92,13 +88,14 @@ static bool declared(uint64_t ps, unsigned slot)
 
 static bool input(ID3D11ShaderResourceView* srv, uint64_t ps, unsigned slot, Input* out)
 {
-    if (!slot_dhash_enabled() || !srv || !declared(ps, slot)) return false;
+    if (!slot_dhash_enabled() || !srv) return false;
     D3D11_SHADER_RESOURCE_VIEW_DESC view = {};
     ID3D11ShaderResourceView_GetDesc(srv, &view);
     const UINT f = view.Format;
     // BC material textures only; no buffers, depth, render targets, arrays or cube maps.
     if (view.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D ||
         !((f >= 71 && f <= 84 && f != 73 && f != 76 && f != 79 && f != 82) || f == 98 || f == 99)) return false;
+    if (!declared(ps, slot)) return false;
     ID3D11ShaderResourceView_GetResource(srv, &out->resource);
     ResInfo info;
     if (!reg_get_resource(out->resource, &info) || info.origin != ORIGIN_GAME ||

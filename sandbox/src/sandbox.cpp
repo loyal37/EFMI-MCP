@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include "../../probe/src/texture_declarations.h"
 
 typedef HRESULT (WINAPI *tD3D11CreateDevice)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*,
                                              UINT, UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
@@ -196,6 +197,7 @@ float4 ps_flash(VSOut i) : SV_Target
 }
 )";
 
+static bool g_strip_reflection = false;     // --strip-reflection: shipped Unity shaders omit RDEF
 static bool compile(const char* entry, const char* target, ID3DBlob** out, const char* source = k_hlsl)
 {
 	ID3DBlob* err = nullptr;
@@ -207,6 +209,13 @@ static bool compile(const char* entry, const char* target, ID3DBlob** out, const
 		return false;
 	}
 	if (err) err->Release();
+	if (g_strip_reflection) {
+		ID3DBlob* stripped = nullptr;
+		hr = D3DStripShader((*out)->GetBufferPointer(), (*out)->GetBufferSize(),
+		                    D3DCOMPILER_STRIP_REFLECTION_DATA, &stripped);
+		if (FAILED(hr)) { say("strip reflection failed: %08x", (unsigned)hr); return false; }
+		(*out)->Release(); *out = stripped;
+	}
 	return true;
 }
 
@@ -1551,7 +1560,7 @@ static void press(WORD vk, bool down)
 
 int wmain(int argc, wchar_t** argv)
 {
-	std::wstring xxmi, probe;
+	std::wstring xxmi, probe, inspect_shader;
 	bool probe_first = false, preload_runtime = false, animate = false, manual_attach = false;
 	bool aux_device_first = false;
 	int aux_device_after = -1;
@@ -1576,6 +1585,8 @@ int wmain(int argc, wchar_t** argv)
 		else if (a == L"--state-pass") g_state_pass = true;
 		else if (a == L"--warp") g_warp = true;
 		else if (a == L"--slot-textures") g_slot_textures = true;
+		else if (a == L"--strip-reflection") g_strip_reflection = true;
+		else if (a == L"--inspect-shader") inspect_shader = next();
 		else if (a == L"--repeat") g_repeat = _wtoi(next().c_str());
 		else if (a == L"--novsync") g_vsync = 0;
 		else if (a == L"--stream") g_stream = true;
@@ -1597,6 +1608,24 @@ int wmain(int argc, wchar_t** argv)
 				return 2;
 			}
 		}
+	}
+
+	if (!inspect_shader.empty()) {
+		// Offline check of the exact declaration parser used by the probe; opens no window/device.
+		FILE* file = nullptr;
+		if (_wfopen_s(&file, inspect_shader.c_str(), L"rb") || !file) return 2;
+		fseek(file, 0, SEEK_END); long size = ftell(file); rewind(file);
+		if (size <= 0 || size > 32 * 1024 * 1024) { fclose(file); return 2; }
+		std::vector<uint8_t> bytes((size_t)size);
+		size_t got = fread(bytes.data(), 1, bytes.size(), file); fclose(file);
+		ID3DBlob* assembly = nullptr;
+		if (got != bytes.size() || FAILED(D3DDisassemble(bytes.data(), bytes.size(), 0, nullptr, &assembly))) return 3;
+		auto slots = texture2d_declarations((const char*)assembly->GetBufferPointer());
+		assembly->Release();
+		printf("Texture2D:");
+		for (unsigned i = 0; i < slots.size(); ++i) if (slots[i]) printf(" %u", i);
+		printf("\n");
+		return 0;
 	}
 
 	wchar_t exe[MAX_PATH];

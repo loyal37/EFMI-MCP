@@ -50,6 +50,7 @@ def main() -> int:
         ("dHash and versioned mip chains", ["sandbox/dhash_test.py"]),
         ("persistent material fingerprint cache", ["sandbox/slot_fingerprints_test.py"]),
         ("automatic material fingerprints without a client", ["sandbox/auto_slot_dhash_test.py"]),
+        ("automatic fingerprints with stripped shader reflection", ["sandbox/auto_slot_dhash_test.py", "--strip-reflection"]),
         ("probe self-test", ["sandbox/selftest.py"]),
         ("contents: what each call saw", ["sandbox/contents_test.py"]),
         ("contents: byte for byte against XXMI's frame analysis", ["sandbox/contents_parity_test.py"]),

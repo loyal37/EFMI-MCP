@@ -1,5 +1,13 @@
 # EFMI MCP — Tasks
 
+## Live dHash verification: restart needed after stripped-shader fix (2026-11-23)
+
+- Actual current Yvonne on probe0.1.17: zero automatic fingerprints despite enabled flags; three primary body slots t17/t18/t19 are present in the native draw.
+- Fixed the cause in probe0.1.18: use executable shader declarations when shipped DXBC omits reflection data. Old DLL fails the new stripped-shader regression; new DLL passes WARP/hardware/private-XXMI plus143self-test/108MCP.
+- Installed0.1.18 at the original project DLL path; backed up loaded0.1.17 inside dist/backup-0.1.17. Did not stop/restart the game. Live PID2080 still0.1.17.
+- Next: user restarts game and MCP; verify running0.1.18, nonzero automatic counters, persisted probe_gpu evidence for current Yvonne t17/t18/t19 before any explicit collector. Do not substitute manual computed hashes for automatic-cache proof.
+- Scope pending: actual-character collection/performance and full pass/LOD coverage; no real-game success yet.
+
 ## Automatic material dHash cache (implemented, enabled, sandbox verified; 2026-11-23)
 
 - Done: automatic native material fingerprints without an MCP connection, per-resource upload invalidation, bounded asynchronous GPU jobs, versioned draw persistence, old-cache upgrades and table provenance/conflict handling.

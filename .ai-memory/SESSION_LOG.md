@@ -1,5 +1,13 @@
 # EFMI MCP — Development log
 
+## 2026-11-23: Check restarted game's automatic cache and fix stripped DXBC
+
+User restarted and requested checking current character's three dHashes. Read state/tasks, inspected actual PID2080/probe0.1.17, saved a disk/status baseline before requesting metadata capture. Enabled flags were true but all dHash counters and persisted probe_gpu observations were zero. Frame11629 identified native Yvonne and main body d160fb72/123678 draw77, with diffuse/lightmap/normal at t17/t18/t19. No mod toggle, explicit hash calculation, manual backfill or game key was used; released the capture workspace.
+
+Diagnosed actual PS e920a50832b33ac1 (ISGN/OSGN/SHEX, no RDEF): native D3DReflect and GetDesc return0 with BoundResources0. Replaced reflection-only slot detection with cached executable declaration parsing; version0.1.18. Added optional stripped-shader sandbox mode and no-window native shader inspection. Old0.1.17 fails the stripped automatic regression, new0.1.18 passes stripped WARP and hardware/private-XXMI, unstripped auto, shader-state preservation, mip updates/switches/dedupe, self-test143 and MCP108. Current actual shader recognizes t17/t18/t19 and excludes cube/3D slots.
+
+Installed new project-local DLL, moved loaded0.1.17 to dist/backup-0.1.17 without closing the game, kept enable/dhash config. Final status frame74435 still0.1.17/zero automatic hashes. Need another user restart and MCP restart (connected server still schema4) for live verification. No real-game fix-success claim. Evidence in ignored captures/auto-slot-live-20261123; README and memory updated, diff reviewed, only this work staged while earlier memory edits/.codex remain excluded.
+
 ## 2026-11-23: Make slot-cache dHashes automatic and enable EFMI collection
 
 User requested automatic character browsing, then implementation and enabling. Implemented probe 0.1.17 asynchronous on-device hashes for native PS-declared BC textures, lifetime/write-aware runtime dedupe, bounded jobs, pending readback, metadata upgrades and original provenance preservation. Server 0.1.27 merges automatic observations into schema-5 table roles and reports status. Shared helper shader unchanged in behavior. Added opt-in sandbox WARP/material fixtures with event-controlled texture swaps/uploads and exact pipeline-state guards; legacy metadata-only regression explicitly disables dHash.

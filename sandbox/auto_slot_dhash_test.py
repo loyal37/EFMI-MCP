@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import shutil
+import struct
 import sys
 import tempfile
 import time
@@ -32,6 +33,8 @@ def run():
         selftest.PROBE = folder / "efmi_probe.dll"
         (folder / "efmi_probe.ini").write_text("[SlotCache]\nenable=1\ndhash=1\nevery=1\nskinned_only=0\nbones_only=0\nmax_hashes=1\n")
         args = ["--slot-textures"] + ([] if hardware else ["--warp"])
+        if "--strip-reflection" in sys.argv:
+            args.append("--strip-reflection")
         sb = selftest.Sandbox(args, xxmi=xxmi)
         client = None
         try:
@@ -41,6 +44,15 @@ def run():
             def entries():
                 return slot_fingerprints.automatic_entries(slot_table.load_records(cache.parent))
             wait_for(lambda: len({e["texture"] for e in entries()}) == 2)
+            if "--strip-reflection" in sys.argv:
+                shaders = list((cache.parent / "shaders").glob("*-ps.bin"))
+                assert shaders, "Saved PS bytecode is required to prove reflection was stripped"
+                for path in shaders:
+                    data = path.read_bytes()
+                    chunks = [struct.unpack_from("<I", data, 32 + i*4)[0]
+                              for i in range(struct.unpack_from("<I", data, 28)[0])]
+                    assert all(data[offset:offset+4] != b"RDEF" for offset in chunks)
+                print("PASS automatic fingerprints with RDEF stripped from actual shader bytecode")
             print("PASS no client/no capture: both declared BC textures fingerprinted automatically")
             client = selftest.connect(sb.pid)
             status = lambda: client.request("status")[0]["slot_cache"]
