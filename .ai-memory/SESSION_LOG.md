@@ -1,5 +1,11 @@
 # EFMI MCP — Development log
 
+## 2026-11-23: Persist material dHashes alongside the slot cache
+
+User requested caching diffuse/lightmap/normal dHashes to support the EFMI Tools 0.7.1 filter-based texture system and supplied its release link. Reviewed upstream filtering and mip preference docs, existing dHash implementation and versioned native slot records. No game probe was loaded. Added explicit collector and CLI import, atomic locked sidecar merges, source distinction, unique-zero handling, multi-pass texture reuse, variant ambiguity and schema-5 display/coverage. No change to probe, role inference or installed mods.
+
+Read two original EFMI dumps without modifying them. Latest cache 1.6.3+95420c132b00 now contains 220 unique entries (241 matching PS observations), enriching 90 main roles across 45 rows. Saved table export and reproducible verification under project-local dist/captures; 5e73da7cad5e preserved. Exact material-role signatures unchanged; repeat import added zero. Tests: 9 fingerprint, 17 table, native sandbox dHash/mip/export including persistent cache, MCP108. First sandbox run failed from released capture contents before collector invocation; isolated rerun passed. No real-game restart/input/live validation. Code and only this session's memory additions staged; pre-existing memory edits and .codex left out of the commit.
+
 > A short summary is appended at the end of each round, recording what was actually done, the scope of verification, open problems and where to pick up next time; no chat and no complete logs are pasted.
 
 ## 2026-10-06: Plan document for model extraction, export and refresh acceptance

@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Callable
 
 ROLES = ("diffuse", "lightmap", "normal")
-SCHEMA = 4
+SCHEMA = 5
 GLOBAL_COOCCURRENCE = 60   # a texture bound together with more material textures than this is global
 SCENE_MESHES = 40          # a frame that brought more new meshes than this showed a whole scene
 GROUP_MIN = 3              # fewer new meshes than this in a frame are not taken for a character
@@ -404,6 +404,8 @@ def build(folder: Path, names: dict | None = None, reader: Callable[[str], dict]
              "characters": characters, "probable_groups": groups, "scenes": scenes,
              "unassigned": [row(m) for m in sorted(unassigned, key=lambda m: (first_frame[m], m))]}
     table["counts"] = counts(table)
+    from .slot_fingerprints import annotate, load
+    annotate(table, load(folder, table["version"]))
     return table
 
 
@@ -447,7 +449,9 @@ def _role_text(main: dict, role: str) -> str:
     if not r:
         return "-"
     size = f" {r['w']}x{r['h']}" if r.get("w") and r.get("h") else ""
-    return f"t{r['slot']} {r.get('format', '')}{size}".rstrip()
+    fingerprint = (f" d={r['dhash']} ({r['dhash_status']})" if r.get("dhash") is not None else
+                   " d=? (ambiguous)" if r.get("dhash_status") == "ambiguous" else "")
+    return f"t{r['slot']} {r.get('format', '')}{size}{fingerprint}".rstrip()
 
 
 def _basis_text(main: dict) -> str:
@@ -505,6 +509,12 @@ def to_markdown(table: dict) -> str:
              "are listed at the end. An 'other lit pass' row: the mesh is also "
              "drawn by a lit shader that reads these textures at other slots, which one ps-tN binding cannot suit. "
              "Everything per pass is in slot-table.json.", ""]
+    if "dhash_coverage" in table:
+        d = table["dhash_coverage"]
+        lines += [f"dHash coverage (main-pass roles): {d['xxmi_log']} original XXMI log values, "
+                  f"{d['computed']} computed, {d['ambiguous']} ambiguous, {d['missing']} missing. "
+                  "Computed values are not XXMI's cached values. All alternatives and provenance are in JSON. "
+                  "No dHash is inferred from a CRC, slot number or another game version.", ""]
     lines.append("## Characters (named by a mod's INI)")
     for ch in table["characters"]:
         lines += ["", f"### {ch['name']}", ""]
@@ -565,7 +575,8 @@ def query(table: dict, ib_hash: str = "", character: str = "", offset: int = 0, 
                                        if k in ("role_candidates", "lighting_channels", "evidence", "output_components")}
                                 for role, slot in r["main"]["roles"].items() if slot}
         page.append(item)
-    return {"schema": SCHEMA, "version": table["version"], "counts": table["counts"], "matching": len(selected),
+    return {"schema": SCHEMA, "version": table["version"], "counts": table["counts"],
+            "dhash_coverage": table.get("dhash_coverage", {}), "matching": len(selected),
             "rows": page, "next_offset": offset + limit if offset + limit < len(selected) else None,
             "rules": table["rules"]}
 
@@ -583,7 +594,8 @@ class TableCache:
         folder = Path(folder).resolve()
         if folder != self.folder:
             self.folder, self.reader = folder, shader_reader(folder)
-        files = [folder / "draws.jsonl", folder / "version.json", *sorted((folder / "shaders").glob("*-ps.bin"))]
+        files = [folder / "draws.jsonl", folder / "version.json", folder / "texture-dhashes.json",
+                 *sorted((folder / "shaders").glob("*-ps.bin"))]
         inis = sorted(Path(efmi_root).rglob("*.ini")) if efmi_root and Path(efmi_root).is_dir() else []
         key = tuple((str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in files + inis if p.exists())
         if refresh or key != self.key or self.table is None:
@@ -595,13 +607,16 @@ class TableCache:
 
 def register(server, session) -> None:
     cache = TableCache()
+    from . import slot_fingerprints
+    slot_fingerprints.register(server, session, cache)
 
     @server.tool("efmi_get_slot_table",
                  "The slot table of a game version from the probe's slot cache, without the game and without writing "
                  "files: per mesh (IB hash and index count) the diffuse, light map and normal map slots of its main pass, "
                  "decided from the game's own shader dataflow and texture formats, with what decided each and whether "
                  "the installed mods agree. Filter by ib_hash or by group (mod name, 'probably', 'frame', 'unassigned'); "
-                 "include_passes adds every pass and slot read, include_evidence the dataflow behind the three slots.",
+                 "include_passes adds every pass and slot read, include_evidence the dataflow behind the three slots. "
+                 "Each role includes cached dHashes, their source, ambiguity and missing coverage.",
                  {"folder": {"type": "string", "description": "the version folder: <probe dir>\\slot-cache\\<version>"},
                   "ib_hash": {"type": "string", "default": ""},
                   "character": {"type": "string", "default": "", "description": "part of the group label"},
@@ -619,6 +634,7 @@ def register(server, session) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="efmi_mcp.slot_table", description=__doc__.split("\n\n")[0])
     ap.add_argument("folder", help="a version folder of the slot cache")
+    ap.add_argument("--import-dhash-dump", help="import original dHashes from this XXMI frame dump before exporting")
     ap.add_argument("--efmi-root", default=DEFAULT_EFMI,
                     help="the EFMI folder, read to group meshes by mod and to compare the mods' slots ('' for none)")
     args = ap.parse_args(argv)
@@ -626,6 +642,12 @@ def main(argv: list[str] | None = None) -> int:
     folder = Path(args.folder)
     root = Path(args.efmi_root) if args.efmi_root else None
     table = build(folder, mod_names(root), declared=mod_roles(root))
+    if args.import_dhash_dump:
+        from . import slot_fingerprints
+        entries, report = slot_fingerprints.collect_dump(table, Path(args.import_dhash_dump))
+        report.update(slot_fingerprints.save(folder, table["version"], entries))
+        slot_fingerprints.annotate(table, slot_fingerprints.load(folder, table["version"]))
+        print(json.dumps(report))
     (folder / "slot-table.json").write_text(json.dumps(table, indent=1), encoding="utf-8")
     (folder / "slot-table.md").write_text(to_markdown(table), encoding="utf-8")
     c = table["counts"]

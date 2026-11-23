@@ -48,6 +48,7 @@ def main() -> int:
         ("parity with XXMI (system d3d11.dll already loaded)", ["sandbox/parity_test.py", "--preload-runtime"]),
         ("multiple simultaneous sessions and workspace ownership", ["sandbox/multi_session_test.py"]),
         ("dHash and versioned mip chains", ["sandbox/dhash_test.py"]),
+        ("persistent material fingerprint cache", ["sandbox/slot_fingerprints_test.py"]),
         ("probe self-test", ["sandbox/selftest.py"]),
         ("contents: what each call saw", ["sandbox/contents_test.py"]),
         ("contents: byte for byte against XXMI's frame analysis", ["sandbox/contents_parity_test.py"]),

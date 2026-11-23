@@ -153,7 +153,7 @@ class SlotTableTests(unittest.TestCase):
         for ib in ("ff000000", "ee000000", "9900"):
             self.assertNotIn(ib, text)
         self.assertEqual(self.table["version"], "1.0.0+abc")
-        self.assertEqual(self.table["schema"], 4)
+        self.assertEqual(self.table["schema"], 5)
 
     def test_only_read_slots_and_classes(self) -> None:
         p = next(q for q in self.row("aa000001")["passes"] if q["ps"] == PS_LIT)
@@ -298,7 +298,7 @@ class SlotTableTests(unittest.TestCase):
             reply = call(folder=str(self.folder), ib_hash="aa000001")
             self.assertFalse(reply["isError"])
             body = json.loads(reply["content"][0]["text"])
-            self.assertEqual((body["schema"], body["matching"]), (4, 1))
+            self.assertEqual((body["schema"], body["matching"]), (5, 1))
             self.assertEqual(body["rows"][0]["main"]["roles"]["normal"]["slot"], 18)
             self.assertTrue(call(folder=str(self.folder), ib_hash="nothex")["isError"])
         finally:

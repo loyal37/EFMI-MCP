@@ -1,5 +1,13 @@
 # EFMI MCP — Current development state
 
+## Material dHash cache (2026-11-23; server 0.1.26)
+
+Implemented schema-5 slot-table enrichment through `efmi_cache_texture_dhashes` and CLI `--import-dhash-dump`. A separate versioned `texture-dhashes.json` preserves original XXMI log hashes, captured-pixel hashes and exported-pixel hashes. Original import requires native IB/count/PS/slot/texture matches; live collection requires matching runtime cache version, game-origin draw/resource and exact retained mip pixels. Default live mip prefers 256x256, otherwise 0. Fingerprints reuse texture identity across passes of the same mesh, preserve conflicting alternatives and never change material-role decisions. Original values take precedence; computed values stay explicitly unverified against XXMI. Collection is explicit, not automatic on background probe frames. Probe/DLL/helper unchanged; restart MCP only if probe 0.1.16 is already loaded.
+
+Actual offline import from the two original 2026-11-22 EFMI frame dumps into `dist/slot-cache/1.6.3+95420c132b00`: 241 matched PS binding observations, 220 unique persisted entries, 90 populated main-pass roles across 45 IB/count rows; 2,399 roles still missing, no ambiguous main roles. Fresh JSON/Markdown exported in that version folder. Tangtang 7a5ccaa0 has diffuse c86270a1f150d1a8 (BC7_UNORM_SRGB), lightmap 89899ac939242533 (BC7_UNORM), normal 9112d5695274aa2e (BC5_UNORM). The earlier 5e73da7cad5e report remains unchanged. Evidence: `captures/verify-slot-dhash-20261123.py` and `captures/slot-dhash-verification-20261123.json`; exact role signatures unchanged and repeat import adds zero.
+
+Verification: 9 fingerprint tests, 17 slot-table tests, real sandbox dHash/mip/export regression including GPU pixels to persistent cache, MCP end-to-end 108. Initial dHash sandbox run lost contents before the new collector path; isolated rerun passed, cause not established. No real game probe was loaded; no live character/filter replacement validation, game keys or mod/installation writes. Current stored dump values are original XXMI observations, not proof that a proposed mod filter has been deployed or verified. Existing unrelated memory edits and `.codex/` preserved.
+
 ## Two characters extracted from one scene of Zenless Zone Zero (server, 2026-10-22)
 
 - Request (user): extract the two characters on screen into `E:\ZZZ mods`. No mod replaced them, so no key was pressed (game PID 5516, probe 0.1.12, LoyalTools 1.7.3).

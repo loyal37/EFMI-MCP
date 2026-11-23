@@ -1,5 +1,11 @@
 # EFMI MCP — Known issues
 
+## Material fingerprint coverage and sandbox transient (2026-11-23)
+
+The old slot cache has metadata, not texture pixels: missing dHashes need new exact native captures or original dump matches. Collection is explicit after capture; character browsing alone only fills the existing metadata cache. The original-log importer conservatively requires the recorded native texture hash, so streaming CRC changes or missing IB/count/PS evidence remain unmatched. Fresh pixel fingerprints are not guaranteed equal to XXMI's resource-lifetime cached hash; alternatives and provenance remain visible. No real-character filter replacement was verified in this round.
+
+First run of the dHash sandbox regression reported capture contents released during its existing mip-read checks, before the new collector path. An isolated rerun passed all checks including the collector, and the separate 108-check MCP regression passed. No cause established; this is not recorded as a probe fix.
+
 > Last updated: 2026-10-21.
 
 ## LIMIT-012: Boundaries of recording (probe 0.1.11)

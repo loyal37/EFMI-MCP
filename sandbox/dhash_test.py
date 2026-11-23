@@ -49,6 +49,25 @@ def run():
                 assert meta["exact"] and (meta["width"],meta["height"])==(16>>mip,16>>mip)
         assert len(chains)>1, "GenerateMips versions must remain distinct"
         d,name,e=selected[0]
+        # Assign one sandbox texture a test role to verify the real GPU-to-cache path.
+        # Material-role inference is covered separately by slot_table_test.
+        from efmi_mcp import slot_fingerprints as fp
+        resource = cap.resource(e["res"])
+        slot = int(name.split("-t")[1])
+        role = {"slot":slot, "format":resource["fmt_name"], "basis":"test fixture"}
+        p = {"ps":d["shaders"]["ps"], "also_ps":[], "roles":{"diffuse":role},
+             "slots":[{"slot":slot, "texture":e["hash"], "format":resource["fmt_name"]}]}
+        row = {"ib":d["ib"]["hash"], "index_count":d["args"]["index_count"], "passes":[p],
+               "main":dict(p, other_passes=[])}
+        table = {"version":"sandbox", "characters":[], "probable_groups":[], "scenes":[], "unassigned":[row]}
+        entries, report = fp.collect_capture(table, cap, lambda cid: client.read_content(cap.frame,cid), mip=0)
+        assert entries and report["computed_contents"] > 0, report
+        with tempfile.TemporaryDirectory(dir=root/"captures") as cache_dir:
+            fp.save(Path(cache_dir), "sandbox", entries)
+            fp.annotate(table, fp.load(Path(cache_dir), "sandbox"))
+            assert row["main"]["roles"]["diffuse"]["dhash_status"] in ("computed", "ambiguous")
+            assert not row["main"]["roles"]["diffuse"]["xxmi_cached"]
+        print("PASS real captured pixels persisted with computed provenance and versioned alternatives")
         with tempfile.TemporaryDirectory(dir=root/"captures") as folder:
             session=tools.Session(root/"sandbox",Path(folder),root/"dist/efmi_probe.dll")
             session.client=client

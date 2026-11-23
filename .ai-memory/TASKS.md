@@ -1,5 +1,12 @@
 # EFMI MCP — Tasks
 
+## Material dHash cache (implemented and offline/sandbox verified, 2026-11-23)
+
+- Added explicit original-dump import and retained-native-capture collection to the persistent per-version cache; schema-5 table queries/exports show role hashes, provenance, conflicts and coverage. Original roles remain unchanged.
+- Backfilled 220 unique records from two saved original dumps; 90 main-pass roles on 45 IB/count rows now have original values in the latest 95420c132b00 cache. Repeat import is idempotent.
+- Passed 9 new unit tests, 17 existing table tests, real GPU cache/mip/export sandbox checks and 108 MCP checks. No probe changes or real game connection. Restart MCP for the new tool.
+- Remaining coverage requires native captures or matching original logs for additional characters. Game verification of dHash-based replacement and any named mod conversion were not performed or requested in this implementation. Background browsing alone does not compute hashes; call the collector after a contents capture.
+
 ## T-019: Zenless Zone Zero (ZZMI) (checked in the game, 2026-10-21; deployment still to do)
 
 - Done: installation detection and adoption, whole-buffer hashes, F6 switch with the state from the draws, SO targets, XXMI-syntax log, offline tests (see CURRENT_STATE).

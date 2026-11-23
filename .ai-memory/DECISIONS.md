@@ -1,5 +1,9 @@
 # EFMI MCP — Technical decisions
 
+## Material fingerprint persistence (2026-11-23)
+
+Keep fingerprints in a separately versioned sidecar instead of modifying probe-owned append-only draw records. Collect explicitly from original logs or exact retained pixels; do not add synchronous fingerprint readbacks to background render-thread sampling. Require native binding identity for log joins and runtime-version/origin checks for live collection. Preserve computed versus XXMI provenance, mip/view format and conflicts. Transfer a fingerprint across a mesh's passes only by texture hash and format; never use it to alter role inference. Original observations take precedence over computed alternatives; neither automatic mod conversion nor changing the public cache-free release is part of this change.
+
 ## D-001: Fix inside the project; EFMI/XXMI stay read-only
 
 - Date: 2026-10-05.

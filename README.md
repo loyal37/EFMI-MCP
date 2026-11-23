@@ -583,3 +583,19 @@ Capture with `contents="inputs"` to keep every mip of ordinary, single-slice, no
 Exported PS binding logs include these recomputed fingerprints for EFMI Tools extraction. `texture-fingerprints.json` and the log header identify their source. They are **not XXMI's private cached hashes**: XXMI may have selected another uploaded mip or cached an earlier upload. The tool's explicit mip parameter and the original frame-analysis log allow comparison. On a saved real-game dump, 11 of 12 sampled textures matched the original dHash at some mip; one did not. This is sampling evidence, not universal equivalence or a completed Blender extraction test.
 
 Probe installation requires a game restart; server/tool changes require restarting MCP. Older probes still supply the one subresource they kept, and their dumps cannot recover missing mips.
+
+### Material dHash cache (server 0.1.26)
+
+The source build's slot table (schema 5) can retain fingerprints for each mesh's diffuse, light map and normal map, including other shader passes. `texture-dhashes.json` lives beside `draws.jsonl` in the version folder. Existing role and slot decisions remain unchanged. Each role exposes `dhash`, `dhash_status`, `xxmi_cached` and all observations in `dhashes`; Markdown displays the value and source. Missing observations remain missing. Different original values stay ambiguous, with no arbitrary winner. Original XXMI values take precedence over computed alternatives.
+
+Use `efmi_cache_texture_dhashes(folder=".../slot-cache/<version>", frame_dump=".../FrameAnalysis-...")` to import original `log.txt` fingerprints. Import requires matching IB, index count, PS, slot and native texture hash; mismatched bindings, including replacement textures, are reported as unmatched. Tool-generated dumps remain marked `exported_pixels`. A known texture's fingerprint can be reused across passes of the same mesh by texture hash and format, even when its slot moves. This does not transfer material-role guesses.
+
+For a running game, capture native draws with `contents="inputs"`, then call `efmi_cache_texture_dhashes(folder=".../slot-cache/<version>")`. The runtime version must match the folder. Only game-origin draws and game-origin textures are eligible. It reads exact retained contents, computes each content/view once and persists the result as `captured_pixels`. Default `mip=-1` prefers an available 256x256 mip, otherwise mip 0; specify a nonnegative mip to choose explicitly. Missing captured mips and unsupported formats are reported. This uses probe 0.1.16 and the existing external dHash helper; the probe itself is unchanged. No additional game restart is required if 0.1.16 is already loaded. Restart MCP for the new tool.
+
+Collection is explicit, not automatic on every background slot-cache frame. Reading `efmi_get_slot_table` never writes files. To import and export the table from the command line (with `server` on `PYTHONPATH`):
+
+```powershell
+py -3 -m efmi_mcp.slot_table "F:/EFMI MCP/dist/slot-cache/<version>" --import-dhash-dump "<frame dump>" --efmi-root "<EFMI folder>"
+```
+
+The cached format and dHash supply the inputs for `[Filter...] match_format = ...`, `match_dhash = ...` and `ps-t[Filter...] = ref Resource...`. A dHash is a similarity reference, not a unique texture ID; computed hashes still require game verification. This collector does not edit or deploy mod INIs. An old cache without pixels or matching original log evidence cannot recover missing fingerprints. The cache-free public v0.1.23 release is unchanged.
