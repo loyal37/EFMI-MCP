@@ -1,0 +1,136 @@
+"""Exercise generated Filters against private XXMI in the D3D11 sandbox.
+
+The first original call becomes two differently textured custom draws. A second
+call gets a texture-only override. A later call and the sandbox's own pipeline
+guard prove restoration. No running game, installed mod or installed DLL changes.
+"""
+import json
+import re
+import shutil
+import struct
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "server"))
+sys.path.insert(0, str(ROOT / "scripts"))
+from efmi_mcp.capture_model import Capture
+from efmi_mcp import dhash
+import efmi_texture_repair as repair
+import selftest
+
+
+def dds(pixel):
+    header = [124, 0x100F, 1, 1, 4, 0, 0] + [0] * 11
+    header += [32, 0x41, 0, 32, 0xFF, 0xFF00, 0xFF0000, 0xFF000000]
+    header += [0x1000, 0, 0, 0, 0]
+    return b"DDS " + struct.pack("<31I", *header) + bytes(pixel)
+
+
+def run():
+    with tempfile.TemporaryDirectory(dir=ROOT / "captures", prefix="texture-repair-runtime-") as tmp:
+        folder = Path(tmp)
+        for name in ("d3d11.dll", "d3dcompiler_47.dll"):
+            shutil.copy2(selftest.RUN / "EFMI" / name, folder / name)
+        cfg = (selftest.RUN / "EFMI/d3dx.ini").read_text(encoding="utf-8-sig")
+        cfg = re.sub(r"(?im)^\s*include\s*=.*$", "; Isolated test: no installed core includes", cfg)
+        cfg = re.sub(r"(?im)^hunting\s*=.*$", "hunting = 0", cfg)
+        (folder / "d3dx.ini").write_text(cfg, encoding="utf-8")
+        shutil.copy2(selftest.PROBE, folder / "efmi_probe.dll")
+        (folder / "efmi_probe.ini").write_text("[SlotCache]\nenable=0\ndhash=0\n")
+        old_probe = selftest.PROBE
+        selftest.PROBE = folder / "efmi_probe.dll"
+        baseline = None
+        client = sb = None
+        try:
+            sb = selftest.Sandbox(["--slot-textures", "--warp"], xxmi=True, xxmi_dll=folder / "d3d11.dll")
+            assert sb.ready.wait(30), "Baseline sandbox did not become ready"
+            client = selftest.connect(sb.pid)
+            raw, blob = client.capture(contents={"inputs": ["tex"]})
+            cap = Capture(raw, blob)
+            draws = [d for d in cap.draws() if d.get("ib") and d.get("tex", {}).get("ps-t1")]
+            assert len(draws) >= 3
+            first, second, third = draws[:3]
+            slot = first["tex"]["ps-t1"]
+            cid = slot["mip_contents"][1]
+            meta, data = client.read_content(cap.frame, cid)
+            fmt = cap.resource(slot["res"])["fmt_name"]
+            fingerprint = dhash.compute(meta, data, fmt)
+            baseline = slot["hash"]
+            keys = [(d["ib"]["hash"], d["args"]["index_count"]) for d in (first, second)]
+            client.close(); client = None
+            sb.quit(); sb = None
+
+            mod = folder / "Mods/Fixture"
+            mod.mkdir(parents=True)
+            for name, color in [("Red", (255, 0, 0, 255)), ("Blue", (0, 0, 255, 255)), ("Green", (0, 255, 0, 255))]:
+                (mod / (name + ".dds")).write_bytes(dds(color))
+            source = f"""[ShaderOverrideFixture]
+hash = {first['shaders']['ps']}
+CheckTextureOverride = ib
+[TextureOverride_Component0]
+hash = {keys[0][0]}
+match_index_count = {keys[0][1]}
+handling = skip
+ps-t2 = ref ResourceGreen
+Resource\\EFMITTL\\Diffuse = ref ResourceRed
+run = CommandList\\EFMITTL\\SetTextures
+drawindexed = {keys[0][1]},0,0
+ps-t2 = null
+Resource\\EFMITTL\\Diffuse = ref ResourceBlue
+run = CommandList\\EFMITTL\\SetTextures
+drawindexed = {keys[0][1]},0,0
+[TextureOverride_Component1]
+hash = {keys[1][0]}
+match_index_count = {keys[1][1]}
+ps-t1 = ResourceGreen
+[ResourceRed]
+filename = Red.dds
+[ResourceBlue]
+filename = Blue.dds
+[ResourceGreen]
+filename = Green.dds
+"""
+            catalog = dict(game_version="sandbox", meshes={f"{h}:{n}": dict(diffuse=dict(slot=1, format=fmt, dhash=fingerprint)) for h, n in keys})
+            path = mod / "mod.ini"
+            path.write_text(source)
+            changes, report = repair.plan([repair.Document(path, path.read_bytes())], catalog)
+            assert len(changes) == 1, report
+            repair.apply_changes(changes, "sandbox")
+            sb = selftest.Sandbox(["--slot-textures", "--warp"], xxmi=True, xxmi_dll=folder / "d3d11.dll")
+            assert sb.ready.wait(30), "Converted sandbox did not become ready"
+            client = selftest.connect(sb.pid)
+            raw, blob = client.capture(contents={"inputs": ["tex"]})
+            cap = Capture(raw, blob)
+            selected = [d for d in cap.draws() if d.get("tex", {}).get("ps-t1")]
+            actual = []
+            for d in selected:
+                binding = d["tex"]["ps-t1"]
+                resource = cap.resource(binding["res"])
+                if resource.get("w") == 1 and resource.get("h") == 1:
+                    ids = binding.get("mip_contents") or [binding["content"]]
+                    info, pixels = client.read_content(cap.frame, ids[0])
+                    actual.append((d["origin"], list(pixels[:4])))
+            assert actual[:3] == [("xxmi", [255, 0, 0, 255]), ("xxmi", [0, 0, 255, 255]), ("game", [0, 255, 0, 255])], actual
+            custom = [d for d in selected if d["origin"] == "xxmi"]
+            aux = cap.resource(custom[0]["tex"]["ps-t2"]["res"])
+            assert aux["w"] == aux["h"] == 1
+            assert "ps-t2" not in custom[1]["tex"], "Reset must preserve a deliberate null binding"
+            later = [d for d in selected if d.get("ib", {}).get("hash") == third["ib"]["hash"]]
+            assert later and all(d["tex"]["ps-t1"]["hash"] == baseline for d in later)
+            assert sb.proc.poll() is None, "Sandbox pipeline state guard failed"
+            print("PASS actual XXMI Filters: per-draw red/blue, texture-only green, auxiliary/null bindings preserved, originals restored")
+            restored, errors = repair.restore(folder)
+            assert not errors and path.read_text() == source
+            print("PASS byte-exact restore after live sandbox conversion")
+        finally:
+            if client:
+                client.close()
+            if sb:
+                sb.quit()
+            selftest.PROBE = old_probe
+
+
+if __name__ == "__main__":
+    run()

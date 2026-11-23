@@ -1,5 +1,41 @@
 # EFMI MCP — Technical decisions
 
+## Portable texture conversion and per-draw matching (2026-11-23)
+
+The user's implementation request covers a distributable tool, not edits to installed example mods. Build its catalog from all native table groups, never installed-mod names. Require confident role classification and a single format/dHash; retain unknown IB/count entries for call-graph ownership checks. Do not promote an isolated current-state review into a universal material default. Main/LOD aliases require explicit common callbacks. Preserve LoyalTools Filter_ComponentN_Diffuse/Light/Normal names.
+
+Follow run and callback references rather than replacing text globally. Stage RabbitFX/EFMITTL inputs locally until their original SetTextures invocation; retain branch/draw order, auxiliary maps and effect/transparent-draw APIs. Reject shared/unknown owners, leaking input state, manual snapshot ambiguity and namespace/name collisions. Backup every planned file before writing any INI, retain original bytes/checksums, and refuse destructive restore over later user edits. Default scan root is the script location.
+
+XXMI 1.3.3's Filter match ranking is shared across the original draw and rejects equal-distance replacements. Re-snapshotting is ineffective: the snapshot is taken once. RestoreInitialTextures resets rankings, so save currently declared PS SRVs (including null), restore/reset, reload saved SRVs, then bind the next material. Use recursive CommandLists within XXMI's 256-depth limit; INI while syntax is unsupported. Plain texture-only overrides restore in the post phase, while EFMI-managed callbacks use core snapshots. Actual sandbox pixel/resource checks verify this behavior; in-game cost remains unmeasured.
+
+## Isolated Zhuangfangyi material review published (2026-11-23)
+
+An isolated live review is scoped by game version, IB/count, pixel shader, slot, source texture and mip. Store repeatable current observations separately from global inferred main-pass choices and historical alternatives. An identical lower-mip dHash supports a mip relationship but cannot prove historical resource identity. A component with no local basic-material assignment requires no invented dHash Filter merely because the native table inferred a diffuse. User authorized updating this table, not discarding unobserved historical states or enabling permanent collection. Current review sidecar/annotations are data artifacts; future builder/converter changes must explicitly preserve/load them.
+
+## Texture repair converter design; LoyalTools Filter names required (2026-11-23)
+
+User requirement: convert the three source binding styles to the LoyalTools Filter identifier convention exactly: Filter_ComponentN_Diffuse / Filter_ComponentN_Light / Filter_ComponentN_Normal, referenced through ps-t[Filter...]. Do not add a repair-tool prefix or substitute LightMap/NormalMap as the Filter role suffix. This is a required output compatibility constraint; the broader repair-tool implementation plan is still a proposal. The source Reference is E:/loyal tools/tools/LoyalTools/ui/universal/efmi.py:1705-1747 and test-output/dhash-template/current-dhash.ini. Existing cache uses original-game source evidence; replacement DDS pixels cannot supply a matching fingerprint for the original. No new permission or cache enable request is implied.
+
+## Character membership, not individual identity (2026-11-23)
+
+User clarified the requirement: distinguish whether an IB belongs to character geometry; identifying which individual character owns it is unnecessary. Future classification should use a combined character-IB membership set and retain evidence, rather than depend on unique per-character ownership. Cross-character shared hashes do not invalidate character membership. This clarification does not request re-enabling capture or converting existing mods.
+
+Read current native filters in probe/src/capture.cpp: layout_skinned checks BLENDINDICES; vs_t0_is_buffer checks only that the VS-t0 SRV resource is a buffer; slot_record rejects D3D11_USAGE_DYNAMIC IBs when configured. These are candidate filters, not semantic proof that the buffer is a bone pool or the draw is a playable character. Skinned NPC/Boss/other animated draws may qualify; CPU-posed parts can be absent. Actual mod geometry/material entrypoints and prior verified native observations can seed known character membership. Marker-only declarations must not create unsupported ownership claims, and a hash absent from known character data remains unknown rather than proven scenery. No product-code, cache policy, runtime state or mod change in this clarification round; collection remains OFF.
+
+## Ultimate cache complete; automatic collection disabled (2026-11-23)
+
+The user requested disabling automatic collection once installed-mod main/ultimate material coverage was complete. After verifying131unique meshes/325populated role records and both ultimate triples, disable both live enable/dhash flags through official IPC, flush, and set the project-local startup INI enable=0,dhash=0. Preserve cache files and fingerprint alternatives. User-confirmed LOD pairs do not require extra collection. Do not re-enable for read-only table work; any later collection is a separate requested action. Verify persistent values through the Windows INI API and report live shutdown separately from an unperformed restart.
+
+## Hair LODs confirmed; await ultimate collection (2026-11-23)
+
+User confirmed Akekuri dc4ca03e, Liino4e3f4316 and Snowshinea271d449 are LOD IBs. Their corresponding main hair IBs3623994e,79a0cd6f,7cca4f82 already have all nine material-role dHashes. Updated the coverage report and local audit classification from probable to user-confirmed LOD; these are excluded from required coverage.
+
+The user will collect Zhuangfangyi ultimate-state IBs3a6c1df3/75147 and526afce0/8532 later. Leave automatic slot/dHash collection enabled. After the user reports completion, re-read actual native evidence, regenerate the reports, and disable runtime collection plus persistent startup policy if required coverage is complete, as already authorized. Preserve the ten multiple-value role observations; confirmed LOD classification does not resolve or discard them. This round changes reports/memory only; no game input, capture, installation/mod edit, cache toggle or product-code change.
+
+## Installed mod coverage audit; cache kept enabled (2026-11-23)
+
+The user explicitly excludes LOD IBs from the installed-mod coverage requirement: LOD uses the corresponding main control's textures. Audit both section names and literal $lod_level assignments; an EntryPoint without a LOD suffix can still be LOD. Include disabled mod folders. Separate pure hiding, activity markers and helpers from material-bearing draws. Secondary unlabelled hair pairs may be documented as probable LOD from identical bindings and reduced geometry, but this is inference. A special-state draw without native evidence is not automatically an LOD or a proven shared-material alias. Disable live and persistent collection only after required coverage is established; do not silently drop dHash variants to satisfy that condition.
+
 ## Read executable resource declarations, not reflection metadata (2026-11-23)
 
 Live Yvonne DXBC omits RDEF; D3DReflect/GetDesc can both succeed while returning zero BoundResources. Therefore success of reflection is not evidence of absent texture declarations. Probe0.1.18 uses D3DDisassemble and a shared, strict dcl_resource_texture2d parser for the cached per-PS slot mask. Filter BC views before disassembling; retain fail-closed handling for missing/invalid bytecode and exclude non-plain-2D declarations. Sandbox regression must remove RDEF from compiled shaders and prove its absence in the saved bytecode. Do not backfill manually when validating whether automatic collection worked.
@@ -207,6 +243,10 @@ Keep fingerprints in a separately versioned sidecar instead of modifying probe-o
 - Provide a read-only batch MCP tool that joins a requested capture's bindings with static SM4/5.0 SRV instruction references. Return inline evidence and grouped material/target bindings, preserving draw numbers and mesh ranges. Declarations and leftover bindings do not prove use; conditional references do not prove per-pixel execution. Do not guess diffuse/normal roles from fixed slots or treat failed analysis as an empty usage set.
 - Cache immutable shader bytecode/listings/parsed references by hash for one probe connection, with LRU limits; clear on a connection change. Do not cache material bindings across captures. Full shader paging uses the same cache and writes files only on explicit export. This avoids repeated probe requests, disassembly, disk exports and agent scripts without changing the probe or requiring a game restart.
 - Validate both the no-file contract and data correctness in unit/real-sandbox tests, then compare live slot metadata against the existing draw query. Report cold/warm measurements as such, without presenting them as a benchmark of an old agent workflow.
+
+## Primary-slot simplification and RabbitFX compatibility repair (2026-10-16)
+
+User requires simple primary-slot binding for these conversions: preserve existing material branches and change only measured primary slot numbers. Do not automatically add other pass bindings, material aliases/save-restore helpers, or global shader classifiers. Preserve requested hair RabbitFX and separate FX calls. ShaderOverride filter_index is global and the former main/outline values blocked other RabbitFX mods; this has now been removed from all five affected slot mods.
 
 ## D-024: The probe collects slot data per game version by itself, keyed without texture hashes
 

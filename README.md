@@ -611,3 +611,31 @@ py -3 -m efmi_mcp.slot_table "F:/EFMI MCP/dist/slot-cache/<version>" --import-dh
 ```
 
 The cached format and dHash supply the inputs for `[Filter...] match_format = ...`, `match_dhash = ...` and `ps-t[Filter...] = ref Resource...`. A dHash is a similarity reference, not a unique texture ID; computed hashes still require game verification. This collector does not edit or deploy mod INIs. An old cache without pixels or matching original log evidence cannot recover missing fingerprints. The cache-free public v0.1.23 release is unchanged.
+
+### Portable texture repair script
+
+`scripts/efmi_texture_repair.py` converts fixed `ps-tN`, RabbitFX and EFMITTL basic material assignments to LoyalTools-compatible `Filter_ComponentN_Diffuse`, `Filter_ComponentN_Light` and `Filter_ComponentN_Normal` bindings. It follows local `run` calls and explicit EFMI draw callbacks, retaining each material change at its original position before the corresponding draw. Conditional outfit choices, geometry, EFMITTL transparency draws and RabbitFX effect calls remain in place. Proven main/LOD callbacks share the main material definition.
+
+Build a standalone copy containing your native slot-table catalog:
+
+```powershell
+py scripts/build_texture_repair.py "dist/slot-cache/<game-version>/slot-table.json"
+```
+
+This writes `dist/texture-repair/efmi_texture_repair.py`. Copy that single file into the folder to repair; it needs Python 3.10 or newer and no pip packages, MCP connection or running game. By default it scans the **script's folder** and all subfolders, including disabled mod folders. It does not follow junctions or symbolic links.
+
+```powershell
+py efmi_texture_repair.py --dry-run       # Preview without modifying INIs
+py efmi_texture_repair.py                 # Back up, then convert eligible INIs
+py efmi_texture_repair.py --restore       # Restore original bytes
+```
+
+Use `--root "path"` to scan a different folder, `--report "report.json"` for detailed results, or `--catalog "slot-table.json"` to override the embedded catalog. The source script requires `--catalog`; the packaged copy does not. A report can overwrite only a previous report from this tool, and cannot overwrite an INI, catalog or backup receipt. No automatic game reload or cache-setting changes occur.
+
+Each modified `name.ini` gets adjacent `name.ini.efmi-texture-repair.bak` and `name.ini.efmi-texture-repair.json` files. Neither is an INI. Backups preserve the original bytes, including encoding, comments and line endings; all backups are prepared before any INI replacement. Repeat conversion leaves marked files unchanged. Restore verifies checksums and preserves an INI with subsequent user edits instead of silently overwriting those edits. Keep both backup files until restoration is no longer needed.
+
+Eligibility comes from **all groups in the native table**, not an inventory of installed mods. A role needs confident classification and one distinct source format/dHash. Ambiguous historical fingerprints, unresolved/shared material callbacks, leaking interface state, conflicting definitions and manual snapshot layouts are reported and skipped. Current-scene review annotations do not silently become universal defaults. Unknown IBs and unrelated INIs are left alone; a file may contain both converted and skipped components. Use the catalog for the corresponding game build. The tool does not infer a fingerprint from the replacement DDS.
+
+Repeated matching needs special handling: XXMI 1.3.3 rejects an equally close Filter match after the first replacement in the same original draw. The generated helper preserves current shader-declared PS resources, restores the initial textures to reset matching, then rebinds the preserved resources before the next Filter assignment. This retains per-draw changes and deliberate null/auxiliary bindings. The helper scans 128 slots twice per binding batch; its cost has not been profiled in the game. EFMI-managed callbacks use the core's snapshot lifecycle; ordinary overrides restore in the post phase so texture-only overrides reach the original draw.
+
+Verification: `sandbox/texture_repair_test.py` exercises call graphs, branches, backup/rollback and byte-exact restore. `sandbox/texture_repair_integration_test.py` runs generated Filters in a private XXMI 1.3.3 D3D11 sandbox: consecutive red/blue custom draws, a green texture-only original draw, auxiliary/null preservation and original-state restoration. These checks do not establish a successful Filter hit for every cached real-game material. Installed mods and the running game are not modified by the tests.

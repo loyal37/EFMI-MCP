@@ -1,4 +1,56 @@
+## Texture repair limits and resolved runtime issue (2026-11-23)
+
+Resolved in the new converter: two Filter assignments with equal match distance within one original draw produced red/red instead of red/blue in actual XXMI 1.3.3. Upstream DirectX11/CommandList.cpp shows strict ranking and one snapshot per draw. Preserve-current-SRVs / RestoreInitialTextures / rebind-current-SRVs resets ranking safely; private runtime test now passes red/blue and keeps auxiliary/null resources. Two 128-slot recursive scans per batch add work; real-game performance and every real-game material hit remain unverified. Synthetic runtime success is not a claim of live character verification.
+
+Current installed-INI copy audit skips 24 material contexts for missing unique fingerprints, shared/unknown callers, leaking input state, duplicate original sections, unresolved helpers or component identifier conflicts. Zhuangfangyi Summer Collection components5/6 are still ambiguous in native history despite current-state reviews. All confirmed unambiguous native table roles are in the portable catalog; current-scene sidecars do not erase historical alternatives. Manual snapshot layouts are conservatively skipped. The runtime test requires a private XXMI 1.3.3 sandbox setup; none of its binaries are distributed by these changes.
+
+Typhoeus lower-mip difference (2026-11-23): current BC7_UNORM_SRGB texture57b75235 mip1/256 matches historical76b8d894ec6c640e; mip2/128 computes76b8d894edec640e in two captures versus old texture326787b3 value76b8d894ecece40e (2bits). Cause unproven; retain both provenance records. Thus unresolved differences are not limited to Si BC5 normals. Current screenshot also shows user-enabled hunting/skip mode; no keys were sent or hunting state changed.
+
+## Si BC5 fingerprint discrepancies (2026-11-23)
+
+Two native captures agree,but captured_pixels differs from historical probe_gpu:b4ea2057 normal texture77982056 produces1b4c4c640d8e956a at mip1 versus5b4c4c640d8e956a (1bit);mip2 also differs by1bit from the historical128px value.77ea19b6 normal mip2 yields3429886a4aabd98a versus historical3529896b4aabd98a (3bits),while mip1matches. Retain history;decoder/arithmetic or historical-content cause is unproven. Details:texture-review-si.json.d9b71faf also proves same-IB/same-PS can have two simultaneous textures;PS alone cannot select one candidate.
+
 # EFMI MCP — Known issues
+
+## Isolated Zhuangfangyi material review published (2026-11-23)
+
+Isolated Zhuangfangyi review shows that cb8fbcbb andde17b5d3 currently use shader-referencedt3/32x32 BC7_UNORM, while the global main selection displays t0/sRGB from different historical passes. Do not treat all16global multiple-value records as simple streaming variants or assume the displayed primary pass describes every visible state. Native history remains intact; current-context evidence is in texture-reviews.json and table live_material_reviews. The stock builder does not yet reload this sidecar automatically.
+
+Both current installed component2/7 lack local basic-material replacement assignments, so they are not conversion blockers for that mod.59f6bc2f/0d2ddddc have current verified diffuse values, but other historical texture states remain unvalidated. Computed hash equality is not a deployed XXMI Filter-hit receipt.
+
+## Character IB attribution scope reviewed (2026-11-23)
+
+User asked whether every character's IBs can be distinguished. Read-only review of all-mod declarations groups29character outfit mods into23character name-prefix groups, with339distinct declared IB hashes including main, LOD, hide-only and marker references. This is known mod coverage, not a complete game catalogue or independent semantic proof of every name. The previously verified main/ultimate material scope remains131IB/count keys.
+
+Found one cross-character declaration: bd9492c9/count1992 is a Liino Component7_LOD1 EntryPoint; both Liino and disabled Typhoeus k/1.ini also declare an activity marker for it. Typhoeus marker-only attribution must not be treated as proof the actual character shares that geometry. No mod or product code changed. Unknown native rows and shared playable/Boss geometry require additional runtime context; IB hash alone is not a universally unique character identifier. Existing ownership uses mod declarations for labels, native shader/texture evidence for material roles. Cache remains OFF; no capture, input or setting change. Evidence: captures/ultimate-cache-finalize-20261123/character-attribution-review.json.
+
+## Ultimate cache complete; automatic collection disabled (2026-11-23)
+
+The previously missing Zhuangfangyi ultimate IBs3a6c1df3/75147 and526afce0/8532 now have complete native slot/dHash triples, verified from persistent automatic records. Three secondary hair entries were confirmed by the user as LOD and are excluded. Installed main/ultimate scope has no missing meshes or empty inferred material-role fingerprints; the earlier shutdown blocker is resolved.
+
+Automatic collection disabled live and persistently after verification. Six additional role alternatives appeared during further gameplay, bringing the scoped ambiguous countto16; allvalues/evidence remain. This is not missing collection, but future dHash conversion must not pretend every IB/role has one unique scalar value. No claim of XXMI private-cache equality or actual dHash replacement deployment.
+
+## Hair LODs confirmed; await ultimate collection (2026-11-23)
+
+User confirmed Akekuri dc4ca03e, Liino4e3f4316 and Snowshinea271d449 are LOD IBs. Their corresponding main hair IBs3623994e,79a0cd6f,7cca4f82 already have all nine material-role dHashes. Updated the coverage report and local audit classification from probable to user-confirmed LOD; these are excluded from required coverage.
+
+The user will collect Zhuangfangyi ultimate-state IBs3a6c1df3/75147 and526afce0/8532 later. Leave automatic slot/dHash collection enabled. After the user reports completion, re-read actual native evidence, regenerate the reports, and disable runtime collection plus persistent startup policy if required coverage is complete, as already authorized. Preserve the ten multiple-value role observations; confirmed LOD classification does not resolve or discard them. This round changes reports/memory only; no game input, capture, installation/mod edit, cache toggle or product-code change.
+
+## Ultimate IB confirmation and main hair coverage (2026-11-23)
+
+User confirmed Zhuangfangyi IB3a6c1df3/75147 and526afce0/8532 are ultimate-state meshes; updated the scoped report to distinguish user confirmation from an actual native capture. Ultimate native material evidence remains absent; collection settings unchanged.
+
+Rechecked saved native table: Akekuri main hair3623994e/41901, Liino79a0cd6f/48909 and Snowshine7cca4f82/25470 each have diffuse/lightmap/normal with one computed dHash per role (all nine present). The secondary Akekuri dc4ca03e/29394 row has one pass and no primary material roles; Liino4e3f4316/23460 and Snowshinea271d449/18654 have no row. These three secondary entries remain probable LOD pairs, inferred from identical material bindings/lower index counts; the user has not yet independently confirmed that classification. Main hair textures are complete. No new capture, game input, mod change or product-code change.
+
+## Installed mod coverage audit; cache kept enabled (2026-11-23)
+
+All 142 ordinary main EntryPoint declarations in the installed-mod inventory are observed, but DISABLED_zhuangfangyi lilith vice 2.0/fangyi ul.ini special draws3a6c1df3/75147 and526afce0/8532 are absent from current native cache. They bind all three material types and draw replacement geometry. Their native dHashes and exact trigger remain unverified. Three unlabelled hair pairs remain probable-LOD classifications. Hence conditional cache shutdown was not performed; both runtime and restart policy remain enabled.
+
+Ten primary roles across eight meshes retain multiple computed values (Chengqianyu1, Typhoeus2, Si7). Seven are 128/256-pixel observations; other Si entries have different texture identities/passes. This is not an empty fingerprint cache, but the scalar dhash remains null/ambiguous. Future conversion must handle variants or validate a selection policy. Full details and originals are preserved in mod-coverage.json and slot-table.json; no overwrites made to hide ambiguity.
+
+## Stripped-shader collection failure resolved on current Yvonne (2026-11-23)
+
+Probe0.1.18 now verified on real Endfield PID1472: automatic records existed before the audit capture, with all three body roles persisted at frame2370 and matched to capture9044/draw79. Counters443 completed/0failed/0pending. The prior0.1.17 RDEF failure below is resolved for this observed character; whole-game coverage and XXMI-private-hash equivalence remain unproven. The connected MCP retained stale pipe/capture metadata despite the reported restart; a status retry reconnected successfully, and fresh official ProbeClient/raw-cache reads verified the new dHash fields without relying on old displayed status formatting.
 
 ## Probe0.1.17 silently skips shipped shaders without RDEF (2026-11-23)
 
@@ -20,7 +72,14 @@ The old slot cache has metadata, not texture pixels: missing dHashes need new ex
 
 First run of the dHash sandbox regression reported capture contents released during its existing mip-read checks, before the new collector path. An isolated rerun passed all checks including the collector, and the separate 108-check MCP regression passed. No cause established; this is not recorded as a probe fix.
 
-> Last updated: 2026-10-21.
+> Last updated: 2026-10-25.
+
+## NOTE-013: Testing a ShaderRegex pattern against the probe's disassembly (2026-10-25)
+
+- The probe's `efmi_get_shader` text is plain D3DDisassemble output; 3DMigoto runs ShaderRegex on its own disassembly, which has no trailing blanks (`endif`, not `endif `) and prints floats with more digits (`l(0.941176474)`, `l(1.175494351E-38)`). Strip trailing blanks before testing a pattern offline; a pattern that relies on exact float text cannot be checked this way.
+- PCRE syntax in INI patterns: `\h` and `(?<name>…)` have to become `[ \t]` and `(?P<name>…)` for Python's `re`.
+- The regex cache tells what XXMI decided: `ShaderCache\<original hash>-ps_regex.dat` is 16 bytes when no group matched; otherwise it lists the matching groups by index in section-name order (with ZZMI 1.5 and RabbitFX 7.9: 0 = RabbitFX CensorFilter, 1 EngineFX, 2 TSRFace, 3 TSRMain, 4 TSROutline, 5 TSRTransparent, 7 ZZMI EnableTextureOverrides), and `-ps_regex.bin` holds the rewritten bytecode. All entries are rebuilt when the regex configuration changes (its hash is in bytes 4-7).
+- Zenless Zone Zero 3.3.0 (installed 2026-10-21) compiles the character depth pre-pass shaders with per-sample interpolation (`dcl_input_ps linear sample v0.xy`); RabbitFX 7.9's CensorFilter required `dcl_input_ps linear v0.xy` and stopped matching them (see CURRENT_STATE, 2026-10-25).
 
 ## LIMIT-012: Boundaries of recording (probe 0.1.11)
 
@@ -34,6 +93,14 @@ First run of the dHash sandbox regression reported capture contents released dur
 - Index data the CPU rewrites every frame has no hash ("volatile"): such draws are found by shader only. Lines are told apart by IB hash, range and shaders; two passes of one mesh are two lines, and things moving in and out of view are "transient" too (compare with a baseline).
 - While a trigger watches, every frame is recorded at minimal detail and the slot cache waits; one trigger at a time; it ends with its client. The stream keeps at most 3600 frames.
 - Scope of verification: the sandbox only (with and without XXMI); not yet in the real game.
+
+## LIMIT-010: Game shader updates invalidate material slot tables and RabbitFX patterns (2026-10-15)
+
+Arcane's current showcase main shaders read material textures one slot above the installed INI, while other passes have different slots. A null intended for an extra material texture now clears the normal slot. Do not apply a global +1 replacement to all shaders/passes: inspect current sampling instructions and preserve the original purpose of each binding. RabbitFX 2.7 Main regex also rejects the changed constant-buffer declaration order/sizes, although its G-buffer variants still work. The diagnosis is verified against real captured instructions; no repair was applied, and LOD/open-world variants are unverified. Evidence and per-component mappings are in CURRENT_STATE / `captures/slot-update-20261015/arcane/`.
+
+Update later on 2026-10-15: the user authorized the bulk native-slot migration; 11 INIs / 9 mods were updated with backups. Arcane's five main-material groups and screenshot pass after a confirmed F10. Other characters / LOD / ultimate states remain individually unverified, and RabbitFX's Main pattern is still not repaired. The earlier diagnosis above remains the evidence for the engine change.
+
+Later the same day: Rossiy's body/clothing was converted from RabbitFX aliases to current native main-material slots at the user's request. Its showcase passed binding and image verification; both hair-related entries per main/LOD INI were intentionally retained as RabbitFX. This does not fix the global Main regex incompatibility or establish LOD verification.
 
 ## LIMIT-009: ZZMI support is partial (updated 2026-10-21; first assessed read-only on 2026-10-09)
 
