@@ -1,5 +1,9 @@
 # EFMI MCP — Technical decisions
 
+## Portable EXE packaging (2026-11-23)
+
+Use a console, single-file Windows x64 PyInstaller executable containing the existing Python converter and embedded catalog. Frozen default scan paths must derive from sys.executable, because __file__ points into the temporary extraction directory. Preserve the script's direct conversion behavior and CLI; optional adjacent Preview.cmd/Restore.cmd launchers invoke the same executable. Build work/cache and distribution files stay local under ignored dist; source builder and hidden EXE regression are committed. No installed Python is required to run the packaged executable.
+
 ## Portable texture conversion and per-draw matching (2026-11-23)
 
 The user's implementation request covers a distributable tool, not edits to installed example mods. Build its catalog from all native table groups, never installed-mod names. Require confident role classification and a single format/dHash; retain unknown IB/count entries for call-graph ownership checks. Do not promote an isolated current-state review into a universal material default. Main/LOD aliases require explicit common callbacks. Preserve LoyalTools Filter_ComponentN_Diffuse/Light/Normal names.

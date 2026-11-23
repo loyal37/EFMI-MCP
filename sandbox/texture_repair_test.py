@@ -31,6 +31,22 @@ ENTRY = "[TextureOverrideBody]\nhash = 12345678\nmatch_index_count = 300\n"
 
 
 class RepairTests(unittest.TestCase):
+    def test_frozen_default_root_is_beside_exe_not_extraction_folder(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "captures") as tmp:
+            root = Path(tmp).resolve()
+            path = root / "mod.ini"
+            path.write_text(ENTRY + "ps-t14 = ResourceDiffuse\n")
+            report = root / "preview.json"
+            with patch.object(repair.sys, "frozen", True, create=True), \
+                    patch.object(repair.sys, "executable", str(root / "repair.exe")), \
+                    patch.object(repair, "load_catalog", return_value=catalog()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(repair.main(["--dry-run", "--report", str(report)]), 0)
+            result = json.loads(report.read_text())
+            self.assertEqual(result["scanned"], 1)
+            self.assertEqual(result["changed_files"], [str(path)])
+            self.assertFalse(repair.receipt_paths(path)[0].exists())
+
     def convert(self, body):
         doc = document(body)
         changes, reports = repair.plan([doc], catalog())

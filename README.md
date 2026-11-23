@@ -624,6 +624,8 @@ py scripts/build_texture_repair.py "dist/slot-cache/<game-version>/slot-table.js
 
 This writes `dist/texture-repair/efmi_texture_repair.py`. Copy that single file into the folder to repair; it needs Python 3.10 or newer and no pip packages, MCP connection or running game. By default it scans the **script's folder** and all subfolders, including disabled mod folders. It does not follow junctions or symbolic links.
 
+For a standalone Windows EXE, run the builder with `--exe` on Windows with PyInstaller installed. It creates `dist/texture-repair/efmi_texture_repair.exe`, containing Python and the catalog, plus optional `Preview.cmd` and `Restore.cmd` launchers. The EXE needs no installed Python. Place it in the folder to repair and double-click to back up and convert; keep the launchers beside it to preview or restore by double-click. All command-line options also work with the EXE. Its default scan root is the EXE's folder, independent of the working directory and its temporary extraction directory. Build work and PyInstaller caches stay under `dist/texture-repair-build`.
+
 ```powershell
 py efmi_texture_repair.py --dry-run       # Preview without modifying INIs
 py efmi_texture_repair.py                 # Back up, then convert eligible INIs
@@ -639,3 +641,5 @@ Eligibility comes from **all groups in the native table**, not an inventory of i
 Repeated matching needs special handling: XXMI 1.3.3 rejects an equally close Filter match after the first replacement in the same original draw. The generated helper preserves current shader-declared PS resources, restores the initial textures to reset matching, then rebinds the preserved resources before the next Filter assignment. This retains per-draw changes and deliberate null/auxiliary bindings. The helper scans 128 slots twice per binding batch; its cost has not been profiled in the game. EFMI-managed callbacks use the core's snapshot lifecycle; ordinary overrides restore in the post phase so texture-only overrides reach the original draw.
 
 Verification: `sandbox/texture_repair_test.py` exercises call graphs, branches, backup/rollback and byte-exact restore. `sandbox/texture_repair_integration_test.py` runs generated Filters in a private XXMI 1.3.3 D3D11 sandbox: consecutive red/blue custom draws, a green texture-only original draw, auxiliary/null preservation and original-state restoration. These checks do not establish a successful Filter hit for every cached real-game material. Installed mods and the running game are not modified by the tests.
+
+`sandbox/texture_repair_exe_test.py <slot-table.json>` tests the built EXE with Python removed from its child PATH: an embedded catalog, Unicode paths, a different working directory, disabled subfolders, preview, conversion, idempotence, byte-exact restore and preservation of subsequent user edits. It runs hidden and writes only private fixtures inside the project.

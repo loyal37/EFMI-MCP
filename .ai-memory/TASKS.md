@@ -1,3 +1,9 @@
+## Standalone EXE packaging completed (2026-11-23)
+
+- Done: reproducible --exe build, frozen executable-directory scan root and optional Preview.cmd/Restore.cmd launchers; output under dist/texture-repair.
+- Done: 25 offline tests and actual packaged-EXE scan/convert/backup/restore tests with no Python on child PATH, Unicode paths and a different CWD. No installed files changed.
+- Done: README and project memory synchronized for source commit/push. Existing real-game material verification limits remain unchanged.
+
 ## Portable converter completed (2026-11-23)
 
 - Done: standalone Python distribution with native table catalog, recursive scan including disabled folders, fixed-slot/RabbitFX/EFMITTL conversion, precise per-draw call placement and LoyalTools Filter names.

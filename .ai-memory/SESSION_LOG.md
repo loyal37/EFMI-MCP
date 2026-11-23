@@ -1,3 +1,9 @@
+## Texture repair EXE packaging (2026-11-23)
+
+User asked to package the tool as an EXE. Added --exe build option, frozen application-path detection and optional Preview.cmd/Restore.cmd launchers. Built with existing PyInstaller 6.20.0 and Python 3.12.10: dist/texture-repair/efmi_texture_repair.exe, 8418098 bytes, with the 1.6.3+95420c132b00 native catalog embedded. PyInstaller warnings are optional non-Windows/import machinery modules; actual Windows execution passes.
+
+Ran 25 offline regressions plus sandbox/texture_repair_exe_test.py against the built executable. Its hidden child processes have only Windows directories on PATH, use a Unicode private directory and a different CWD, and verify preview, backup/conversion, repeat no-op, exact restore, later-edit protection, explicit root and temporary extraction cleanup. A test harness environment-key case issue was fixed before the passing run. No material conversion algorithm or installed mod/game/config changes. README/memory synchronized and source diff reviewed for automatic commit/push; dist/build output and unrelated .codex remain outside the commit.
+
 ## Portable INI texture repair delivered (2026-11-23)
 
 Implemented the user's Python recursive converter/restore request, including run APIs and per-draw material assignments in the named Zhuangfangyi example. Read-only references: native versioned table, installed INIs/EFMI/RabbitFX/EFMITTL API definitions, LoyalTools Filter naming and upstream SpectrumQT/XXMI-Libs-Package DirectX11/CommandList.cpp. Source converter and builder are under scripts; offline and runtime tests under sandbox; packaged single-file script under ignored dist/texture-repair. Catalog covers 5090 known mesh keys, 504 eligible meshes and 1039 roles from all native groups. Native history/review artifacts are unchanged.

@@ -40,6 +40,11 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def application_path():
+    """A one-file executable extracts __file__ into a temporary directory."""
+    return Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
+
+
 def assignment(line):
     code = line.split(";", 1)[0].strip()
     if "=" not in code:
@@ -686,7 +691,7 @@ def validate_report(path, catalog_path=None):
     if path.exists() and not regular(path):
         raise ValueError("Report must not be a link")
     path = path.resolve()
-    protected = {Path(__file__).resolve()}
+    protected = {Path(__file__).resolve(), application_path()}
     if catalog_path:
         protected.add(catalog_path.resolve())
     if (path.suffix.lower() != ".json" or path.name.lower().endswith(RECEIPT)
@@ -718,8 +723,8 @@ def print_result(result):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent,
-                        help="Recursively scan this directory; default: the script's folder")
+    parser.add_argument("--root", type=Path, default=application_path().parent,
+                        help="Recursively scan this directory; default: the script or EXE's folder")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--restore", action="store_true", help="Restore originals from verified adjacent backups")
     mode.add_argument("--dry-run", action="store_true", help="Report proposed conversions without changing INIs")
