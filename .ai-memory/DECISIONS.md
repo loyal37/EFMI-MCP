@@ -1,5 +1,11 @@
 # EFMI MCP — Technical decisions
 
+## Automatic fingerprints beside slot metadata (2026-11-23; supersedes explicit-only collection)
+
+The user explicitly requested unattended character browsing and enabling the completed cache. Add bounded on-device asynchronous dHash work to native sampled draws; no connected MCP or frame dump dependency. Share the helper's shader source rather than duplicate its sampling contract. Reflect PS declarations, accept native single-slice BC1/2/3/4/5/7 views, preserve pipeline state with ExecuteCommandList(TRUE), and poll only eight bytes with DO_NOT_WAIT. Track resource lifetimes and writes so texture switches/uploads cannot reuse stale runtime results. On unknown command-list writes invalidate observed textures conservatively.
+
+Automatic evidence belongs to the probe-owned append-only draw record; explicit imports still use the separate atomic sidecar. Successful fingerprints extend persistent dedupe keys so old records do not suppress new hashes. Keep material-role inference independent. Preserve probe_gpu versus xxmi_log/captured_pixels/exported_pixels, chosen mip and view format; originals retain precedence and conflicting values remain alternatives. Do not claim hardware/software or XXMI-cache equality. Local enable=-1 plus dhash=1 retains the EFMI-on / non-EFMI-off policy.
+
 ## Material fingerprint persistence (2026-11-23)
 
 Keep fingerprints in a separately versioned sidecar instead of modifying probe-owned append-only draw records. Collect explicitly from original logs or exact retained pixels; do not add synchronous fingerprint readbacks to background render-thread sampling. Require native binding identity for log joins and runtime-version/origin checks for live collection. Preserve computed versus XXMI provenance, mip/view format and conflicts. Transfer a fingerprint across a mesh's passes only by texture hash and format; never use it to alter role inference. Original observations take precedence over computed alternatives; neither automatic mod conversion nor changing the public cache-free release is part of this change.

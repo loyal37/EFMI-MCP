@@ -14,7 +14,29 @@ import re
 import tempfile
 
 NAME = "texture-dhashes.json"
-SOURCES = {"xxmi_log", "captured_pixels", "exported_pixels"}
+SOURCES = {"xxmi_log", "captured_pixels", "exported_pixels", "probe_gpu"}
+
+
+def automatic_entries(records: list[dict]) -> list[dict]:
+    """Background probe observations embedded in native draw records, including old-cache upgrades."""
+    entries = {}
+    for r in records:
+        if r.get("origin") != "game" or not r.get("ib") or not r.get("ps"):
+            continue
+        for v in r.get("ps_srv", []):
+            value = v.get("dhash")
+            if (v.get("origin") != "game" or v.get("dhash_source") != "probe_gpu"
+                    or not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{16}", value)):
+                continue
+            entry = dict(ib=r["ib"], index_count=r["index_count"], ps=r["ps"], slot=v["slot"],
+                         texture=v.get("hash"), format=v["format"], view_format=v.get("view_format"),
+                         dhash=value, source="probe_gpu", mip=v.get("dhash_mip"),
+                         width=v.get("dhash_width"), height=v.get("dhash_height"),
+                         evidence={"frame":r["frame"], "unix_ms":r.get("unix_ms"), "file":"draws.jsonl"})
+            key = tuple(entry.get(k) for k in ("ib", "index_count", "ps", "slot", "texture", "format",
+                                               "view_format", "dhash", "mip"))
+            entries.setdefault(key, entry)
+    return list(entries.values())
 
 
 def load(folder: Path, version: str) -> list[dict]:

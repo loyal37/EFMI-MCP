@@ -1,5 +1,13 @@
 # EFMI MCP — Tasks
 
+## Automatic material dHash cache (implemented, enabled, sandbox verified; 2026-11-23)
+
+- Done: automatic native material fingerprints without an MCP connection, per-resource upload invalidation, bounded asynchronous GPU jobs, versioned draw persistence, old-cache upgrades and table provenance/conflict handling.
+- Done: install probe 0.1.17 and enable automatic EFMI collection in local dist/efmi_probe.ini; private-runtime readback confirms EFMI on and ZZMI off. Server 0.1.27 exposes the updated status/table.
+- Done: automatic workflow in WARP and hardware/private XXMI, exact WARP pixel parity, pipeline-state preservation, material swaps/mip writes, dedupe and 11 unit tests; broad relevant regressions pass.
+- Follow-up: actual character browsing/coverage and performance after the user's next game launch; original material draws must be visible, and additional LODs/passes need observation. No real game was running this round.
+- Existing issue: contents-parity regression still expects top-mip-only DDS and equal whole-buffer/region log hashes. Old probe 0.1.16 reproduces exactly the same failures. Separate from automatic slot-cache correctness; no broad all-green claim.
+
 ## Material dHash cache (implemented and offline/sandbox verified, 2026-11-23)
 
 - Added explicit original-dump import and retained-native-capture collection to the persistent per-version cache; schema-5 table queries/exports show role hashes, provenance, conflicts and coverage. Original roles remain unchanged.

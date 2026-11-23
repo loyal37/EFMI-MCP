@@ -54,6 +54,39 @@ class FingerprintTests(unittest.TestCase):
         self.assertTrue(self.role(table)["xxmi_cached"])
         self.assertIn("d=0000000000000000 (xxmi_log)", slot_table.to_markdown(table))
 
+    def test_automatic_upgrade_old_cache_and_original_precedence(self):
+        views = copy.deepcopy(self.textures)
+        views[0].update(dhash="0"*16, dhash_source="probe_gpu", dhash_mip=1,
+                        dhash_width=256, dhash_height=256)
+        r = rec("abcdef12", 123, PS_LIT, views)
+        with (self.folder / "draws.jsonl").open("a") as f:
+            f.write(json.dumps(dict(r, key="upgraded"), separators=(",", ":")) + "\n")
+        self.assertEqual(len(fp.automatic_entries([r, r])), 1)
+        table = slot_table.build(self.folder, reader=READS.get)
+        self.assertEqual(self.role(table)["dhash"], "0"*16)
+        self.assertEqual(self.role(table)["dhashes"][0]["source"], "probe_gpu")
+        self.assertFalse(self.role(table)["xxmi_cached"])
+        self.assertEqual(self.role(table)["basis"], self.role()["basis"])
+        self.assertFalse((self.folder / fp.NAME).exists())
+        fp.save(self.folder, self.version, [self.entry("f"*16)])
+        table = slot_table.build(self.folder, reader=READS.get)
+        self.assertEqual(self.role(table)["dhash"], "f"*16)
+        self.assertEqual(len(self.role(table)["dhashes"]), 2)
+
+    def test_automatic_rejects_replacements_and_preserves_upload_conflicts(self):
+        view = dict(self.textures[0], dhash="0"*16, dhash_source="probe_gpu", dhash_mip=1)
+        r = rec("abcdef12", 123, PS_LIT, [view])
+        for bad in (dict(r, origin="xxmi"), dict(r, ps_srv=[dict(view, origin="xxmi")]),
+                    dict(r, ps_srv=[dict(view, dhash_source="xxmi_log")]),
+                    dict(r, ps_srv=[dict(view, dhash="bad")])):
+            self.assertFalse(fp.automatic_entries([bad]))
+        second = dict(r, ps_srv=[dict(view, dhash="1"*16)])
+        entries = fp.automatic_entries([r, second])
+        fp.annotate(self.table, entries)
+        self.assertEqual(self.role()["dhash_status"], "ambiguous")
+        self.assertIsNone(self.role()["dhash"])
+        self.assertEqual(len(self.role()["dhashes"]), 2)
+
     def test_join_rejects_replacement_wrong_mesh_count_and_shader(self):
         for args in ({"texture": "ffffffff"}, {"count": 124}, {"ps": "9"*16}):
             entries, report = fp.collect_dump(self.table, self.dump(**args))

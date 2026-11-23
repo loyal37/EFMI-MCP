@@ -512,6 +512,11 @@ def build_server(efmi_root: Path, out_dir: Path, probe_dll: Path,
                 why = f" ({slots['enabled_by']})" if slots.get("enabled_by") else ""
                 lines.append(f"slot cache: {'on' if slots.get('enabled') else 'off'}{why}{where}; "
                              "[SlotCache] enable = 1 / 0 in efmi_probe.ini next to the DLL decides it")
+                if "dhash" in slots:
+                    dh = slots.get("dhash_status", {})
+                    lines.append(f"automatic material dHash: {'on' if slots.get('enabled') and slots['dhash'] else 'off'}; "
+                                 f"{dh.get('completed', 0)} computed, {dh.get('pending', 0)} pending, "
+                                 f"{dh.get('failed', 0)} failed; source=probe_gpu (not XXMI's cached values)")
             if "reload_key" in st.get("features", ()):
                 level = "elevated" if st.get("process", {}).get("elevated") else "not elevated"
                 lines.append(f"reload: the probe presses F10 inside the game (game process is {level})")

@@ -5,6 +5,7 @@
 // its own: working out the game version, loading what earlier sessions wrote, appending new
 // records, saving the bytecode of shaders that were not saved yet.
 #include "slotcache.h"
+#include "slot_dhash.h"
 #include "hooks.h"
 #include "registry.h"
 #include "json.h"
@@ -19,6 +20,7 @@ static bool g_inited = false;
 static SlotCacheConfig g_sc;                  // guarded by g_cs
 static volatile LONG g_enable = 0, g_every = 30, g_skinned = 1, g_bones = 1, g_static = 1, g_max_new = 256;
 static volatile LONG g_gen = 0;
+static volatile LONG g_dhash = 1, g_max_hashes = 8;
 static HANDLE g_thread = nullptr;             // guarded by g_cs
 // efmi_probe.ini does not say whether to record: decided by the installation once XXMI is known.
 static volatile LONG g_auto = 0;
@@ -86,6 +88,8 @@ void slot_init()
 	c.skinned_only = GetPrivateProfileIntW(L"SlotCache", L"skinned_only", 1, path) != 0;
 	c.bones_only = GetPrivateProfileIntW(L"SlotCache", L"bones_only", 1, path) != 0;
 	c.static_only = GetPrivateProfileIntW(L"SlotCache", L"static_only", 1, path) != 0;
+	c.dhash = GetPrivateProfileIntW(L"SlotCache", L"dhash", 1, path) != 0;
+	c.max_hashes = (uint32_t)GetPrivateProfileIntW(L"SlotCache", L"max_hashes", 8, path);
 	c.max_new = (uint32_t)GetPrivateProfileIntW(L"SlotCache", L"max_new", 256, path);
 	wchar_t sub[128] = {};
 	GetPrivateProfileStringW(L"SlotCache", L"dir", L"slot-cache", sub, 128, path);
@@ -121,10 +125,12 @@ bool slot_set_config(const SlotCacheConfig& cfg)
 	if (c.every > 100000) c.every = 100000;
 	if (c.max_new < 1) c.max_new = 1;
 	if (c.max_new > 4096) c.max_new = 4096;
+	if (c.max_hashes < 1) c.max_hashes = 1;
+	if (c.max_hashes > 32) c.max_hashes = 32;
 	EnterCriticalSection(&g_cs);
 	// Another folder, or a filter that lets more through: what was seen is looked at again.
 	const bool again = g_sc.subdir != c.subdir || (g_sc.skinned_only && !c.skinned_only) ||
-	                   (g_sc.bones_only && !c.bones_only) || (g_sc.static_only && !c.static_only);
+	                   (g_sc.bones_only && !c.bones_only) || (g_sc.static_only && !c.static_only) || g_sc.dhash != c.dhash;
 	g_sc = c;
 	// Whoever sets it now decides; the default no longer applies.
 	g_enable_source = "efmi_probe.ini or a client";
@@ -138,6 +144,8 @@ bool slot_set_config(const SlotCacheConfig& cfg)
 	InterlockedExchange(&g_static, c.static_only ? 1 : 0);
 	InterlockedExchange(&g_max_new, (LONG)c.max_new);
 	InterlockedExchange(&g_enable, c.enable ? 1 : 0);
+	InterlockedExchange(&g_dhash, c.dhash ? 1 : 0);
+	InterlockedExchange(&g_max_hashes, (LONG)c.max_hashes);
 	return true;
 }
 
@@ -180,6 +188,8 @@ bool slot_due(uint32_t frame)
 bool slot_skinned_only() { return g_skinned != 0; }
 bool slot_bones_only() { return g_bones != 0; }
 bool slot_static_only() { return g_static != 0; }
+bool slot_dhash_enabled() { return g_enable && g_dhash; }
+uint32_t slot_dhash_max_new() { return (uint32_t)g_max_hashes; }
 uint32_t slot_max_new() { return (uint32_t)g_max_new; }
 LONG slot_generation() { return g_gen; }
 
@@ -603,6 +613,8 @@ void slot_status_object(std::string* out)
 	w.kb("skinned_only", g_sc.skinned_only);
 	w.kb("bones_only", g_sc.bones_only);
 	w.kb("static_only", g_sc.static_only);
+	w.kb("dhash", g_sc.dhash);
+	w.ku("max_hashes", g_sc.max_hashes);
 	w.ku("max_new", g_sc.max_new);
 	w.ks("subdir", g_sc.subdir);
 	w.ks("version", g_status_key);
@@ -621,6 +633,8 @@ void slot_status_object(std::string* out)
 	w.ku("shaders_without_bytecode", (uint64_t)g_no_bytecode);
 	w.kd("record_ms_total", (double)g_cost_us / 1000.0);
 	w.kd("record_ms_last", (double)g_last_cost_us / 1000.0);
+	std::string dh; slot_dhash_status(&dh);
+	w.key("dhash_status"); w.raw(dh);
 	w.end_obj();
 	*out = w.s;
 }

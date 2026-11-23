@@ -91,6 +91,10 @@ def status(client: ProbeClient) -> dict:
 
 
 def configure(client: ProbeClient, **fields) -> dict:
+    # This regression checks the metadata-only contract and exact record counts.
+    # Automatic material fingerprints have their own GPU regression.
+    if set(fields) - {"flush", "timeout_ms"}:
+        fields.setdefault("dhash", False)
     reply, _ = client.request("slot_cache", **fields)
     return reply
 

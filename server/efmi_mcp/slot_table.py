@@ -404,8 +404,8 @@ def build(folder: Path, names: dict | None = None, reader: Callable[[str], dict]
              "characters": characters, "probable_groups": groups, "scenes": scenes,
              "unassigned": [row(m) for m in sorted(unassigned, key=lambda m: (first_frame[m], m))]}
     table["counts"] = counts(table)
-    from .slot_fingerprints import annotate, load
-    annotate(table, load(folder, table["version"]))
+    from .slot_fingerprints import annotate, load, automatic_entries
+    annotate(table, load(folder, table["version"]) + automatic_entries(records))
     return table
 
 
@@ -646,7 +646,8 @@ def main(argv: list[str] | None = None) -> int:
         from . import slot_fingerprints
         entries, report = slot_fingerprints.collect_dump(table, Path(args.import_dhash_dump))
         report.update(slot_fingerprints.save(folder, table["version"], entries))
-        slot_fingerprints.annotate(table, slot_fingerprints.load(folder, table["version"]))
+        slot_fingerprints.annotate(table, slot_fingerprints.load(folder, table["version"]) +
+                                   slot_fingerprints.automatic_entries(load_records(folder)))
         print(json.dumps(report))
     (folder / "slot-table.json").write_text(json.dumps(table, indent=1), encoding="utf-8")
     (folder / "slot-table.md").write_text(to_markdown(table), encoding="utf-8")

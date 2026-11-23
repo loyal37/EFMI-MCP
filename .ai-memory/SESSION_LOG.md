@@ -1,5 +1,13 @@
 # EFMI MCP — Development log
 
+## 2026-11-23: Make slot-cache dHashes automatic and enable EFMI collection
+
+User requested automatic character browsing, then implementation and enabling. Implemented probe 0.1.17 asynchronous on-device hashes for native PS-declared BC textures, lifetime/write-aware runtime dedupe, bounded jobs, pending readback, metadata upgrades and original provenance preservation. Server 0.1.27 merges automatic observations into schema-5 table roles and reports status. Shared helper shader unchanged in behavior. Added opt-in sandbox WARP/material fixtures with event-controlled texture swaps/uploads and exact pipeline-state guards; legacy metadata-only regression explicitly disables dHash.
+
+Built all three binaries. Automatic workflow passes without a client on WARP and on hardware with a private XXMI runtime, including mip selection, budget deferral, restart dedupe and slot exclusion. WARP matches independently retained captured pixels exactly; hardware BC7 differs by one bit, recorded as a provenance limitation. 11 fingerprint units pass after correcting fixture serialization. Full runner passes all other groups except the contents-parity comparison; old 0.1.16 reproduces the same two mip-chain length and 108 log-hash differences, so this remains a documented existing issue rather than an all-green claim. Self-test143, contents76, slot80, continuous62, recording46, multi-device192, MCP108 and table17 passed.
+
+Installed new project-local DLL and backed up old one in dist/backup-0.1.16. Created local INI with EFMI automatic enable and dHash on; verified the installed bytes/settings with private EFMI/ZZMI (on/off respectively). efmi_status reports no real process with the probe loaded. No real character/filter validation, game input/restart/termination, or original installation/mod changes. Next launch/restart loads probe0.1.17; MCP restart loads server0.1.27. Logs and installation receipt stay in ignored captures; private test windows used the secondary screen. Reviewed diff and staged only this work, preserving unrelated memory changes and .codex.
+
 ## 2026-11-23: Persist material dHashes alongside the slot cache
 
 User requested caching diffuse/lightmap/normal dHashes to support the EFMI Tools 0.7.1 filter-based texture system and supplied its release link. Reviewed upstream filtering and mip preference docs, existing dHash implementation and versioned native slot records. No game probe was loaded. Added explicit collector and CLI import, atomic locked sidecar merges, source distinction, unique-zero handling, multi-pass texture reuse, variant ambiguity and schema-5 display/coverage. No change to probe, role inference or installed mods.

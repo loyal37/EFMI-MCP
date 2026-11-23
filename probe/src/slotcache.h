@@ -11,6 +11,8 @@ struct SlotCacheConfig {
 	bool        skinned_only = true;  // only draws whose input layout has BLENDINDICES
 	bool        bones_only = true;    // only draws with a buffer bound at vs-t0 (the bone pool)
 	bool        static_only = true;   // not from an index buffer the CPU rewrites (D3D11_USAGE_DYNAMIC)
+	bool        dhash = true;         // automatic native BC texture fingerprints
+	uint32_t    max_hashes = 8;        // new GPU jobs per frame, with nonblocking readback
 	uint32_t    max_new = 256;        // at most this many new draws are recorded in one looked-at frame
 	std::string subdir = "slot-cache";// below the probe's directory; a plain name
 };
@@ -25,6 +27,8 @@ bool slot_due(uint32_t frame);                      // is this frame to be looke
 bool slot_skinned_only();
 bool slot_bones_only();
 bool slot_static_only();
+bool slot_dhash_enabled();
+uint32_t slot_dhash_max_new();
 uint32_t slot_max_new();
 LONG slot_generation();                             // changes when the files change folder: forget what was seen
 

@@ -1,5 +1,13 @@
 # EFMI MCP — Known issues
 
+## Automatic dHash limitations and existing parity failures (2026-11-23)
+
+Automatic browsing now computes hashes with probe 0.1.17, superseding the explicit-only limitation below. No real character or game performance was verified this round: no game/probe was loaded. Default filters exclude CPU-posed/dynamic-index components, and native draws hidden by mods or unseen LODs/passes cannot be collected. Only declared native BC Texture2D views are fingerprinted; failed reflection/readback remains missing with diagnostics. Unknown command-list writes conservatively invalidate observed textures and may cause extra work in engines that execute many lists; real-game coverage/performance still needs observation.
+
+Hardware and WARP comparison boundaries can differ: initial BC1 mip-0 fixture differed by one bit; final hardware/private-XXMI BC1 mip-1 matched WARP and BC7 mip-0 differed by one bit. This is not proof of equality with XXMI's resource-lifetime cache. Automatic values remain probe_gpu, xxmi_cached=false.
+
+The full regression runner has an existing contents-parity failure, reproduced identically with installed old probe 0.1.16 and candidate 0.1.17: 303 byte comparisons have two prefix-identical DDS length mismatches (262144 top-mip bytes versus 349524 full-chain bytes), and log comparison has 108 whole-buffer/region-hash differences. 223 text files match exactly. The comparator/export path was not changed in this task. Evidence: captures/auto-slot-dhash-regressions-20261123.log and auto-slot-dhash-baseline-contents-parity-20261123.log. Initial new unit failure was fixture JSON spacing rejected by the existing native-record reader; corrected fixture passes all 11 tests.
+
 ## Material fingerprint coverage and sandbox transient (2026-11-23)
 
 The old slot cache has metadata, not texture pixels: missing dHashes need new exact native captures or original dump matches. Collection is explicit after capture; character browsing alone only fills the existing metadata cache. The original-log importer conservatively requires the recorded native texture hash, so streaming CRC changes or missing IB/count/PS evidence remain unmatched. Fresh pixel fingerprints are not guaranteed equal to XXMI's resource-lifetime cached hash; alternatives and provenance remain visible. No real-character filter replacement was verified in this round.

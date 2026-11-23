@@ -2,6 +2,7 @@
 #include "registry.h"
 #include "json.h"
 #include "slotcache.h"
+#include "slot_dhash.h"
 #include "record.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -50,7 +51,8 @@ struct CapSnap   { int32_t res; uint32_t off, size; uint64_t blob_off; uint8_t s
 
 struct VbBind   { uint8_t slot; int32_t res; uint32_t stride, off; int32_t region; int32_t cont = -1; };
 struct CbBind   { uint8_t stage, slot; int32_t res; uint32_t first, num; int32_t snap; int32_t cont = -1; };
-struct ViewBind { uint8_t stage, slot; int32_t res; int32_t view = -1; int32_t cont = -1; std::vector<int32_t> mips; };
+struct ViewBind { uint8_t stage, slot; int32_t res; int32_t view = -1; int32_t cont = -1; std::vector<int32_t> mips;
+    std::shared_ptr<SlotDHash> dhash; };
 
 // Fixed-function state objects and view parameters, recorded for full captures.
 enum { SK_BLEND = 0, SK_DEPTH = 1, SK_RASTER = 2, SK_SAMPLER = 3 };
@@ -188,10 +190,11 @@ struct SlotSeen {
 	uint64_t ib_sn = 0;
 	uint32_t ib_off = 0, ib_fmt = 0, first = 0, count = 0;
 	uint64_t vs_sn = 0, ps_sn = 0;
+	uint64_t textures = 0;
 	bool operator==(const SlotSeen& o) const
 	{
 		return ib == o.ib && ib_sn == o.ib_sn && ib_off == o.ib_off && ib_fmt == o.ib_fmt && first == o.first &&
-		       count == o.count && vs_sn == o.vs_sn && ps_sn == o.ps_sn;
+		       count == o.count && vs_sn == o.vs_sn && ps_sn == o.ps_sn && textures == o.textures;
 	}
 };
 struct SlotSeenHash {
@@ -200,7 +203,7 @@ struct SlotSeenHash {
 		uint64_t h = (uint64_t)(uintptr_t)k.ib * 0x9E3779B97F4A7C15ull;
 		h ^= (k.ib_sn + ((uint64_t)k.first << 32 | k.count)) * 0xC2B2AE3D27D4EB4Full;
 		h ^= (k.vs_sn * 31 + k.ps_sn + ((uint64_t)k.ib_off << 20)) * 0x165667B19E3779F9ull;
-		return (size_t)(h ^ (h >> 31));
+		return (size_t)(h ^ (h >> 31) ^ k.textures);
 	}
 };
 
@@ -290,6 +293,7 @@ struct Capture {
 	uint32_t slot_new = 0;           // draws recorded for it
 	uint32_t slot_deferred = 0;      // new draws left for a later frame (over max_new)
 	std::vector<SlotSeen> slot_keys; // one per recorded draw
+	LONG slot_gen = 0;
 	uint64_t live_generation = 0;    // stream session that requested this frame
 	bool     hash_volatile = false;
 	uint32_t volatile_skips = 0;
@@ -2131,8 +2135,9 @@ static void slot_prepare()
 		g_layout_skinned.clear();
 }
 
-static void slot_srvs(Capture* c, DrawRec* d, int stage)
+static bool slot_srvs(Capture* c, DrawRec* d, int stage)
 {
+	bool deferred = false;
 	static ID3D11ShaderResourceView* srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
 	memset(srvs, 0, sizeof(srvs));
 	get_srvs(stage, srvs);
@@ -2143,10 +2148,15 @@ static void slot_srvs(Capture* c, DrawRec* d, int stage)
 		v.slot = (uint8_t)i;
 		v.res = view_res_id(c, (ID3D11View*)srvs[i]);
 		v.view = view_desc_id(c, (ID3D11View*)srvs[i], VK_SRV, v.res);
+		if (stage == ST_PS && d->caller.origin == ORIGIN_GAME && d->shaders[ST_PS] >= 0) {
+			const auto& ps = c->shaders[d->shaders[ST_PS]];
+			if (ps.known) v.dhash = slot_dhash_request(srvs[i], ps.info.hash, i, &deferred);
+		}
 		c->views.push_back(v);
 		d->srv_count++;
 		ID3D11ShaderResourceView_Release(srvs[i]);
 	}
+	return !deferred;
 }
 
 // LoyalTools takes a draw for a character's only when a buffer (the bone pool) is bound at vs-t0.
@@ -2223,6 +2233,16 @@ static void slot_record(Capture* c, uint8_t type, const DrawArgs& a)
 	k.count = a.index_count;
 	k.vs_sn = vsid >= 0 && c->shaders[vsid].known ? c->shaders[vsid].info.serial : (uint64_t)(uintptr_t)vs;
 	k.ps_sn = psid >= 0 && c->shaders[psid].known ? c->shaders[psid].info.serial : (uint64_t)(uintptr_t)ps;
+	// Texture streaming and material switches must revisit an already-known mesh/pass.
+	if (slot_dhash_enabled() && psid >= 0 && c->shaders[psid].known) {
+		ID3D11ShaderResourceView* views[128] = {};
+		get_srvs(ST_PS, views);
+		for (UINT s = 0; s < 128; ++s) if (views[s]) {
+			uint64_t h = slot_dhash_signature(views[s], c->shaders[psid].info.hash, s);
+			if (h) k.textures = (k.textures * 1099511628211ull) ^ h ^ s;
+			ID3D11ShaderResourceView_Release(views[s]);
+		}
+	}
 
 	if (g_slot_seen.find(k) == g_slot_seen.end()) {
 		if (slot_bones_only() && !vs_t0_is_buffer(ctx)) {
@@ -2248,7 +2268,7 @@ static void slot_record(Capture* c, uint8_t type, const DrawArgs& a)
 			d.shaders[ST_PS] = psid;
 			d.srv_begin = (uint32_t)c->views.size();
 			slot_srvs(c, &d, ST_VS);
-			slot_srvs(c, &d, ST_PS);
+			if (!slot_srvs(c, &d, ST_PS)) g_slot_seen.erase(k); // budget: retry when this draw is next visible
 			d.out_begin = (uint32_t)c->views.size();
 			ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
 			ID3D11DepthStencilView* dsv = nullptr;
@@ -2346,12 +2366,25 @@ static void slot_view_json(JsonW& w, const Capture& c, const ViewBind& v, std::s
 		w.ks("view_format", dxgi_format_name((DXGI_FORMAT)cv.format));
 		w.ku("view_dim", cv.dim);
 	}
+	if (v.dhash && v.dhash->ready) {
+		if (SUCCEEDED(v.dhash->error)) {
+			w.kh64("dhash", v.dhash->value);
+			w.ks("dhash_source", "probe_gpu");
+			w.ku("dhash_mip", v.dhash->mip);
+			w.ku("dhash_width", v.dhash->width); w.ku("dhash_height", v.dhash->height);
+			snprintf(b, sizeof(b), "dh:%u:%08x:%u:%016llx:%u;", v.slot,
+			         v.res >= 0 ? c.res[v.res].hash : 0, v.view >= 0 ? c.view_descs[v.view].format : 0,
+			         (unsigned long long)v.dhash->value, v.dhash->mip);
+			*sig += b;
+		} else w.kh32("dhash_error", (uint32_t)v.dhash->error);
+	}
 	w.end_obj();
 }
 
 // A looked-at frame is finished: one record per draw that was new in it.
 static void slot_push(const Capture& c)
 {
+	if (c.slot_gen != slot_generation()) return;
 	FILETIME ft_now;
 	GetSystemTimeAsFileTime(&ft_now);
 	const uint64_t ft = ((uint64_t)ft_now.dwHighDateTime << 32) | ft_now.dwLowDateTime;
@@ -3595,6 +3628,8 @@ static void process_finalizing()
 {
 	while (!g_finalizing.empty()) {
 		std::shared_ptr<Capture> c = g_finalizing.front();
+		if (c->slots && std::any_of(c->views.begin(), c->views.end(), [](const ViewBind& v) { return v.dhash && !v.dhash->ready; }))
+			break;
 		// After waiting this long, stop being polite and wait for the GPU.
 		bool block = c->wait_frames >= (c->live || c->slots ? 60u : 20u);
 		if (!try_readback(c.get(), block)) {
@@ -3615,6 +3650,7 @@ static void begin_recording(const CaptureRequest& rq, bool live, bool hash_volat
 	c->rq = rq;
 	c->live = live;
 	c->slots = slots;
+	c->slot_gen = slot_generation();
 	c->live_generation = live_generation;
 	c->hash_volatile = hash_volatile;
 	c->frame = (uint32_t)g_frame_no;
@@ -4162,6 +4198,7 @@ void cap_on_frame_boundary()
 	if (!g_ctx || !g_dev)
 		return;
 	hooks_verify();
+	slot_dhash_boundary();
 
 	if (g_bar) {
 		cont_before_present();

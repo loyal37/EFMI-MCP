@@ -171,7 +171,7 @@ Default results include slots referenced by instructions; `include_unused=true` 
 
 References include conditional paths and do not prove that every pixel executed the instruction. Material roles such as diffuse and normal are not assigned from fixed slot numbers: inspect the instruction evidence and use `efmi_get_shader first_line=<line>` for more context. This distinction follows the separate [resource declaration](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dcl-resource) and [texture sampling instruction](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/sample--sm4---asm-) in the D3D assembly format. A game update or another pass can change the slots.
 
-### Slot cache (probe 0.1.7 to 0.1.9)
+### Slot cache (probe 0.1.17)
 
 Texture slots written as `ps-tN = …` move when a game update changes a shader (all of them by one, or only those from some slot on). To be able to tell, for any mod, which slot a texture belongs in after an update, the probe keeps a record of the slots of every version by itself, like a cache that fills itself while the game is played.
 
@@ -179,22 +179,26 @@ Texture slots written as `ps-tN = …` move when a game update changes a shader 
 
 **Where.** `<folder of efmi_probe.dll>\slot-cache\<version>\` with `version.json`, `draws.jsonl` and `shaders\`. The version is `<label>+<fingerprint>`: the label is the client version Unity keeps in `Endfield_Data\globalgamemanagers` (for example `1.6.3`); the fingerprint covers the contents of the two resource indexes `Endfield_Data\Persistent\index_main.json` and `Endfield_Data\StreamingAssets\index_main.json` and the size and time of `Endfield.exe`, `GameAssembly.dll` and `globalgamemanagers`. The resource indexes are what changes with a resource update that leaves the client files alone, which is how the slots moved on 2026-10-15. `version.json` lists the inputs.
 
+With automatic dHash enabled (0.1.17), native material bindings also carry the fingerprint, selected mip and `dhash_source=probe_gpu`. Successful fingerprints, texture hashes and view formats extend the record key, so old metadata-only records can be supplemented and changed material observations are retained. Texture changes and uploads revisit an already-seen mesh/pass. Failed calculations remain missing, with `dhash_error` on the binding; they are never replaced with a fabricated zero.
+
 **Mods on or off.** With mods on, a character a mod replaces is drawn by XXMI (`origin: xxmi`) with the mod's buffers, and the game's own draw of it does not happen; the lines then say which slots the mod's draws fill. For the game's own index buffer hashes and slots of a modded character, switch the mods off with F11 (`efmi_toggle_mods state='off'`) while that character is on screen, and back on.
 
 **Settings.** `efmi_probe.ini` next to the DLL, read when the game starts:
 
 ```ini
 [SlotCache]
-enable=1          ; 1 on, 0 off; without this line (0.1.13): on with EFMI or without XXMI, off with another XXMI (ZZMI)
+enable=-1         ; -1 automatic: on with EFMI/no XXMI, off with other XXMI; 1 forces on, 0 off
 every=30          ; look at one frame in this many
 skinned_only=1    ; 0 records every indexed draw (also XXMI's overlay text, see below)
 bones_only=1      ; 0 also records draws without a buffer (the bone pool) at vs-t0 (0.1.9)
 static_only=1     ; 0 also records index data the CPU rewrites, which hashes differently every frame (0.1.9)
 max_new=256       ; new draws recorded per frame looked at; the rest wait for a later one
+dhash=1           ; fingerprint native BC material textures automatically (0.1.17)
+max_hashes=8      ; new GPU fingerprint jobs per frame, range 1..32; excess work retries later
 dir=slot-cache    ; folder next to the DLL, a plain name
 ```
 
-The probe command `slot_cache` changes the same settings in a running game (`enable`, `every`, `skinned_only`, `bones_only`, `static_only`, `max_new`, `subdir`) and with `flush=true` waits until everything is on disk; its reply and `efmi_status` show the version, the folder and counters (`frames_looked_at`, `new_draws`, `deferred`, `records_written`, `duplicates`, `shaders_written`, `record_ms_last`). There is no MCP tool for it yet.
+The probe command `slot_cache` changes the same settings in a running game (`enable` as a boolean, `every`, `skinned_only`, `bones_only`, `static_only`, `max_new`, `dhash`, `max_hashes`, `subdir`). `flush=true` waits for records already submitted to the writer; pending GPU observations finish on subsequent frames. Its reply and `efmi_status` show the version, folder and counters, including `dhash_status` (`submitted`, `completed`, `pending`, `deferred`, `failed`). There is no MCP settings tool for it yet.
 
 **Only for Endfield by default (probe 0.1.13).** The records follow LoyalTools' rules for Endfield's characters, and the slot table reads them by EFMI's region hashes, so with another XXMI loaded (Zenless Zone Zero's ZZMI) the slot cache stays off unless `enable` in `efmi_probe.ini`, or the `slot_cache` command, switches it on. The probe decides at the first frame it would look at, when XXMI is known: on when the loaded XXMI's folder has `Core\EFMI`, or when no XXMI is loaded (the sandbox); off otherwise. `enabled_by` in the status (and the `slot cache:` line of `efmi_status`) says why. Probe 0.1.12 recorded Zenless Zone Zero by default; those lines are in `slot-cache\3.3.0+…\` and are not removed by the probe.
 
@@ -578,21 +582,27 @@ XXMI 1.3.2 adds `dhash=` binding metadata and mip-preserving DDS dumps. The offl
 
 Capture with `contents="inputs"` to keep every mip of ordinary, single-slice, non-MSAA Texture2D inputs, versioned at each draw. The existing contents budget applies; no missing mip is generated. `efmi_dump_frame` writes the captured chain into DDS. Arrays, cubes, volumes and outputs retain their existing single-subresource export behavior. `declared_only=true` excludes PS textures absent from shader declarations; the default preserves all bindings for diagnostics. Shader analysis failure retains bindings rather than silently excluding them.
 
-`efmi_texture_dhash(draw=..., slot="ps-t0", mip=0)` computes a fresh fingerprint from exact captured pixels, using D3D11 sampling on a separate WARP device. Build the game-external helper with `server/native/build_dhash.bat` and distribute `dist/efmi_dhash.dll` alongside the other DLLs. It is loaded by Python, never injected into the game. Computation runs on demand during the query or dump, with no continuous hash work in the game. Unsupported sampling formats return an error; dump warnings explain unavailable fingerprints.
+`efmi_texture_dhash(draw=..., slot="ps-t0", mip=0)` computes a fresh fingerprint from exact captured pixels, using D3D11 sampling on a separate WARP device. Build the game-external helper with `server/native/build_dhash.bat` and distribute `dist/efmi_dhash.dll` alongside the other DLLs. It is loaded by Python, never injected into the game. This explicit computation runs during the query or dump; automatic slot-cache computation is described below. Unsupported sampling formats return an error; dump warnings explain unavailable fingerprints.
 
 Exported PS binding logs include these recomputed fingerprints for EFMI Tools extraction. `texture-fingerprints.json` and the log header identify their source. They are **not XXMI's private cached hashes**: XXMI may have selected another uploaded mip or cached an earlier upload. The tool's explicit mip parameter and the original frame-analysis log allow comparison. On a saved real-game dump, 11 of 12 sampled textures matched the original dHash at some mip; one did not. This is sampling evidence, not universal equivalence or a completed Blender extraction test.
 
 Probe installation requires a game restart; server/tool changes require restarting MCP. Older probes still supply the one subresource they kept, and their dumps cannot recover missing mips.
 
-### Material dHash cache (server 0.1.26)
+### Material dHash cache (probe 0.1.17 / server 0.1.27)
 
 The source build's slot table (schema 5) can retain fingerprints for each mesh's diffuse, light map and normal map, including other shader passes. `texture-dhashes.json` lives beside `draws.jsonl` in the version folder. Existing role and slot decisions remain unchanged. Each role exposes `dhash`, `dhash_status`, `xxmi_cached` and all observations in `dhashes`; Markdown displays the value and source. Missing observations remain missing. Different original values stay ambiguous, with no arbitrary winner. Original XXMI values take precedence over computed alternatives.
 
+**Automatic character browsing.** With the slot cache and `dhash` enabled, leave each character visible for several sampled frames. The probe fingerprints game-origin BC1/2/3/4/5/7 Texture2D inputs declared by the pixel shader, together with the existing IB/count/pass/slot observations. No connected MCP client, explicit capture or frame-analysis dump is required. Default sampling is every 30 frames, with at most eight new jobs per frame and 32 pending jobs. Unseen work is retried while the draw remains visible. Mods that replace native draws must be switched off to collect the original material. Only observed passes, components and LODs can be cached; a quick character switch does not guarantee complete coverage.
+
+Computation uses a private deferred context on the game's device and restores immediate-context state when executing its command list. It reads back eight bytes asynchronously with `DO_NOT_WAIT`, never calls `Flush`, and never waits synchronously for a fingerprint. A 256x256 mip within the bound view is preferred, otherwise its most detailed mip. Resource creation, material switches and uploads invalidate the relevant runtime entries. Unknown command-list writes conservatively invalidate observed texture contents. Shader reflection failure skips the slots rather than guessing.
+
+These observations are appended to `draws.jsonl`; the table merges them automatically with any explicitly imported `texture-dhashes.json`. They are marked `probe_gpu`, with `xxmi_cached=false`: neither this path nor the external helper reads XXMI's private fingerprint cache. Hardware and WARP sampling can differ at comparison boundaries (one bit on a tested BC1 fixture). Original-log imports retain precedence. Old metadata stays readable and gains hashes when its native draws are next seen. A saved Markdown report remains a snapshot; regenerate it or query the table to see new records. Restart the game to load probe 0.1.17 and restart MCP for server 0.1.27.
+
 Use `efmi_cache_texture_dhashes(folder=".../slot-cache/<version>", frame_dump=".../FrameAnalysis-...")` to import original `log.txt` fingerprints. Import requires matching IB, index count, PS, slot and native texture hash; mismatched bindings, including replacement textures, are reported as unmatched. Tool-generated dumps remain marked `exported_pixels`. A known texture's fingerprint can be reused across passes of the same mesh by texture hash and format, even when its slot moves. This does not transfer material-role guesses.
 
-For a running game, capture native draws with `contents="inputs"`, then call `efmi_cache_texture_dhashes(folder=".../slot-cache/<version>")`. The runtime version must match the folder. Only game-origin draws and game-origin textures are eligible. It reads exact retained contents, computes each content/view once and persists the result as `captured_pixels`. Default `mip=-1` prefers an available 256x256 mip, otherwise mip 0; specify a nonnegative mip to choose explicitly. Missing captured mips and unsupported formats are reported. This uses probe 0.1.16 and the existing external dHash helper; the probe itself is unchanged. No additional game restart is required if 0.1.16 is already loaded. Restart MCP for the new tool.
+For explicit collection from a retained capture, capture native draws with `contents="inputs"`, then call `efmi_cache_texture_dhashes(folder=".../slot-cache/<version>")`. The runtime version must match the folder. Only game-origin draws and game-origin textures are eligible. It reads exact retained contents, computes each content/view once and persists the result as `captured_pixels`. Default `mip=-1` prefers an available 256x256 mip, otherwise mip 0; specify a nonnegative mip to choose explicitly. Missing captured mips and unsupported formats are reported. This supplementary path still works with probe 0.1.16 and the external helper.
 
-Collection is explicit, not automatic on every background slot-cache frame. Reading `efmi_get_slot_table` never writes files. To import and export the table from the command line (with `server` on `PYTHONPATH`):
+Reading `efmi_get_slot_table` never writes files. To import and export the table from the command line (with `server` on `PYTHONPATH`; omit `--import-dhash-dump` when only regenerating the report):
 
 ```powershell
 py -3 -m efmi_mcp.slot_table "F:/EFMI MCP/dist/slot-cache/<version>" --import-dhash-dump "<frame dump>" --efmi-root "<EFMI folder>"

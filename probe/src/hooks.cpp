@@ -1,4 +1,5 @@
 #include "hooks.h"
+#include "slot_dhash.h"
 #include "capture.h"
 #include "registry.h"
 #include "hash.h"
@@ -812,12 +813,14 @@ static void STDMETHODCALLTYPE H_Unmap(ID3D11DeviceContext* This, ID3D11Resource*
 		if (g_swap && g_tracking) cap_buffer_written(pResource);
 		if (g_barrier) cap_mapped(pResource, false);
 		if (g_events) cap_event(EV_UNMAP, pResource, nullptr, Subresource);
+		slot_dhash_written(pResource);
 	}
 	CTX_ORIG(h)->Unmap(This, pResource, Subresource);
 }
 
 static inline void note_update(ID3D11Resource* pDst, UINT DstSub, const D3D11_BOX* pBox, bool keeps_rest)
 {
+	slot_dhash_written(pDst);
 	const uint32_t off = pBox ? pBox->left : 0, size = pBox ? pBox->right - pBox->left : 0xffffffffu;
 	if (g_swap && g_tracking) cap_buffer_written(pDst, off, size);
 	if (g_barrier) cap_before_write(pDst, DstSub, off, size, keeps_rest);
@@ -827,6 +830,7 @@ static inline void note_update(ID3D11Resource* pDst, UINT DstSub, const D3D11_BO
 static inline void note_copy_region(ID3D11Resource* pDst, UINT DstSub, UINT DstX, ID3D11Resource* pSrc, UINT SrcSub,
                                     const D3D11_BOX* pSrcBox, bool keeps_rest)
 {
+	slot_dhash_written(pDst);
 	// The game fills its shared mesh buffers this way: only the bytes that are
 	// actually replaced lose their cached hashes, and only those are set aside.
 	const uint32_t size = pSrcBox ? pSrcBox->right - pSrcBox->left : 0xffffffffu - DstX;
@@ -851,6 +855,7 @@ static void STDMETHODCALLTYPE H_CopyResource(ID3D11DeviceContext* This, ID3D11Re
 		if (g_swap && g_tracking) cap_buffer_written(pDst);
 		if (g_barrier) cap_before_write(pDst, 0xffffffffu, 0, 0xffffffffu, false);
 		if (g_events) cap_event(EV_COPY, pDst, pSrc);
+		slot_dhash_written(pDst);
 	}
 	CTX_ORIG(h)->CopyResource(This, pDst, pSrc);
 }
@@ -904,6 +909,7 @@ static void STDMETHODCALLTYPE H_DiscardResource(ID3D11DeviceContext1* This, ID3D
 		if (g_swap && g_tracking) cap_buffer_written(pResource);
 		if (g_barrier) cap_before_write(pResource, 0xffffffffu, 0, 0xffffffffu, false);
 		if (g_events) cap_event(EV_DISCARD, pResource, nullptr);
+		slot_dhash_written(pResource);
 	}
 	CTX1_ORIG(h)->DiscardResource(This, pResource);
 }
@@ -1351,6 +1357,7 @@ static void STDMETHODCALLTYPE H_ExecuteCommandList(ID3D11DeviceContext* This, ID
 	if (h == g_ctx) {
 		if (g_barrier) { cap_before_unknown_writes(); cap_outputs_changed(false); cap_outputs_changed(true); }
 		if (g_events) cap_event(EV_COMMAND_LIST, nullptr, nullptr, Restore ? 1 : 0);
+		slot_dhash_unknown_writes();
 	}
 	CTX_ORIG(h)->ExecuteCommandList(This, pList, Restore);
 }

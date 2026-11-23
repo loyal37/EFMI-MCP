@@ -248,6 +248,8 @@ static void make_grid(Mesh* m, int n, float ox, float oy, float size, float r, f
 }
 
 static bool g_plain_draw = false;           // --plain-draw: use Draw() instead of DrawInstanced()
+static bool g_warp = false;                 // --warp: same software adapter as the external dHash helper
+static bool g_slot_textures = false;        // --slot-textures: material switches and mip uploads via events
 static bool g_stream = false;               // --stream: keep adding unrelated data to the shared buffer
 static bool g_rewrite_mesh1 = false;        // --rewrite-mesh1: re-upload mesh 1's indices every frame
 static int g_recreate_mesh3 = 0;            // --recreate-mesh3 N: every N frames destroy mesh 3's buffers and
@@ -296,6 +298,7 @@ struct Scene {
 	ID3D11SamplerState* sampler = nullptr;
 
 	ID3D11ShaderResourceView* srv[7] = {};
+	ID3D11ShaderResourceView* slot_alt = nullptr;
 	ID3D11Texture2D* scene_tex = nullptr;
 	ID3D11RenderTargetView* scene_rtv = nullptr;
 	ID3D11ShaderResourceView* scene_srv = nullptr;
@@ -403,6 +406,33 @@ static bool make_tex2d(Scene& s, UINT w, UINT h, UINT mips, UINT array, DXGI_FOR
 	hr = s.dev->CreateShaderResourceView(t, nullptr, srv);
 	t->Release();
 	CHECK(hr, "CreateShaderResourceView");
+	return true;
+}
+
+static std::vector<uint8_t> slot_pixels(UINT w, unsigned seed)
+{
+	std::vector<uint8_t> bytes(((w + 3) / 4) * ((w + 3) / 4) * 8);
+	for (auto& b : bytes) { seed = seed * 1664525u + 1013904223u; b = (uint8_t)(seed >> 24); }
+	return bytes;
+}
+
+static bool slot_texture(Scene& s, unsigned seed, ID3D11ShaderResourceView** view)
+{
+	std::vector<std::vector<uint8_t>> pixels;
+	std::vector<D3D11_SUBRESOURCE_DATA> data;
+	for (UINT w = 512; w; w /= 2) pixels.push_back(slot_pixels(w, seed + w));
+	UINT w = 512;
+	for (auto& p : pixels) { data.push_back({ p.data(), ((w + 3) / 4) * 8, 0 }); w /= 2; }
+	D3D11_TEXTURE2D_DESC d = {};
+	d.Width = d.Height = 512; d.MipLevels = (UINT)data.size(); d.ArraySize = 1;
+	d.Format = DXGI_FORMAT_BC1_UNORM; d.SampleDesc.Count = 1;
+	d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	ID3D11Texture2D* texture = nullptr;
+	HRESULT hr = s.dev->CreateTexture2D(&d, data.data(), &texture);
+	CHECK(hr, "slot texture");
+	hr = s.dev->CreateShaderResourceView(texture, nullptr, view);
+	texture->Release();
+	CHECK(hr, "slot view");
 	return true;
 }
 
@@ -1251,6 +1281,7 @@ static void render(Scene& s, float time)
 	s.ctx->VSSetShader(s.vs, nullptr, 0);
 	s.ctx->PSSetShader(s.ps, nullptr, 0);
 	s.ctx->PSSetShaderResources(0, 7, s.srv);
+	if (g_slot_textures) s.ctx->PSSetShaderResources(90, 1, &s.srv[2]); // bound but undeclared
 	s.ctx->PSSetSamplers(0, 1, &s.sampler);
 
 	for (int rpt = 0; rpt < g_repeat; rpt++) {
@@ -1263,6 +1294,25 @@ static void render(Scene& s, float time)
 		s.ctx->IASetIndexBuffer(s.heap, DXGI_FORMAT_R16_UINT, s.m1.off_i);
 		bind_object(s, 0);
 		s.ctx->DrawIndexedInstanced((UINT)s.m1.idx.size(), 4, 0, 0, 0);
+		if (g_slot_textures) {
+			// Check the exact state at the call boundary, including frames with hash dispatches.
+			ID3D11ComputeShader* cs = nullptr;
+			ID3D11PixelShader* ps = nullptr;
+			ID3D11VertexShader* vs = nullptr;
+			ID3D11Buffer* cb = nullptr;
+			ID3D11UnorderedAccessView* uav = nullptr;
+			ID3D11ShaderResourceView* views[7] = {};
+			ID3D11SamplerState* sampler = nullptr;
+			s.ctx->CSGetShader(&cs, nullptr, nullptr); s.ctx->PSGetShader(&ps, nullptr, nullptr);
+			s.ctx->VSGetShader(&vs, nullptr, nullptr); s.ctx->CSGetConstantBuffers(0, 1, &cb);
+			s.ctx->CSGetUnorderedAccessViews(0, 1, &uav); s.ctx->PSGetShaderResources(0, 7, views);
+			s.ctx->PSGetSamplers(0, 1, &sampler);
+			bool valid = cs == s.cs && ps == s.ps && vs == s.vs && cb == s.cb_pose && !uav && sampler == s.sampler;
+			for (unsigned i = 0; i < 7; ++i) { valid = valid && views[i] == s.srv[i]; if (views[i]) views[i]->Release(); }
+			if (cs) cs->Release(); if (ps) ps->Release(); if (vs) vs->Release();
+			if (cb) cb->Release(); if (uav) uav->Release(); if (sampler) sampler->Release();
+			if (!valid) { say("FAIL material fingerprint changed pipeline state"); ExitProcess(4); }
+		}
 	}
 	// 2) index buffer bound at zero, selected with StartIndexLocation / BaseVertexLocation
 	if (!(g_skip & 4)) {
@@ -1524,6 +1574,8 @@ int wmain(int argc, wchar_t** argv)
 		else if (a == L"--frames") max_frames = _wtoi(next().c_str());
 		else if (a == L"--plain-draw") g_plain_draw = true;
 		else if (a == L"--state-pass") g_state_pass = true;
+		else if (a == L"--warp") g_warp = true;
+		else if (a == L"--slot-textures") g_slot_textures = true;
 		else if (a == L"--repeat") g_repeat = _wtoi(next().c_str());
 		else if (a == L"--novsync") g_vsync = 0;
 		else if (a == L"--stream") g_stream = true;
@@ -1614,7 +1666,8 @@ int wmain(int argc, wchar_t** argv)
 	}
 	const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
 	D3D_FEATURE_LEVEL got = (D3D_FEATURE_LEVEL)0;
-	hr = create(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, levels, 2, D3D11_SDK_VERSION, &s.dev, &got, &s.ctx);
+	hr = create(g_warp ? nullptr : adapter, g_warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_UNKNOWN,
+	            nullptr, 0, levels, 2, D3D11_SDK_VERSION, &s.dev, &got, &s.ctx);
 	if (FAILED(hr)) { say("D3D11CreateDevice failed 0x%08x", (unsigned)hr); return 2; }
 	say("device %p (vtable in %s)", s.dev, module_of(*(void**)s.dev).c_str());
 	say("context %p (vtable in %s), feature level 0x%x", s.ctx, module_of(*(void**)s.ctx).c_str(), (unsigned)got);
@@ -1641,6 +1694,10 @@ int wmain(int argc, wchar_t** argv)
 	say("swap chain %p (vtable in %s)", s.swap, module_of(*(void**)s.swap).c_str());
 
 	if (!build_scene(s)) { say("scene setup failed"); return 3; }
+	if (g_slot_textures) {
+		s.srv[1]->Release(); s.srv[1] = nullptr;
+		if (!slot_texture(s, 123, &s.srv[1]) || !slot_texture(s, 456, &s.slot_alt)) return 3;
+	}
 	say("scene ready: heap mesh1 v0@%u v1@%u i@%u (%zu idx), mesh2 v0@%u v1@%u i@%u (%zu idx)",
 	    s.m1.off_v0, s.m1.off_v1, s.m1.off_i, s.m1.idx.size(), s.m2.off_v0, s.m2.off_v1, s.m2.off_i, s.m2.idx.size());
 
@@ -1649,6 +1706,10 @@ int wmain(int argc, wchar_t** argv)
 	HANDLE ev_dump = CreateEventW(nullptr, FALSE, FALSE, ev_name);
 	swprintf_s(ev_name, L"efmi_sandbox_quit_%lu", GetCurrentProcessId());
 	HANDLE ev_quit = CreateEventW(nullptr, FALSE, FALSE, ev_name);
+	swprintf_s(ev_name, L"efmi_sandbox_swap_%lu", GetCurrentProcessId());
+	HANDLE ev_swap = CreateEventW(nullptr, FALSE, FALSE, ev_name);
+	swprintf_s(ev_name, L"efmi_sandbox_upload_%lu", GetCurrentProcessId());
+	HANDLE ev_upload = CreateEventW(nullptr, FALSE, FALSE, ev_name);
 
 	ULONGLONG t0 = GetTickCount64();
 	int frame = 0, key_frames = 0;
@@ -1663,6 +1724,14 @@ int wmain(int argc, wchar_t** argv)
 			DispatchMessageW(&msg);
 		}
 		if (WaitForSingleObject(ev_quit, 0) == WAIT_OBJECT_0) running = false;
+		if (g_slot_textures && WaitForSingleObject(ev_swap, 0) == WAIT_OBJECT_0) std::swap(s.srv[1], s.slot_alt);
+		if (g_slot_textures && WaitForSingleObject(ev_upload, 0) == WAIT_OBJECT_0) {
+			ID3D11Resource* texture = nullptr;
+			s.srv[1]->GetResource(&texture);
+			auto bytes = slot_pixels(256, 789);
+			s.ctx->UpdateSubresource(texture, 1, nullptr, bytes.data(), 256 / 4 * 8, 0);
+			texture->Release();
+		}
 		// XXMI samples the keyboard once per Present. Hold the key across exactly
 		// one Present and let go before the (slow) analysed frame is rendered:
 		// a second key-down while the analysis runs would abort it.
