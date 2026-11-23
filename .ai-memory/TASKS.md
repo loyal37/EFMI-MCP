@@ -1,5 +1,7 @@
 ## Standalone EXE packaging completed (2026-11-23)
 
+- Pending external connectivity: push source commit3c11357 and its delivery-memory follow-up to origin/main. Two HTTPS attempts failed on reset/connection timeout; local EXE delivery is complete.
+
 - Done: reproducible --exe build, frozen executable-directory scan root and optional Preview.cmd/Restore.cmd launchers; output under dist/texture-repair.
 - Done: 25 offline tests and actual packaged-EXE scan/convert/backup/restore tests with no Python on child PATH, Unicode paths and a different CWD. No installed files changed.
 - Done: README and project memory synchronized for source commit/push. Existing real-game material verification limits remain unchanged.
